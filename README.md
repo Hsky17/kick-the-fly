@@ -2,7 +2,7 @@
 
 A kick-the-buddy game where the buddy is a real fruit fly brain: the
 **MaleCNS v1.0** connectome ([Google Research blog](https://research.google/blog/a-connectomics-milestone-mapping-the-complete-male-fruit-fly-brain/)),
-all 166,700 neurons simulated live while you throw, flick, swat, bomb and torch it.
+all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, zap, freeze and feed it to a spider. Or reward it with sugar.
 
 - **Hits fire real sensory neurons:**
   - head: head bristles and Johnston's organ
@@ -11,12 +11,19 @@ all 166,700 neurons simulated live while you throw, flick, swat, bomb and torch 
   - wings: wing sensory neurons
   - blowtorch: heat-sensing neurons
   - brake cleaner: smell and taste neurons (and it dissolves the fly)
-- **Its reactions come from its descending neurons:** jumping, running, kicking, walking, backing up and turning.
-- **Pain meter:** built from touch overload, heat-sensor activity and descending-neuron alarm. The **blowtorch** maxes it out.
+  - freeze spray: cold-sensing neurons
+  - zapper: every touch neuron plus a shock through its brain
+  - spider bites: body and leg touch neurons
+- **Its reactions come from its descending neurons:** running, kicking, walking, backing up and turning.
+- **It can fly:** it takes off when its DNg02 wing-power neurons fire above normal, and flies away when its head-touch escape neurons fire.
+- **Pain meter:** built from touch overload, heat and cold sensors, chemical senses and descending-neuron alarm. The **blowtorch** and **brake cleaner** max it out.
+- **Reward:** drop **sugar** and it walks over to eat. That lights up its PAM dopamine reward neurons and heals it.
 - **Death and autopsy:** it can die. The autopsy compares every brain region's last 2 s alive with its calm baseline, and shows pain on a timeline.
 - **Live brain view:** a front view of the brain built from the neurons' real cell-body positions. It lights up as the fly gets hurt. Press **B** for the big view.
 
 ![brain lighting up under the blowtorch](docs/brain.png)
+
+![spider wrapping the fly](docs/spider.png)
 
 ![autopsy](docs/autopsy.png)
 
@@ -55,6 +62,10 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | 4 | bomb |
 | 5 | blowtorch: hold to burn, pins pain at 100 |
 | 6 | brake cleaner: hold to spray, dissolves the fly into a puddle |
+| 7 | zapper: click for an electric shock |
+| 8 | freeze spray: hold to freeze it solid, then hit the ice to shatter it |
+| 9 | spider: click to drop a spider that hunts, bites and wraps it in silk |
+| 0 | sugar: click to drop sugar and reward it |
 | B | big live brain view (or click the brain panel) |
 | R | new fly |
 | Esc | quit |
@@ -65,6 +76,8 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - The spiking model (leaky integrate-and-fire over 10.5M signed synapses) and all the neuron firing.
 - Which sensory neurons each hit drives.
 - The descending neurons read out for reactions. The jump, run and kick groups are the DN types that responded most to head, body and leg touch when the sim was probed.
+- Take-off and flight speed come from DNg02, the wing-power descending neurons.
+- The REWARD meter reads the PAM dopaminergic neurons.
 
 **Game rules**
 - Which move each neuron group triggers.
@@ -73,6 +86,9 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - The pain index. The adult connectome has no neurons annotated as nociceptors, so pain is an estimate built from real signals, not a measurement of what the fly feels.
 - Death. A sim can't die on its own, so on death its tonic drive is switched off and activity fades out.
 - Brake cleaner dissolving the fly, and the brain slowing as it dissolves. Solvents depress nervous systems, so an inhibitory current grows on every neuron as the fly melts. How strong it is was picked for the game, not measured. The smell and taste neurons it fires are real.
+- Freezing and spider venom damping the brain, and the zapper's shock going into a random 30% of neurons (the sim has no current path to place it).
+- Sugar switching on the PAM reward neurons directly. In this sim taste input alone doesn't reach them, so sugar drives them the way PAM activation experiments do. The fly walking to the sugar is also a game rule.
+- The flight path. What triggers take-off is from the neurons, but where it flies is not.
 - Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
 
 The full mapping is in the docstring at the top of `kick_the_fly.py`.
