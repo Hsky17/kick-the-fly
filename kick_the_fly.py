@@ -22,6 +22,11 @@ when the sim was probed (40 hits per site, 400 ms before vs after). Which move
 each group triggers is a game choice. The giant fiber DNp01 barely reacts to
 touch in this model, so it isn't used. Wing touches mostly raise DNp09.
 
+Brain view: a front view built from the neurons' real cell-body positions. Each
+neuron is drawn as a fiber from its cell body toward the center of its synaptic
+partners, colored by direction, and glows when it fires above its calm rate.
+Real neuron shapes aren't bundled, so the fibers are estimates. B toggles a big view.
+
 Tracking: every neuron's spikes are counted into its group each 5 ms step. Each
 group's rate is compared with its own calm baseline, a 10 s average taken only
 while nothing has touched the fly for 2 s, so hits don't inflate "normal".
@@ -55,6 +60,7 @@ import time
 
 import numpy as np
 import pygame
+import scipy.sparse as sp
 from pygame import gfxdraw
 
 W, H = 1280, 760
@@ -101,8 +107,6 @@ POPS = (  # population name, superclasses
     ("nerve cord", ("vnc_intrinsic", "vnc_tbc")),
     ("motor neurons", ("vnc_motor", "cb_motor", "vnc_efferent", "cb_efferent", "efferent_ascending", "efferent_descending")),
 )
-POP_TINT = ((90, 70, 40), (40, 70, 110), (60, 90, 120), (90, 60, 110), (110, 70, 80), (60, 110, 90),
-            (120, 100, 50), (70, 80, 120), (110, 90, 70))
 # x calm baseline. Probed over 60 s with no touch the maxima were jump 2.6, run 1.8, kick 1.7; typical hits reach
 # jump 4.6 (head), run 2.9-3.8 (body), kick 2.0-2.8 (legs). walk/back/turn sit between their spontaneous p99 and
 # p99.9 so the fly wanders on its own every so often.
@@ -160,7 +164,6 @@ class Brain:
             sizes.append(int(m.sum()))
         self.names.append("whole brain")
         sizes.append(g.n)
-        self.pop_tint = np.array([POP_TINT[i] if i >= 0 else (40, 40, 40) for i in range(-1, len(POPS))], np.float32)
 
         G = len(self.names)
         self.col = {n: i for i, n in enumerate(self.names)}
@@ -326,6 +329,84 @@ class Brain:
         if last <= first:
             return np.zeros((0, len(self.names)), np.float32)
         return self.hist[np.arange(first, last) % HIST].copy()
+
+
+# --- brain view ----------------------------------------------------------------
+VIEW_X, VIEW_Y, VIEW_ZCUT = (0.0, 96000.0), (2000.0, 54000.0), 60000.0   # front view of the brain; +y is ventral
+VIEW_SIZES = {"panel": (356, 193), "big": (860, 466)}
+
+
+class BrainView:
+    """Front view of the brain that lights up with the live sim.
+
+    Every neuron is a fiber from its real cell body (MaleCNS soma positions) to the synapse-weighted center of its
+    partners' cell bodies, with a tuft of points there for its arbor. Neurons without a soma in the data (most sensory
+    neurons) are just the tuft. Real neuron shapes aren't in the pack, so fibers are estimates. Color is the fiber's
+    direction (red left-right, green up-down, blue front-back); brightness is how far a neuron fires above its own
+    calm rate, on top of a dim image of the whole brain. Neurons in the nerve cord are cut off at the neck.
+    """
+
+    FIBER, ARBOR = 18, 3
+
+    def __init__(self, soma: np.ndarray, W, seed: int = 1):
+        rng = np.random.default_rng(seed)
+        n = len(soma)
+        has = ~np.isnan(soma[:, 0])
+        S = np.nan_to_num(soma).astype(np.float32)
+        M = abs(W).astype(np.float32)
+        M = (M + M.T).tocsr()
+        tot = M @ has.astype(np.float32)
+        ok = tot > 0
+        A = (M @ (S * has[:, None])) / np.maximum(tot, 1e-6)[:, None]
+        start = np.where(has[:, None], S, A)
+        d = A - start
+        length = np.linalg.norm(d, axis=1)
+        rand = np.abs(rng.normal(size=(n, 3))).astype(np.float32)
+        dirv = np.where((length > 1)[:, None], np.abs(d) / np.maximum(length, 1)[:, None], rand / np.linalg.norm(rand, axis=1)[:, None])
+        col = dirv ** 2
+        col = col / col.max(axis=1, keepdims=True)                   # saturated direction color
+        self.col = (0.06 + 0.94 * col).astype(np.float32)
+
+        t = np.linspace(0, 1, self.FIBER, dtype=np.float32)[None, :, None]
+        bend = rng.normal(size=(n, 3)).astype(np.float32) * (0.12 * length)[:, None]
+        mid = (start + A) / 2 + bend
+        fiber = (1 - t) ** 2 * start[:, None] + 2 * (1 - t) * t * mid[:, None] + t ** 2 * A[:, None]
+        r = np.clip(0.05 * length, 400, 1600)
+        arbor = A[:, None] + rng.normal(size=(n, self.ARBOR, 3)).astype(np.float32) * r[:, None, None]
+        pts = np.concatenate([fiber, arbor], 1)                      # (n, samples, 3)
+        wts = np.concatenate([np.ones(self.FIBER), np.full(self.ARBOR, 2.0)]).astype(np.float32)
+        nid = np.broadcast_to(np.arange(n)[:, None], pts.shape[:2])
+        keep = ok[:, None] & (pts[..., 2] < VIEW_ZCUT)
+
+        self.M, self.base, self.gain = {}, {}, {}
+        for key, (w, h) in VIEW_SIZES.items():
+            px = ((pts[..., 0] - VIEW_X[0]) / (VIEW_X[1] - VIEW_X[0]) * w).astype(np.int32)
+            py = ((pts[..., 1] - VIEW_Y[0]) / (VIEW_Y[1] - VIEW_Y[0]) * h).astype(np.int32)
+            m = keep & (px >= 0) & (px < w) & (py >= 0) & (py < h)
+            P = sp.coo_array((np.broadcast_to(wts, pts.shape[:2])[m], ((py * w + px)[m], nid[m])), shape=(w * h, n)).tocsr()
+            self.M[key] = P
+            struct = P @ self.col
+            p99 = float(np.percentile(struct.max(1), 99.0)) or 1.0
+            self.base[key] = struct * (0.5 / p99)
+            self.gain[key] = 3.2 / p99
+        self.calm = np.full(n, 0.025, np.float32)                   # per-neuron calm rate, spikes per step
+
+    def render(self, key: str, rates: np.ndarray, learn: bool) -> pygame.Surface:
+        if learn:
+            self.calm += (rates - self.calm) * 0.01
+        r = rates / 0.025                                            # 1.0 = 5 Hz
+        excess = np.maximum(r - self.calm / 0.025 - 0.3, 0)
+        act = (0.04 * r + 2.2 * excess).astype(np.float32)
+        light = (self.M[key] @ (act[:, None] * self.col)) * self.gain[key]
+        w, h = VIEW_SIZES[key]
+        img = (255 * (1 - np.exp(-(self.base[key] + light)))).astype(np.uint8)
+        surf = pygame.image.frombuffer(img.tobytes(), (w, h), "RGB").copy()
+        # bloom from the firing only, so the wiring stays sharp and activity glows
+        hot = (255 * (1 - np.exp(-0.6 * light))).astype(np.uint8)
+        glow = pygame.image.frombuffer(hot.tobytes(), (w, h), "RGB")
+        glow = pygame.transform.smoothscale(pygame.transform.smoothscale(glow, (w // 6, h // 6)), (w, h))
+        surf.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        return surf
 
 
 # --- fly ragdoll ---------------------------------------------------------------
@@ -736,7 +817,7 @@ def make_shadow() -> pygame.Surface:
 
 
 class Game:
-    def __init__(self, screen, brain: Brain, layout_xy: np.ndarray):
+    def __init__(self, screen, brain: Brain, view: BrainView):
         self.screen, self.brain = screen, brain
         self.tool = 0
         self.bucks = 0
@@ -749,7 +830,13 @@ class Game:
         self.f_big = pygame.font.Font(pygame.font.match_font("impact,arialblack,arial"), 40)
         self.bg = make_background()
         self.shadow = make_shadow()
-        self._init_neural(layout_xy)
+        self.view = view
+        self.view_surf: dict[str, pygame.Surface] = {}
+        self.view_rect = pygame.Rect(0, 0, 0, 0)
+        self.big_view = False
+        self.view_stop = False
+        view.calm[:] = brain.sim.activity.rates()   # the warmed-up brain's own resting rates
+        threading.Thread(target=self._view_loop, name="brain-view", daemon=True).start()
         self.new_fly()
 
     def new_fly(self) -> None:
@@ -778,24 +865,35 @@ class Game:
         if self.brain.dead:
             self.brain.revive()
 
-    # neural image, same approach as ui/dashboard.py, tinted by population
-    def _init_neural(self, xy: np.ndarray) -> None:
-        self.nw, self.nh = W - PLAY_W - 24, 236
-        px = np.clip((xy[:, 0] * (self.nw - 1)).astype(np.int32), 0, self.nw - 1)
-        py = np.clip(((1 - xy[:, 1]) * (self.nh - 1)).astype(np.int32), 0, self.nh - 1)
-        self.n_flat = py * self.nw + px
-        P = self.nw * self.nh
-        counts = np.bincount(self.n_flat, minlength=P).astype(np.float32)
-        self.n_inv = np.where(counts > 0, 1.0 / np.maximum(counts, 1), 0).astype(np.float32)
-        tint = self.brain.pop_tint[self.brain.pop_id + 1]
-        col = np.stack([np.bincount(self.n_flat, weights=tint[:, k], minlength=P) for k in range(3)], 1) * self.n_inv[:, None]
-        dens = (np.log1p(counts) / np.log1p(counts.max()))[:, None]
-        self.n_base = np.clip(col * (0.25 + 0.75 * dens) * 0.8 * (counts[:, None] > 0) + 8, 0, 255).astype(np.uint8)
-        t = np.linspace(0, 1, 256, dtype=np.float32)[:, None]
-        self.n_lut = np.clip(np.array([20, 150, 210]) * t ** 0.55 + np.array([235, 105, 45]) * t ** 2.5, 0, 255).astype(np.uint8)
-        self.n_img = np.zeros((P, 3), np.uint8)
-        self.n_surf = None
-        self.n_frame = 0
+    def _view_loop(self) -> None:
+        """Renders the brain view at ~20 Hz on its own thread (10-25 ms per render; the sparse math releases the GIL)."""
+        while not self.view_stop:
+            t0 = time.perf_counter()
+            key = "big" if self.big_view else "panel"
+            br = self.brain
+            calm = not br.dead and br.steps - br.last_poke > CALM_STEPS
+            self.view_surf[key] = self.view.render(key, br.sim.activity.rates(), learn=calm)
+            time.sleep(max(0.005, 0.05 - (time.perf_counter() - t0)))
+
+    def _view_surface(self, key: str) -> pygame.Surface:
+        surf = self.view_surf.get(key)
+        if surf is None:
+            surf = pygame.Surface(VIEW_SIZES[key])
+            surf.fill((4, 5, 8))
+        return surf
+
+    def _draw_big_view(self, surf) -> None:
+        w, h = VIEW_SIZES["big"]
+        veil = pygame.Surface((PLAY_W, h + 96), pygame.SRCALPHA)
+        pygame.draw.rect(veil, (4, 5, 8, 235), veil.get_rect(), border_radius=14)
+        surf.blit(veil, (0, 8))
+        surf.blit(self._view_surface("big"), ((PLAY_W - w) // 2, 58))
+        self._text(surf, "THE FLY'S BRAIN, LIVE", (22, 18), INK, self.f_head)
+        self._text(surf, "front view   |   color = fiber direction: red left-right, green up-down, blue front-back   |   "
+                         "bright = firing above normal", (24, 42), LABEL, self.f_small)
+        self._text(surf, "B to close", (PLAY_W - 22, 20), LABEL, self.f_small, "topright")
+        self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
+                   (24, 58 + h + 14), DIM, self.f_small)
 
     def hit(self, i: int, strength: float) -> None:
         key = particle_region(i)
@@ -1137,6 +1235,8 @@ class Game:
             pygame.draw.line(arena, (255, 255, 255), (mouse[0], mouse[1] - 14), (mouse[0], mouse[1] + 14))
         if self.report is not None:
             self._draw_autopsy(arena, now)
+        elif self.big_view:
+            self._draw_big_view(arena)
 
         shake = (0, 0)
         if now < self.shake_until:
@@ -1178,7 +1278,7 @@ class Game:
             pygame.draw.rect(surf, col, (bx, by, max(18, int(bw * frac)), 18), border_radius=9)
             pygame.draw.rect(surf, tuple(min(255, c + 60) for c in col), (bx + 6, by + 3, max(6, int(bw * frac) - 12), 4), border_radius=2)
         self._text(surf, "DEAD" if fly.dead else f"HEALTH {fly.health:.0f}", (PLAY_W // 2, by + 9), INK, self.f_bold, "center")
-        self._text(surf, "1-5 tools   R new fly   Esc quit", (PLAY_W - 14, 14), LABEL, self.f_small, "topright")
+        self._text(surf, "1-5 tools   B brain   R new fly   Esc quit", (PLAY_W - 14, 14), LABEL, self.f_small, "topright")
         self._draw_pain(surf)
 
     def _draw_pain(self, surf) -> None:
@@ -1240,20 +1340,15 @@ class Game:
         aacircle(scr, (r.x - 10, r.centery), 4, scol if br.dead or int(now * 2) % 2 else DIM)
         self._text(scr, f"MaleCNS v1.0 connectome, {br.n:,} neurons", (x, 34), LABEL, self.f_small)
 
-        self.n_frame += 1
-        if self.n_surf is None or self.n_frame % 2 == 0:
-            sim = br.sim
-            rates = sim.activity.rates()
-            mean = np.bincount(self.n_flat, weights=rates, minlength=self.nw * self.nh).astype(np.float32) * self.n_inv
-            q = np.clip(mean * (1000.0 / sim.p.dt_ms) * 255.0 / 15.0, 0, 255).astype(np.uint8)
-            recent = sim.activity.raster()
-            if recent:
-                q[self.n_flat[recent[-1]]] = np.maximum(q[self.n_flat[recent[-1]]], 170)
-            np.maximum(self.n_base, self.n_lut[q], out=self.n_img)
-            self.n_surf = pygame.image.frombuffer(self.n_img.tobytes(), (self.nw, self.nh), "RGB").copy()
-        scr.blit(self.n_surf, (x, 54))
-        pygame.draw.rect(scr, BORDER, (x - 1, 53, self.nw + 2, self.nh + 2), 1, border_radius=3)
-        y = 54 + self.nh + 10
+        nw, nh = VIEW_SIZES["panel"]
+        self.view_rect = pygame.Rect(x, 54, nw, nh)
+        if self.big_view:                            # the big view is showing it; don't pay for both renders
+            pygame.draw.rect(scr, (4, 5, 8), self.view_rect)
+            self._text(scr, "shown in big view", self.view_rect.center, DIM, self.f_small, "center")
+        else:
+            scr.blit(self._view_surface("panel"), (x, 54))
+            self._text(scr, "B: big view", (x + nw - 6, 54 + nh - 16), LABEL, self.f_small, "topright")
+        y = 54 + nh + 12
 
         bw = W - x - 12
         y = self._card(scr, x, y, bw, "TOUCH NEURONS", "spikes/s per neuron", 4)
@@ -1430,10 +1525,15 @@ class Game:
                 self.tool = ev.key - pygame.K_1
             elif ev.key == pygame.K_r:
                 self.new_fly()
+            elif ev.key == pygame.K_b:
+                self.big_view = not self.big_view
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             if self.report is not None:
                 if getattr(self, "new_fly_rect", None) and self.new_fly_rect.collidepoint(ev.pos):
                     self.new_fly()
+                return True
+            if self.view_rect.collidepoint(ev.pos):
+                self.big_view = not self.big_view
                 return True
             for k, r in enumerate(getattr(self, "tool_rects", [])):
                 if r.collidepoint(ev.pos):
@@ -1453,20 +1553,15 @@ def load_brain(out: dict) -> None:
         from connectome.sim import LIFParams, LIFSim
 
         pack = brainpack.find()
-        if pack is not None:                         # packaged build: the compact brain pack
-            out["stage"] = "unpacking the fly's brain"
-            g, W, out["layout"] = brainpack.load(pack)
-            out["stage"] = f"wiring {g.n:,} neurons"
-            sim = LIFSim(None, LIFParams(), W_in=W)
-        else:                                        # source checkout: the full graph and layout caches
-            from connectome.layout import load_layout
-            from connectome.loader import load_graph
-
-            out["stage"] = "loading connectome graph"
-            g = load_graph()
-            out["stage"] = f"building synapse matrix for {g.n:,} neurons"
-            sim = LIFSim(g, LIFParams())
-            out["layout"] = load_layout(g)
+        if pack is None:                             # source checkout: pack the connectome once (~30 s)
+            out["stage"] = "building the brain pack (first run only)"
+            pack = brainpack.build()
+        out["stage"] = "unpacking the fly's brain"
+        g, weights, soma = brainpack.load(pack)
+        out["stage"] = f"wiring {g.n:,} neurons"
+        sim = LIFSim(None, LIFParams(), W_in=weights)
+        out["stage"] = "placing neurons"
+        out["view"] = BrainView(soma, weights)
         brain = Brain(g, sim)
         out["stage"] = "waking the fly up"
         brain.warmup()
@@ -1498,7 +1593,7 @@ def main() -> int:
 
     brain = state["brain"]
     brain.start()
-    game = Game(screen, brain, state["layout"])
+    game = Game(screen, brain, state["view"])
     running = True
     t_game = time.perf_counter()
     while running:

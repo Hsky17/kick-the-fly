@@ -13,6 +13,9 @@ all 166,700 neurons simulated live while you throw, flick, swat, bomb and torch 
 - **Its reactions come from its descending neurons:** jumping, running, kicking, walking, backing up and turning.
 - **Pain meter:** built from touch overload, heat-sensor activity and descending-neuron alarm. The **blowtorch** maxes it out.
 - **Death and autopsy:** it can die. The autopsy compares every brain region's last 2 s alive with its calm baseline, and shows pain on a timeline.
+- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions. It lights up as the fly gets hurt. Press **B** for the big view.
+
+![brain lighting up under the blowtorch](docs/brain.png)
 
 ![autopsy](docs/autopsy.png)
 
@@ -32,14 +35,12 @@ Needs Python 3.11 and about 1.5 GB of disk for the connectome.
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m connectome.loader build     # downloads the connectome (~1.1 GB) and builds data/graph.pkl
-.venv\Scripts\python -m connectome.layout build     # brain map layout for the side panel (~2 min)
-.venv\Scripts\python kick_the_fly.py
+.venv\Scripts\python kick_the_fly.py                # the first run packs data/kick_brain.npz (~30 s)
 ```
 
-To build the exe yourself:
+To build the exe yourself (after one run from source, so the brain pack exists):
 
 ```powershell
-.venv\Scripts\python brainpack.py build    # data/kick_brain.npz: the ~38 MB brain pack bundled into the exe
 powershell -ExecutionPolicy Bypass -File build_exe.ps1
 ```
 
@@ -52,6 +53,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | 3 | fly swatter |
 | 4 | bomb |
 | 5 | blowtorch: hold to burn, pins pain at 100 |
+| B | big live brain view (or click the brain panel) |
 | R | new fly |
 | Esc | quit |
 
@@ -68,6 +70,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - Jump direction, stun and damage.
 - The pain index. The adult connectome has no neurons annotated as nociceptors, so pain is an estimate built from real signals, not a measurement of what the fly feels.
 - Death. A sim can't die on its own, so on death its tonic drive is switched off and activity fades out.
+- Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
 
 The full mapping is in the docstring at the top of `kick_the_fly.py`.
 
@@ -75,4 +78,4 @@ The full mapping is in the docstring at the top of `kick_the_fly.py`.
 
 The connectome data is Janelia FlyEM MaleCNS v1.0, a collaboration between HHMI Janelia, the University of Cambridge, the MRC Laboratory of Molecular Biology and Google Research. It is licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and available at [male-cns.janelia.org](https://male-cns.janelia.org/download/).
 
-The exe bundles a compact pack derived from that data. The pack keeps the signed synapse counts, the neuron labels and a 2D layout, and is otherwise unmodified.
+The exe bundles a compact pack derived from that data. The pack keeps the signed synapse counts, the neuron labels and the cell-body positions, and is otherwise unmodified.
