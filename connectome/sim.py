@@ -20,11 +20,13 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse as sp
 
-from connectome.loader import Graph, load_graph
+if TYPE_CHECKING:  # the loader needs pyarrow; packaged builds that pass W_in never import it
+    from connectome.loader import Graph
 
 
 @dataclass
@@ -86,16 +88,19 @@ class ActivityBuffer:
 
 
 class LIFSim:
-    def __init__(self, graph: Graph, params: LIFParams | None = None, seed: int = 0):
+    def __init__(self, graph: Graph | None, params: LIFParams | None = None, seed: int = 0,
+                 W_in: "sp.csr_array | None" = None):
+        """Build W_in from the graph, or pass a prebuilt rate-normalized W_in [post, pre] (graph may then be None)."""
         self.p = params or LIFParams()
-        self.n = graph.n
         t = time.perf_counter()
-        signed = graph.adjacency                        # [pre, post]
-        counts_in = np.asarray(graph.weights.sum(axis=0)).ravel().astype(np.float32)  # per post
-        inv = np.where(counts_in > 0, 1.0 / np.maximum(counts_in, 1), 0).astype(np.float32)
-        W_in = signed.T.tocsr()                         # [post, pre]
-        W_in = sp.diags_array(inv) @ W_in
-        W_in.eliminate_zeros()                          # zero-sign contacts only matter for the normalization
+        if W_in is None:
+            signed = graph.adjacency                        # [pre, post]
+            counts_in = np.asarray(graph.weights.sum(axis=0)).ravel().astype(np.float32)  # per post
+            inv = np.where(counts_in > 0, 1.0 / np.maximum(counts_in, 1), 0).astype(np.float32)
+            W_in = signed.T.tocsr()                         # [post, pre]
+            W_in = sp.diags_array(inv) @ W_in
+            W_in.eliminate_zeros()                          # zero-sign contacts only matter for the normalization
+        self.n = W_in.shape[0]
         self.W_csr = W_in.astype(np.float32).tocsr()
         self.W_csc = self.W_csr.tocsc()
         self.build_s = time.perf_counter() - t
@@ -170,6 +175,7 @@ class LIFSim:
 
 
 def _bench(steps: int) -> None:
+    from connectome.loader import load_graph
     from connectome.retina import CH_LUM, RetinaEncoder, RetinaMap
 
     t = time.perf_counter()

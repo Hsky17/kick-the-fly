@@ -1,3 +1,7 @@
 .venv/
+.venv-build/
 __pycache__/
 data/
+build/
+dist/
+*.spec

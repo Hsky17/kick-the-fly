@@ -1449,15 +1449,24 @@ class Game:
 
 def load_brain(out: dict) -> None:
     try:
-        from connectome.layout import load_layout
-        from connectome.loader import load_graph
+        import brainpack
         from connectome.sim import LIFParams, LIFSim
 
-        out["stage"] = "loading connectome graph"
-        g = load_graph()
-        out["stage"] = f"building synapse matrix for {g.n:,} neurons"
-        sim = LIFSim(g, LIFParams())
-        out["layout"] = load_layout(g)
+        pack = brainpack.find()
+        if pack is not None:                         # packaged build: the compact brain pack
+            out["stage"] = "unpacking the fly's brain"
+            g, W, out["layout"] = brainpack.load(pack)
+            out["stage"] = f"wiring {g.n:,} neurons"
+            sim = LIFSim(None, LIFParams(), W_in=W)
+        else:                                        # source checkout: the full graph and layout caches
+            from connectome.layout import load_layout
+            from connectome.loader import load_graph
+
+            out["stage"] = "loading connectome graph"
+            g = load_graph()
+            out["stage"] = f"building synapse matrix for {g.n:,} neurons"
+            sim = LIFSim(g, LIFParams())
+            out["layout"] = load_layout(g)
         brain = Brain(g, sim)
         out["stage"] = "waking the fly up"
         brain.warmup()
@@ -1467,6 +1476,7 @@ def load_brain(out: dict) -> None:
 
 
 def main() -> int:
+    smoke = float(sys.argv[sys.argv.index("--smoke") + 1]) if "--smoke" in sys.argv else 0.0  # build check: run N s, exit
     pygame.init()
     pygame.display.set_caption("Kick the Fly")
     screen = pygame.display.set_mode((W, H))
@@ -1490,8 +1500,18 @@ def main() -> int:
     brain.start()
     game = Game(screen, brain, state["layout"])
     running = True
+    t_game = time.perf_counter()
     while running:
         now = time.perf_counter()
+        if smoke and now - t_game > smoke:
+            status = f"smoke ok: {brain.n:,} neurons, {brain.steps_per_s:.0f} steps/s"
+            print(status)
+            if len(sys.argv) > sys.argv.index("--smoke") + 2:   # optional screenshot path; the exe has no console
+                shot = sys.argv[sys.argv.index("--smoke") + 2]
+                pygame.image.save(screen, shot)
+                with open(shot + ".txt", "w") as f:
+                    f.write(status)
+            break
         mouse = pygame.mouse.get_pos()
         for ev in pygame.event.get():
             running = game.handle(ev, now) and running
@@ -1505,4 +1525,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        if getattr(sys, "frozen", False):            # no console in the exe: leave the traceback next to it
+            import traceback
+            from pathlib import Path
+
+            (Path(sys.executable).resolve().parent / "KickTheFly-crash.txt").write_text(traceback.format_exc())
+        raise

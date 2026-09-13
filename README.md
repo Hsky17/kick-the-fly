@@ -16,7 +16,15 @@ all 166,700 neurons simulated live while you throw, flick, swat, bomb and torch 
 
 ![autopsy](docs/autopsy.png)
 
-## Run
+## Download and play (Windows)
+
+**[Download KickTheFly.exe](https://github.com/legendarylolo318-cloud/kick-the-fly/releases/latest/download/KickTheFly.exe)** (about 90 MB) and double-click it. You don't need to install anything, and the fly's whole brain is inside the exe.
+
+- **Startup:** the first launch takes a few seconds while the exe unpacks.
+- **Windows warning:** the exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **If it crashes:** it writes `KickTheFly-crash.txt` next to the exe.
+
+## Run from source
 
 Needs Python 3.11 and about 1.5 GB of disk for the connectome.
 
@@ -26,6 +34,13 @@ python -m venv .venv
 .venv\Scripts\python -m connectome.loader build     # downloads the connectome (~1.1 GB) and builds data/graph.pkl
 .venv\Scripts\python -m connectome.layout build     # brain map layout for the side panel (~2 min)
 .venv\Scripts\python kick_the_fly.py
+```
+
+To build the exe yourself:
+
+```powershell
+.venv\Scripts\python brainpack.py build    # data/kick_brain.npz: the ~38 MB brain pack bundled into the exe
+powershell -ExecutionPolicy Bypass -File build_exe.ps1
 ```
 
 ## Controls
@@ -56,4 +71,8 @@ python -m venv .venv
 
 The full mapping is in the docstring at the top of `kick_the_fly.py`.
 
-Connectome data: Janelia FlyEM MaleCNS v1.0, downloaded from `gs://flyem-male-cns/v1.0/connectome-data/flat-connectome/`.
+## Credits
+
+The connectome data is Janelia FlyEM MaleCNS v1.0, a collaboration between HHMI Janelia, the University of Cambridge, the MRC Laboratory of Molecular Biology and Google Research. It is licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and available at [male-cns.janelia.org](https://male-cns.janelia.org/download/).
+
+The exe bundles a compact pack derived from that data. The pack keeps the signed synapse counts, the neuron labels and a 2D layout, and is otherwise unmodified.
