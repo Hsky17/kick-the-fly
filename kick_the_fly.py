@@ -40,6 +40,12 @@ fly feels:
                        held at its peak for ~1 s
 The blowtorch drives every touch and heat neuron at full strength, which pins it.
 
+Brake cleaner: the spray drives the fly's smell neurons (ORN_*, 2,635) and taste
+neurons (leg, labellar and pharyngeal GRNs) at full strength. Solvents like this
+depress nervous systems, so as the fly dissolves an inhibitory current grows on
+every neuron (game rule; its strength is not measured) and activity fades before
+it melts into a puddle.
+
 Death: health runs out from hits. A sim can't die on its own, so on death the
 tonic drive is cancelled with an inhibitory ramp over 1.5 s and the global gain
 controller is frozen. The autopsy compares each population's last 2 s alive
@@ -85,7 +91,8 @@ S_GOOD, S_WARN, S_CRIT = (12, 163, 12), (250, 178, 25), (208, 59, 59)
 SERIES = ((57, 135, 229), (217, 89, 38), (25, 158, 112))   # blue, orange, aqua
 
 # --- brain -------------------------------------------------------------------
-SENSE = {"head": ("BM_", "JO-"), "body": ("SNta",), "legs": ("SNpp",), "wing": ("WG",), "heat": ("TRN_",)}
+SENSE = {"head": ("BM_", "JO-"), "body": ("SNta",), "legs": ("SNpp",), "wing": ("WG",), "heat": ("TRN_",),
+         "smell": ("ORN_",), "taste": ("LgLG", "LgAG", "LB", "PhG", "claw_")}
 TOUCH = ("head", "body", "legs", "wing")
 MOTOR = (  # name, types, side, label
     ("jump", ("DNg85", "DNg48", "DNg37", "DNge067", "DNg29", "DNge132"), None, "head-touch DNs  > JUMP"),
@@ -181,6 +188,7 @@ class Brain:
         self._inhib = np.full(g.n, -0.4, np.float32)  # x ext_gain 4 = -1.6 per step, far past bias + noise
         self._stop = False
         self.death_step: int | None = None
+        self.sedation = 0.0                          # 0..1 share of the death inhibition, set by the game
         self.death_sample = 0
         self.death_base: np.ndarray | None = None
         self._revive = False
@@ -231,6 +239,8 @@ class Brain:
         if self.death_step is not None:
             ramp = min(1.0, (self.steps - self.death_step) / 300)
             spikes = self.sim.step(self._inhib * np.float32(ramp))
+        elif self.sedation > 0:                      # solvent depression while dissolving
+            spikes = self.sim.step(self._cur + self._inhib * np.float32(self.sedation))
         else:
             spikes = self.sim.step(self._cur if active else None)
         for _, (rows, _) in active:
@@ -246,7 +256,7 @@ class Brain:
         counts[-1] = len(on)
         inst = counts / self.g_size / self.dt
         self.fast += (inst - self.fast) * self.k_fast
-        if self.death_step is None and self.steps - self.last_poke > CALM_STEPS:
+        if self.death_step is None and self.sedation == 0 and self.steps - self.last_poke > CALM_STEPS:
             self.base += (self.fast - self.base) * self.k_base
         self.steps += 1
         if self.steps % 4 == 0:
@@ -472,6 +482,9 @@ class Fly:
         self.dead_at: float | None = None
         self.char = 0.0                   # scorch from the blowtorch
         self.burn_until = 0.0
+        self.soak = 0.0                   # brake cleaner on the body, 0..1
+        self.melt = 0.0                   # how dissolved it is; 1 = puddle
+        self.dissolved_at: float | None = None
 
     @property
     def dead(self) -> bool:
@@ -505,9 +518,10 @@ class Fly:
         else:
             self.recover = min(1.0, self.recover + 1 / 30)
         height = (FLOOR - STAND) - self.p[THX, 1]
-        strength = self.recover * float(np.clip(1 - height / 160, 0, 1))
+        strength = self.recover * float(np.clip(1 - height / 160, 0, 1)) * (1 - self.melt) ** 0.5
         if self.grabbed is not None:
             strength = 0.0
+        shrink = 1 - 0.35 * self.melt                        # dissolving: the body shrinks and slumps
 
         v = (self.p - self.prev) * (0.992 - 0.12 * strength)  # standing legs also damp the body
         speed = np.hypot(*v.T)
@@ -538,7 +552,7 @@ class Fly:
                     continue
                 d = self.p[b] - self.p[a]
                 dist = math.hypot(d[0], d[1]) or 1e-6
-                corr = d * (0.5 * stiff * (dist - rest) / dist)
+                corr = d * (0.5 * stiff * (dist - rest * shrink) / dist)
                 self.p[a] += corr
                 self.p[b] -= corr
             self._clamp()
@@ -561,9 +575,10 @@ class Fly:
         if vx:
             self.phase += 0.12 * abs(vx)
         bob = 1.5 * math.sin(now * 2.2)
-        off = REST.copy()
+        s = 1 - 0.35 * self.melt
+        off = REST * s
         off[:, 0] *= self.facing
-        tgt = off + (self.anchor_x, FLOOR - STAND + bob)
+        tgt = off + (self.anchor_x, FLOOR - STAND * s + bob)
         for leg in range(6):
             ph = self.phase + math.pi * TRIPOD[leg]
             if vx:
@@ -628,16 +643,40 @@ def thick_line(surf, a, b, w: float, col) -> None:
     aacircle(surf, b, w / 2, col)
 
 
-def shade(col, hurt: float, dead: bool, char: float = 0.0):
+def shade(col, hurt: float, dead: bool, char: float = 0.0, melt: float = 0.0):
     if char:
         col = tuple(c * (1 - 0.75 * char) + 22 * char for c in col)
     if dead:
         g = sum(col) / 3
         col = tuple(0.45 * c + 0.55 * g * 0.8 for c in col)
-    return tuple(int(min(255, c + (255 - c) * hurt * 0.7)) for c in col)
+    if melt:                                          # dissolving: sickly, glassy, see-through
+        col = tuple(c * (1 - 0.6 * melt) + t * 0.6 * melt for c, t in zip(col, (150, 160, 115)))
+    rgb = tuple(int(min(255, c + (255 - c) * hurt * 0.7)) for c in col)
+    return (*rgb, int(255 * (1 - 0.6 * melt))) if melt else rgb
+
+
+def draw_puddle(surf: pygame.Surface, fly: Fly, now: float) -> None:
+    """What's left after the brake cleaner: a spreading puddle, a wing and two red eye specks."""
+    x = float(fly.p[THX, 0])
+    e = min(1.0, (now - fly.dissolved_at) / 1.5)
+    w = 70 + 60 * e
+    gfxdraw.filled_ellipse(surf, int(x), FLOOR - 3, int(w), int(9 + 3 * e), (110, 105, 60, 170))
+    gfxdraw.aaellipse(surf, int(x), FLOOR - 3, int(w), int(9 + 3 * e), (160, 150, 90, 200))
+    gfxdraw.filled_ellipse(surf, int(x - w * 0.3), FLOOR - 5, int(w * 0.35), 4, (185, 175, 120, 120))
+    wing = ellipse_pts((x + 22, FLOOR - 8), 26, 6, 0.15)
+    gfxdraw.filled_polygon(surf, [(int(a), int(b)) for a, b in wing], (205, 218, 238, 90))
+    for dx in (-8, 5):
+        aacircle(surf, (x + dx, FLOOR - 6), 2.5, (180, 30, 26))
+    for k in range(3):                               # slow bubbles popping on the surface
+        ph = (now * 0.8 + k / 3) % 1.0
+        bx = x + (k - 1) * w * 0.45
+        gfxdraw.aacircle(surf, int(bx), int(FLOOR - 6 - 10 * ph), int(2 + 3 * ph), (200, 200, 160, int(200 * (1 - ph))))
 
 
 def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
+    if fly.dissolved_at is not None:
+        draw_puddle(surf, fly, now)
+        return
     p = fly.p
     axis = p[HEAD] - p[ABD]
     ang = math.atan2(axis[1], axis[0])
@@ -647,9 +686,10 @@ def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
         up = -up
     hurt, dead = fly.hurt, fly.dead
     flap = not dead and (now < fly.escape_until or (fly.grabbed is not None and random.random() < 0.3))
+    k_ = 1 - 0.4 * fly.melt                           # parts shrink as it dissolves
 
     def c(col):
-        return shade(col, hurt, dead, fly.char)
+        return shade(col, hurt, dead, fly.char, fly.melt)
 
     def hip(k):
         return p[THX] + fwd * (14 - 12 * (k % 3)) + up * -10
@@ -680,20 +720,20 @@ def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
     ac = p[ABD]
     aang = math.atan2(*(p[THX] - p[ABD])[::-1])
     along = np.array([math.cos(aang), math.sin(aang)])
-    aapoly(surf, ellipse_pts(ac, 30, 21, aang), c((176, 116, 44)))
+    aapoly(surf, ellipse_pts(ac, 30 * k_, 21 * k_, aang), c((176, 116, 44)))
     for s in (-15, -4, 7):
-        aapoly(surf, ellipse_pts(ac + along * s, 4, 19, aang, 14), c((82, 52, 24)))
-    aapoly(surf, ellipse_pts(ac + up * 7 + along * 4, 16, 6, aang, 16), c((214, 158, 80)))   # sheen
-    aapoly(surf, ellipse_pts(p[THX], 23, 19, ang), c((156, 102, 40)))
-    aapoly(surf, ellipse_pts(p[THX] + up * 8, 13, 6, ang, 16), c((196, 140, 70)))
+        aapoly(surf, ellipse_pts(ac + along * s * k_, 4 * k_, 19 * k_, aang, 14), c((82, 52, 24)))
+    aapoly(surf, ellipse_pts(ac + (up * 7 + along * 4) * k_, 16 * k_, 6 * k_, aang, 16), c((214, 158, 80)))   # sheen
+    aapoly(surf, ellipse_pts(p[THX], 23 * k_, 19 * k_, ang), c((156, 102, 40)))
+    aapoly(surf, ellipse_pts(p[THX] + up * 8 * k_, 13 * k_, 6 * k_, ang, 16), c((196, 140, 70)))
     for k in range(5):                                # bristles
         b0 = p[THX] + up * 17 + fwd * (k * 6 - 12)
         b1 = b0 + up * 7 - fwd * 3
         gfxdraw.line(surf, int(b0[0]), int(b0[1]), int(b1[0]), int(b1[1]), c((60, 40, 18)))
     hc = p[HEAD]
-    aacircle(surf, hc, 15, c((146, 96, 38)))
-    eye = hc + fwd * 2 + up * 2
-    aapoly(surf, ellipse_pts(eye, 11, 12, ang), c((196, 30, 26)))
+    aacircle(surf, hc, 15 * k_, c((146, 96, 38)))
+    eye = hc + (fwd * 2 + up * 2) * k_
+    aapoly(surf, ellipse_pts(eye, 11 * k_, 12 * k_, ang), c((196, 30, 26)))
     if dead:
         for sgn in (-1, 1):
             a0 = eye + np.array([-6, -6 * sgn])
@@ -712,6 +752,12 @@ def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
         leg(k, c((86, 58, 26)), 5.5)
     wing(0, 75)
 
+    if fly.soak > 0.05:                              # foam where the solvent is eating in
+        rng = random.Random(int(now * 8))
+        for _ in range(int(4 + 10 * fly.soak)):
+            i = rng.choice((HEAD, THX, ABD, ABD))
+            fx, fy = p[i] + (rng.uniform(-22, 22) * k_, rng.uniform(-20, 16) * k_)
+            gfxdraw.aacircle(surf, int(fx), int(fy), rng.randint(2, 5), (235, 240, 220, int(90 + 120 * fly.soak)))
     if dead:
         e = min(1.0, (now - fly.dead_at) / 2.0)
         halo = hc + np.array([0, -34 - 10 * e])
@@ -766,6 +812,11 @@ def draw_icon(surf, name: str, c, col) -> None:
     elif name == "swatter":
         aapoly(surf, [(x - 3, y - 13), (x + 11, y - 13), (x + 11, y + 1), (x - 3, y + 1)], col)
         thick_line(surf, (x + 2, y + 1), (x - 8, y + 12), 3, col)
+    elif name == "cleaner":
+        aapoly(surf, [(x - 8, y - 6), (x + 2, y - 6), (x + 2, y + 13), (x - 8, y + 13)], col)
+        aapoly(surf, [(x - 6, y - 11), (x, y - 11), (x, y - 6), (x - 6, y - 6)], col)
+        for k in range(3):
+            aacircle(surf, (x + 8 + k * 4, y - 12 + (k - 1) * 4), 2, (160, 220, 255))
     elif name == "torch":
         aapoly(surf, [(x - 12, y + 2), (x + 2, y - 4), (x + 5, y + 2), (x - 9, y + 8)], col)
         aapoly(surf, [(x + 4, y - 4), (x + 16, y - 14), (x + 11, y - 1)], (255, 140, 40))
@@ -778,7 +829,7 @@ def draw_icon(surf, name: str, c, col) -> None:
 
 # --- game ----------------------------------------------------------------------
 TOOLS = (("hand", "HAND", "drag + throw"), ("flick", "FLICK", "click"), ("swatter", "SWATTER", "click"),
-         ("bomb", "BOMB", "click to drop"), ("torch", "TORCH", "hold: max pain"))
+         ("bomb", "BOMB", "click to drop"), ("torch", "TORCH", "hold: max pain"), ("cleaner", "CLEANER", "hold: melt it"))
 TORCH_KEYS = (("head", None), ("body", None), ("legs", "L"), ("legs", "R"), ("wing", "L"), ("wing", "R"), ("heat", None))
 OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
 AUTOPSY_DELAY = 3.0          # seconds of flatline shown before the report
@@ -857,6 +908,8 @@ class Game:
         self.report: dict | None = None
         self.torching = False
         self.flames: list[list] = []
+        self.mist: list[list] = []
+        self.brain.sedation = 0.0
         self.pain = 0.0
         self.pain_parts = np.zeros(3)
         self.pain_peak = 0.0
@@ -871,7 +924,7 @@ class Game:
             t0 = time.perf_counter()
             key = "big" if self.big_view else "panel"
             br = self.brain
-            calm = not br.dead and br.steps - br.last_poke > CALM_STEPS
+            calm = not br.dead and br.sedation == 0 and br.steps - br.last_poke > CALM_STEPS
             self.view_surf[key] = self.view.render(key, br.sim.activity.rates(), learn=calm)
             time.sleep(max(0.005, 0.05 - (time.perf_counter() - t0)))
 
@@ -950,8 +1003,56 @@ class Game:
                 self.swats.append([pos, now, False])
         elif name == "bomb" and len(self.bombs) < 3:
             self.bombs.append({"p": np.array(pos, float), "v": np.zeros(2), "t": now})
-        elif name == "torch":
+        elif name in ("torch", "cleaner"):
             self.torching = True
+
+    def _spray(self, mouse, now: float) -> None:
+        """Brake cleaner mist toward the fly. Soaks the body (it dissolves) and hits the smell and taste neurons."""
+        fly = self.fly
+        nozzle = np.array(mouse, float)
+        to_fly = fly.p[THX] - nozzle
+        dist = float(np.hypot(*to_fly))
+        aim = to_fly / dist if dist > 1 else np.array([1.0, 0.0])
+        self.torch_aim = aim
+        for _ in range(5):
+            a = math.atan2(aim[1], aim[0]) + random.uniform(-0.3, 0.3)
+            sp = random.uniform(6, 10)
+            self.mist.append([nozzle[0], nozzle[1], math.cos(a) * sp, math.sin(a) * sp, now, random.uniform(0.35, 0.6)])
+        rel = fly.p - nozzle
+        d = np.hypot(*rel.T)
+        cosang = (rel @ aim) / np.maximum(d, 1e-6)
+        if fly.dissolved_at is not None or not np.any((d < 230) & (cosang > 0.8)):
+            return
+        fly.soak = min(1.0, fly.soak + 0.04)
+        fly.last_hit_x = nozzle[0]
+        if not fly.dead:
+            self.brain.poke("smell", None, 1.0)
+            self.brain.poke("taste", None, 0.8)
+            self.damage(0.12, "brake cleaner")
+            self.bucks += 1
+            if int(now * 2) != int((now - 1 / 60) * 2):
+                self.hits += 1
+            if random.random() < 0.02:
+                self.popup(fly.p[HEAD] + (0, -60), random.choice(("FSSSSH!", "MELTING!", "IT BURNS!")), (170, 230, 255))
+
+    def _dissolve(self, now: float) -> None:
+        """Soaked flies keep dissolving; the solvent also damps the whole brain (game rule, see docstring)."""
+        fly = self.fly
+        if fly.dissolved_at is not None:
+            return
+        if fly.soak > 0.02:
+            fly.melt = min(1.0, fly.melt + 0.0045 * fly.soak)
+            fly.soak *= 0.997
+            if not fly.dead:
+                self.damage(0.25 * fly.soak, "brake cleaner")
+        if not fly.dead:
+            self.brain.sedation = 0.25 * fly.melt ** 2.5          # mild at first, so it can still try to flee
+        if fly.melt >= 1.0:
+            fly.dissolved_at = now
+            self.puff((fly.p[THX, 0], FLOOR - 10), 14, 3)
+            self.popup(fly.p[THX] + (0, -60), "DISSOLVED", (170, 230, 255), force=True)
+            if not fly.dead:
+                self.damage(MAX_HEALTH, "brake cleaner")
 
     def _torch(self, mouse, now: float) -> None:
         """Flame jet from the cursor toward the fly. Heat reaches the whole body: every touch and heat neuron, full strength."""
@@ -1059,12 +1160,21 @@ class Game:
         self.dust = [d for d in self.dust if now - d[4] < d[5]]
         if self.torching and TOOLS[self.tool][0] == "torch" and self.report is None:
             self._torch(mouse, now)
+        if self.torching and TOOLS[self.tool][0] == "cleaner" and self.report is None:
+            self._spray(mouse, now)
+        self._dissolve(now)
         for fl in self.flames:
             fl[0] += fl[2]
             fl[1] += fl[3]
             fl[2] *= 0.96
             fl[3] = fl[3] * 0.96 - 0.25
         self.flames = [fl for fl in self.flames if now - fl[4] < fl[5]]
+        for m in self.mist:
+            m[0] += m[2]
+            m[1] += m[3]
+            m[2] *= 0.94
+            m[3] = m[3] * 0.94 + 0.05
+        self.mist = [m for m in self.mist if now - m[4] < m[5]]
 
         parts = br.pain_parts(br.fast, br.base)[0]
         parts[2] = max(parts[2], self.pain_parts[2] * 0.96)
@@ -1141,8 +1251,9 @@ class Game:
         last = br.history(ds - 100, ds)                  # last 2 s alive
         after = br.history(ds + 50, ds + 150)            # 1-3 s after death
         rows = []
-        names = ["whole brain"] + [n for n, _ in POPS] + ["head", "body", "legs", "wing", "heat", "jump", "run", "kick", "walk", "back"]
+        names = ["whole brain"] + [n for n, _ in POPS] + ["head", "body", "legs", "wing", "heat", "smell", "taste", "jump", "run", "kick", "walk", "back"]
         pretty = {"head": "touch: head", "body": "touch: body", "legs": "touch: legs", "wing": "touch: wings", "heat": "heat sensors",
+                  "smell": "smell ORNs", "taste": "taste neurons",
                   "jump": "DNs: jump group", "run": "DNs: run group", "kick": "DNs: kick group", "walk": "DNs: DNp09 walk",
                   "back": "DNs: MDN back up"}
         for n in names:
@@ -1202,6 +1313,15 @@ class Game:
             for i in (HEAD, THX, ABD):
                 fx, fy = fly.p[i] + (random.uniform(-14, 14), random.uniform(-18, -4))
                 aacircle(arena, (fx, fy), random.uniform(4, 9), (255, random.randint(110, 200), 40, 170))
+        for m in self.mist:
+            e = (now - m[4]) / m[5]
+            aacircle(arena, (m[0], m[1]), 5 + 22 * e, (200, 230, 250, int(90 * (1 - e))))
+        if self.torching and TOOLS[self.tool][0] == "cleaner" and self.report is None and mouse[0] < PLAY_W:
+            aim = getattr(self, "torch_aim", np.array([1.0, 0.0]))
+            m = np.array(mouse, float)
+            thick_line(arena, m - aim * 78, m - aim * 12, 26, (200, 40, 40))           # the can
+            thick_line(arena, m - aim * 60, m - aim * 40, 27, (235, 235, 240))         # label band
+            thick_line(arena, m - aim * 12, m - aim * 2, 8, (60, 60, 66))              # nozzle
         if self.torching and TOOLS[self.tool][0] == "torch" and self.report is None and mouse[0] < PLAY_W:
             aim = getattr(self, "torch_aim", np.array([1.0, 0.0]))
             m = np.array(mouse, float)
@@ -1278,7 +1398,7 @@ class Game:
             pygame.draw.rect(surf, col, (bx, by, max(18, int(bw * frac)), 18), border_radius=9)
             pygame.draw.rect(surf, tuple(min(255, c + 60) for c in col), (bx + 6, by + 3, max(6, int(bw * frac) - 12), 4), border_radius=2)
         self._text(surf, "DEAD" if fly.dead else f"HEALTH {fly.health:.0f}", (PLAY_W // 2, by + 9), INK, self.f_bold, "center")
-        self._text(surf, "1-5 tools   B brain   R new fly   Esc quit", (PLAY_W - 14, 14), LABEL, self.f_small, "topright")
+        self._text(surf, "1-6 tools   B brain   R new fly   Esc quit", (PLAY_W - 14, 14), LABEL, self.f_small, "topright")
         self._draw_pain(surf)
 
     def _draw_pain(self, surf) -> None:
@@ -1313,20 +1433,20 @@ class Game:
         self._text(surf, f"peak {self.pain_peak:.0f}   maxed {self.pain_max_s:.1f}s", (bx, y + h - 17), LABEL, self.f_small)
 
     def _draw_toolbar(self, surf) -> None:
-        bw = 158
-        x0 = (PLAY_W - bw * len(TOOLS) - 10 * (len(TOOLS) - 1)) // 2
+        bw, gap = 137, 7
+        x0 = (PLAY_W - bw * len(TOOLS) - gap * (len(TOOLS) - 1)) // 2
         self.tool_rects = []
         for k, (name, label, hint) in enumerate(TOOLS):
-            r = pygame.Rect(x0 + k * (bw + 10), FLOOR + 34, bw, 62)
+            r = pygame.Rect(x0 + k * (bw + gap), FLOOR + 34, bw, 62)
             self.tool_rects.append(r)
             on = k == self.tool
             card = pygame.Surface(r.size, pygame.SRCALPHA)
             pygame.draw.rect(card, (60, 46, 22, 230) if on else (16, 18, 24, 210), card.get_rect(), border_radius=12)
             surf.blit(card, r)
             pygame.draw.rect(surf, AMBER if on else BORDER, r, 2, border_radius=12)
-            draw_icon(surf, name, (r.x + 30, r.centery + 2), AMBER if on else TEXT)
-            self._text(surf, f"{k + 1}  {label}", (r.x + 54, r.y + 10), AMBER if on else INK, self.f_bold)
-            self._text(surf, hint, (r.x + 54, r.y + 34), LABEL, self.f_small)
+            draw_icon(surf, name, (r.x + 22, r.centery + 2), AMBER if on else TEXT)
+            self._text(surf, f"{k + 1} {label}", (r.x + 42, r.y + 10), AMBER if on else INK, self.f_bold)
+            self._text(surf, hint, (r.x + 42, r.y + 34), LABEL, self.f_small)
 
     def _draw_brain(self, now: float) -> None:
         scr, br = self.screen, self.brain
@@ -1521,7 +1641,7 @@ class Game:
         if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE):
             return False
         if ev.type == pygame.KEYDOWN:
-            if pygame.K_1 <= ev.key <= pygame.K_5:
+            if pygame.K_1 <= ev.key < pygame.K_1 + len(TOOLS):
                 self.tool = ev.key - pygame.K_1
             elif ev.key == pygame.K_r:
                 self.new_fly()

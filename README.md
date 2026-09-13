@@ -10,6 +10,7 @@ all 166,700 neurons simulated live while you throw, flick, swat, bomb and torch 
   - legs: proprioceptive neurons
   - wings: wing sensory neurons
   - blowtorch: heat-sensing neurons
+  - brake cleaner: smell and taste neurons (and it dissolves the fly)
 - **Its reactions come from its descending neurons:** jumping, running, kicking, walking, backing up and turning.
 - **Pain meter:** built from touch overload, heat-sensor activity and descending-neuron alarm. The **blowtorch** maxes it out.
 - **Death and autopsy:** it can die. The autopsy compares every brain region's last 2 s alive with its calm baseline, and shows pain on a timeline.
@@ -53,6 +54,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | 3 | fly swatter |
 | 4 | bomb |
 | 5 | blowtorch: hold to burn, pins pain at 100 |
+| 6 | brake cleaner: hold to spray, dissolves the fly into a puddle |
 | B | big live brain view (or click the brain panel) |
 | R | new fly |
 | Esc | quit |
@@ -70,6 +72,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - Jump direction, stun and damage.
 - The pain index. The adult connectome has no neurons annotated as nociceptors, so pain is an estimate built from real signals, not a measurement of what the fly feels.
 - Death. A sim can't die on its own, so on death its tonic drive is switched off and activity fades out.
+- Brake cleaner dissolving the fly, and the brain slowing as it dissolves. Solvents depress nervous systems, so an inhibitory current grows on every neuron as the fly melts. How strong it is was picked for the game, not measured. The smell and taste neurons it fires are real.
 - Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
 
 The full mapping is in the docstring at the top of `kick_the_fly.py`.
