@@ -1328,7 +1328,6 @@ class Game:
     def __init__(self, screen, brain: Brain, view: BrainView):
         self.screen, self.brain = screen, brain
         self.tool = 0
-        self.bucks = 0
         self.kills = 0
         self.f_small = pygame.font.SysFont("consolas", 13)
         self.f_text = pygame.font.SysFont("segoeui,consolas", 15)
@@ -2060,7 +2059,6 @@ class Game:
                 self.brain.poke(region, side, 0.35)
             self.damage(0.1, "freezing")
             words, col = ("SO COLD!", "BRRRR!", "ICING!"), (190, 230, 255)
-        self.bucks += 1
         if int(now * 2) != int((now - 1 / 60) * 2):
             self.hits += 1
         if random.random() < 0.02:
@@ -2248,7 +2246,6 @@ class Game:
         for region, side in TORCH_KEYS:
             self.brain.poke(region, side, 1.0)
         self.damage(0.35, "the blowtorch")
-        self.bucks += 1
         if int(now * 2) != int((now - 1 / 60) * 2):
             self.hits += 1
         if random.random() < 0.02:
@@ -2379,7 +2376,6 @@ class Game:
         if not fly.dead:
             for (region, side), s in self.pending_hits.items():
                 br.poke(region, side, s)
-                self.bucks += int(1 + 9 * s)
                 self.hits += 1
             if self.pending_damage:
                 floor = 1.0 if self.immortal else 0.0          # immortal: it can be hurt, never killed
@@ -2669,8 +2665,8 @@ class Game:
         card = pygame.Surface((236, 62), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 170), card.get_rect(), border_radius=10)
         surf.blit(card, (10, 8))
-        self._text(surf, f"${self.bucks:,}", (22, 12), AMBER, self.f_head)
-        self._text(surf, f"hits {self.hits}   kills {self.kills}   {self._fly_state(now)}", (22, 42), TEXT, self.f_text)
+        self._text(surf, self._fly_state(now).upper(), (22, 12), AMBER, self.f_head)
+        self._text(surf, f"hits {self.hits}   kills {self.kills}", (22, 42), TEXT, self.f_text)
         # health
         bw, bx, by = 300, PLAY_W // 2 - 150, 16
         frac = fly.health / MAX_HEALTH
@@ -2687,7 +2683,10 @@ class Game:
         if self.sound.muted:
             bits.append("muted (M)")
         bits.append("F11 fullscreen   H help")
-        self._text(surf, "   ".join(bits), (PLAY_W - 14, 44), AMBER if self.brain.surgery else LABEL, self.f_small, "topright")
+        hint = self.f_small.render("   ".join(bits), True, AMBER if self.brain.surgery else TEXT)
+        box = hint.get_rect(topright=(PLAY_W - 14, 44)).inflate(14, 6)
+        pygame.draw.rect(surf, (10, 12, 18, 170), box, border_radius=6)
+        surf.blit(hint, hint.get_rect(center=box.center))
         if self.saved_msg and now - self.saved_msg[1] < 4:
             self._text(surf, self.saved_msg[0], (PLAY_W // 2, 66), (170, 230, 190), self.f_small, "midtop")
         self._draw_pain(surf)
@@ -3076,6 +3075,19 @@ def load_brain(out: dict) -> None:
 def main() -> int:
     smoke = float(sys.argv[sys.argv.index("--smoke") + 1]) if "--smoke" in sys.argv else 0.0  # build check: run N s, exit
     pygame.mixer.pre_init(Sound.RATE, -16, 1, 512)
+    if "--2d" not in sys.argv:                           # first person 3D by default; 2D if OpenGL 3.3 isn't there
+        try:
+            import kick3d
+        except Exception as e:                           # e.g. moderngl missing in a source checkout
+            print(f"3D unavailable ({e}); starting the 2D game")
+        else:
+            pygame.init()
+            shot = sys.argv[sys.argv.index("--smoke") + 2] if smoke and len(sys.argv) > sys.argv.index("--smoke") + 2 else None
+            try:
+                return kick3d.run(smoke, shot, "--fullscreen" in sys.argv)
+            except (kick3d.moderngl.Error, pygame.error) as e:
+                print(f"3D failed ({e}); starting the 2D game")
+                pygame.display.quit()
     os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")   # smooth when scaled, not blocky
     pygame.init()
     pygame.display.set_caption("Kick the Fly")

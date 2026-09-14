@@ -4,6 +4,10 @@ A kick-the-buddy game where the buddy is a real fruit fly brain: the
 **MaleCNS v1.0** connectome ([Google Research blog](https://research.google/blog/a-connectomics-milestone-mapping-the-complete-male-fruit-fly-brain/)),
 all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, zap, freeze and feed it to a spider. Or reward it with sugar.
 
+**It's first person:** walk around a 3D living room and use your tools on the fly up close. Walk into it and you kick it. The original 2D version is still there with `--2d`.
+
+![the 3D room](docs/room3d.png)
+
 - **Hits fire real sensory neurons:**
   - head: head bristles and Johnston's organ
   - body: tactile neurons
@@ -34,6 +38,10 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **Save and share:** **S** saves a screenshot and **G** saves a GIF of the last 6 seconds. The autopsy can save a GIF of the death. Files go to Pictures\Kick the Fly.
 - **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Pain-sensing neurons glow orange and everything else glows cyan when firing. Press **B** for the big view.
 
+![swatting in first person](docs/swat3d.png)
+
+![stuck on flypaper](docs/flypaper3d.png)
+
 ![brain lighting up under the blowtorch](docs/brain.png)
 
 ![spider wrapping the fly](docs/spider.png)
@@ -57,7 +65,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 
 ## Run from source
 
-Needs Python 3.11 and about 1.5 GB of disk for the connectome.
+Needs Python 3.11, a GPU with OpenGL 3.3 for 3D, and about 1.5 GB of disk for the connectome.
 
 ```powershell
 python -m venv .venv
@@ -74,29 +82,23 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 
 ## Controls
 
-| key | tool |
+| key | what it does |
 |---|---|
-| 1 | hand: drag and throw |
-| 2 | flick |
-| 3 | fly swatter |
-| 4 | bomb |
-| 5 | blowtorch: hold to burn, pins pain at 100 |
-| 6 | brake cleaner: hold to spray, dissolves the fly into a puddle |
-| 7 | zapper: click for an electric shock |
-| 8 | freeze spray: hold to freeze it solid, then hit the ice to shatter it |
-| 9 | spider: click to drop a spider that hunts, bites and wraps it in silk |
-| 0 | sugar: click to drop sugar and reward it |
-| B | big live brain view (or click the brain panel); click a neuron to inspect it |
+| WASD | walk (Shift sprint, Ctrl crouch); walk into the fly to kick it |
+| Mouse | look around; left click uses the tool in your hand |
+| 1-9, 0 or mouse wheel | pick a tool: hand, flick, swatter, bomb, blowtorch, brake cleaner, zapper, freeze spray, spider, sugar |
+| Tab | free the mouse to click the brain panel and menus (click the room to look again) |
+| B | big live brain view; click a neuron to inspect it |
 | O | brain surgery |
 | E | arena: room, fan, flypaper, pool, lamp |
+| P / I | pain neurons / immortal mode |
 | M | mute |
-| S / G | save a screenshot / a GIF |
-| F11 | fullscreen (or Alt+Enter); the window can also be resized and the game scales to fit |
-| H | help |
-| P | pain neurons: normal, more, max |
-| I | immortal mode: it can't die |
+| F12 / G | save a screenshot / a GIF of the last 6 seconds |
+| F11 | fullscreen (it scales to any screen) |
 | R | new fly |
-| Esc | quit |
+| Esc | free the mouse, close menus, then quit |
+
+Start with `--2d` for the original 2D game. It also starts automatically in 2D on PCs without OpenGL 3.3.
 
 ## What is the connectome and what is a game rule
 
@@ -121,7 +123,8 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - How looming reaches the fly. The game measures how fast an object grows in its view and drives LPLC2/LC4 directly. Streaming pixels through the sim's own photoreceptors didn't work: the looming signal stayed inside the brain's random flicker.
 - Learning. The connectome has no learning in it, so a mushroom body style rule is added: Kenyon cells active with a scent gain fear while the PPL1 punishment neurons fire (pain drives them, a game rule) and liking while PAM reward neurons fire. Each tool's scent is also a game rule. Silence PPL1 or the Kenyon cells in surgery and it stops learning.
 - Being drawn to the lamp, and the arena physics.
-- The flight path. What triggers take-off is from the neurons, but where it flies is not.
+- The flight path.
+- Everything about the 3D room: the fly's 3D body, physics, walking and flight, and your tools. They use the 2D game's tuned physics scaled to meters, so the brain gets the same kinds of hits as before. What triggers take-off is from the neurons, but where it flies is not.
 - Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
 
 The full mapping is in the docstring at the top of `kick_the_fly.py`.
