@@ -80,6 +80,7 @@ HELP3D = (
     ("Tab", "free the mouse to click the brain panel and menus"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery"),
+    ("T", "training: teach it to fear or like a smell (saved)"),
     ("E", "arena: room, fan, flypaper, pool, lamp"),
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
@@ -523,7 +524,7 @@ class Game3D(k2.Game):
         return self.player.to_world(local)
 
     def _overlay_open(self) -> bool:
-        return self.report is not None or self.big_view or self.surgery_open or self.help_open
+        return self.report is not None or self.big_view or self.surgery_open or self.help_open or self.training_open
 
     def _above_head(self):
         return self.fly.p[HEAD] + (0, 0.45, 0)
@@ -1140,6 +1141,7 @@ class Game3D(k2.Game):
         self._vision(now)
         self._scents(now)
         self._learn(now)
+        self._training_tick(now)
         self._sound_update(now)
         if not fly.dead:
             self.pain_peak = max(self.pain_peak, self.pain)
@@ -1579,6 +1581,8 @@ class Game3D(k2.Game):
             self._draw_big_view(hud)
         if self.surgery_open:
             self._draw_surgery(hud)
+        if self.training_open:
+            self._draw_training(hud)
         if self.help_open:
             self._draw_help(hud)
         if PANEL_MODES[self.panel_mode][0] != "hidden":
@@ -1613,7 +1617,7 @@ class Game3D(k2.Game):
                     self.set_look(False)
                     return True
                 if self._overlay_open():
-                    self.help_open = self.surgery_open = self.big_view = False
+                    self.help_open = self.surgery_open = self.big_view = self.training_open = False
                     return True
                 if self.quit_armed:
                     return False
@@ -1651,7 +1655,7 @@ class Game3D(k2.Game):
             if not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
                 self.set_look(True)
                 return True
-            if self.surgery_open or self.help_open or self.report is not None or self.big_view:
+            if self.surgery_open or self.help_open or self.report is not None or self.big_view or self.training_open:
                 return k2.Game.handle(self, pygame.event.Event(ev.type, button=1, pos=pos), now)
             for kk, r in enumerate(getattr(self, "tool_rects", [])):
                 if r.collidepoint(pos):
@@ -1905,5 +1909,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -
             break
         clock.tick(60)
     brain.stop()
+    if brain.memory is not None:
+        brain.memory.save()
     pygame.quit()
     return 0

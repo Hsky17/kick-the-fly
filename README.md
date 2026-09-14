@@ -28,7 +28,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **It sees you coming:** move a weapon at it fast and its real looming detectors (LPLC2 and LC4) fire its giant fiber escape neuron, so it dodges. Sneak up slowly and it won't notice.
 - **Brain surgery (O):** silence or stimulate real neuron groups and watch what happens. Switch on the moonwalker neurons and it backs up; silence the giant fiber and it can't dodge.
 - **Neuron inspector:** in the big brain view, click any neuron to see its type, how fast it's firing, and its strongest connections in the connectome.
-- **It learns (a rule added on top):** each tool has its own scent, which reaches the fly's mushroom body. Hurt it with a tool and it starts running away when that tool comes near. Feed it sugar and it follows the sugar.
+- **Real training (T):** the fly learns with its actual mushroom body. Pair a smell with a shock or with sugar and dopamine weakens the real Kenyon cell to output neuron synapses for that smell, just like in real flies. The Training panel runs lab-style conditioning and graphs the learning curve. Memory is saved to Documents\Kick the Fly\memory and kept between flies and sessions. Hurting the fly while it smells a tool trains it too.
 - **Arenas (E):**
   - **fan:** wind that fires its wind-sensing neurons
   - **flypaper:** it gets stuck and struggles
@@ -47,6 +47,8 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 ![brain lighting up under the blowtorch](docs/brain.png)
 
 ![spider wrapping the fly](docs/spider.png)
+
+![training](docs/training.png)
 
 ![neuron inspector](docs/inspect.png)
 
@@ -92,6 +94,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | Tab | free the mouse to click the brain panel and menus (click the room to look again) |
 | B | big live brain view; click a neuron to inspect it |
 | O | brain surgery |
+| T | training: teach it to fear or like a smell (saved between sessions) |
 | E | arena: room, fan, flypaper, pool, lamp |
 | P / I | pain neurons / immortal mode |
 | M | mute |
@@ -125,7 +128,7 @@ Start with `--2d` for the original 2D game. It also starts automatically in 2D o
 - Freezing and spider venom damping the brain, and the zapper's shock going into a random 30% of neurons (the sim has no current path to place it).
 - Sugar switching on the PAM reward neurons directly. In this sim taste input alone doesn't reach them, so sugar drives them the way PAM activation experiments do. The fly walking to the sugar is also a game rule.
 - How looming reaches the fly. The game measures how fast an object grows in its view and drives LPLC2/LC4 directly. Streaming pixels through the sim's own photoreceptors didn't work: the looming signal stayed inside the brain's random flicker.
-- Learning. The connectome has no learning in it, so a mushroom body style rule is added: Kenyon cells active with a scent gain fear while the PPL1 punishment neurons fire (pain drives them, a game rule) and liking while PAM reward neurons fire. Each tool's scent is also a game rule. Silence PPL1 or the Kenyon cells in surgery and it stops learning.
+- Learning. The plasticity happens on the connectome's own synapses: all 41,495 Kenyon cell to MBON connections that dopamine neurons reach. Which dopamine neurons gate which output neurons comes from the connectome's 37,909 dopamine to output neuron synapses: PPL1 punishment dopamine for MBON11-20 and 30-35, and PAM reward dopamine for MBON01-10, 21, 24 and 26-29. That matches the published map. The rule is the one found in real flies: dopamine plus Kenyon cell activity weakens the synapse. Game rules: pain driving PPL1, sugar driving PAM, each tool having a smell, and the learning rate and forgetting speed. In testing, 10 pairings raised fear of the trained smell from 0 to 0.65 while an untrained smell stayed at 0.01, and the trained smell's approach output neurons dropped from 32 to 30 spikes/s.
 - Being drawn to the lamp, and the arena physics.
 - The flight path.
 - Everything about the 3D room: the fly's 3D body, physics, walking and flight, and your tools. They use the 2D game's tuned physics scaled to meters, so the brain gets the same kinds of hits as before. What triggers take-off is from the neurons, but where it flies is not.

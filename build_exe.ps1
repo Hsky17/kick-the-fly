@@ -12,7 +12,7 @@ if (-not (Test-Path .venv-build)) {
     --icon build\icon.png --add-data "data\kick_brain.npz;." `
     --exclude-module connectome.loader --exclude-module connectome.layout --exclude-module pyarrow `
     --exclude-module tkinter --exclude-module matplotlib `
-    --hidden-import kick3d --hidden-import render3d --hidden-import glcontext.wgl --hidden-import glcontext.empty `
+    --hidden-import kick3d --hidden-import render3d --hidden-import memory --hidden-import glcontext.wgl --hidden-import glcontext.empty `
     kick_the_fly.py
 .\dist\KickTheFly.exe --smoke 3 | Out-Null
 Get-Item dist\KickTheFly.exe | Select-Object Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }

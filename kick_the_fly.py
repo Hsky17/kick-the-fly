@@ -296,6 +296,8 @@ class Brain:
         self._gain = sim.gain
         self.steps_per_s = 0.0
         self.steps = 0
+        self.speed = 1.0                             # >1 runs the brain faster than real time (training)
+        self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
 
     @property
     def dead(self) -> bool:
@@ -388,6 +390,9 @@ class Brain:
         if self.steps % 4 == 0:
             self.hist[self.hist_n % HIST] = self.fast
             self.hist_n += 1
+        if self.memory is not None and self.steps % MEMORY_STEPS == 0 and self.death_step is None:
+            calm = self.sedation == 0 and not self.surgery and self.steps - self.last_poke > CALM_STEPS
+            self.memory.step(self.sim.activity.rates(), calm, self.steps)
 
     def warmup(self, steps: int = 600) -> None:
         k = self.k_base
@@ -405,7 +410,10 @@ class Brain:
     def _loop(self) -> None:
         t0 = time.perf_counter()
         done, last_t, last_steps = 0, t0, self.steps
+        speed = self.speed
         while not self._stop:
+            if self.speed != speed:                  # re-anchor the clock when the training speed changes
+                speed, t0, done = self.speed, time.perf_counter(), 0
             if self._revive:
                 self._revive = False
                 self.death_step = None
@@ -415,7 +423,7 @@ class Brain:
                     self._step()
                 t0, done = time.perf_counter(), 0
             now = time.perf_counter()
-            due = int((now - t0) / self.dt)
+            due = int((now - t0) / self.dt * speed)
             if due - done > 40:                      # fell behind: drop the backlog instead of racing
                 done = due - 40
             if done >= due:
@@ -1136,9 +1144,8 @@ OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
 CURSOR_SIZE = {"flick": 12, "swatter": 38, "bomb": 16, "torch": 18, "cleaner": 22, "zapper": 16, "freeze": 22, "spider": 20}
 LOOM_MIN, LOOM_FULL = 1.5, 8.0        # rad/s of angular expansion: below LOOM_MIN nothing, LOOM_MIN + LOOM_FULL = full drive
 SCENT_RANGE = 330.0                   # px: how close a tool must be for the fly to smell it
-LEARN_RATE = 0.02                     # per frame at full dopamine, for an averagely active Kenyon cell
-FEAR_ACT, LIKE_ACT = 0.35, 0.35       # learned memory that changes behavior
-KC_SPARSE = 280                       # Kenyon cells kept per pattern (of 4,064)
+FEAR_ACT, LIKE_ACT = 0.35, 0.35       # learned memory (memory.py) that changes behavior
+MEMORY_STEPS = 10                     # sim steps between plasticity updates (memory.UPDATE_STEPS)
 GIF_SIZE, GIF_FRAMES = (400, 238), 90  # 15 fps x 6 s
 AUTOPSY_DELAY = 3.0          # seconds of flatline shown before the report
 
@@ -1319,6 +1326,7 @@ HELP = (
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
     ("R", "new fly"),
     ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
+    ("T", "training: teach it to fear or like a smell (saved between sessions)"),
     ("H", "this help"),
     ("Esc", "quit"),
 )
@@ -1349,6 +1357,13 @@ class Game:
         self.sound = Sound()
         self.arena_i = 0
         self.surgery_open = self.help_open = False
+        self.training_open = False
+        self.train: dict | None = None
+        self.train_scent = "swatter"
+        self.train_speed = 1.0
+        self.train_buttons: list = []
+        self.wipe_armed = 0.0
+        self.last_save = time.perf_counter()
         self.surgery_rows = {label: self._surgery_rows(spec) for label, spec in SURGERY}
         self.surgery_modes = [0] * len(SURGERY)
         self.type_ops: dict[str, int] = {}
@@ -1396,10 +1411,6 @@ class Game:
         self.pain_max_s = 0.0
         self.pain_trace: list[float] = []
         br = self.brain
-        self.fear_w = np.zeros(len(br.kc), np.float32)   # mushroom body memory, per Kenyon cell
-        self.like_w = np.zeros(len(br.kc), np.float32)
-        self.kc_calm = br.sim.activity.rates()[br.kc].copy()
-        self.templates: dict[str, np.ndarray] = {}
         self.fear_now = self.like_now = 0.0
         self.avoid_ready = 0.0
         self.loom, self.loom_prev, self.threat_x = 0.0, {}, 0.0
@@ -1489,6 +1500,8 @@ class Game:
 
     # --- seeing, smelling, learning ---------------------------------------------
     def _overlay_open(self) -> bool:
+        if getattr(self, "training_open", False):
+            return True
         return self.report is not None or self.big_view or self.surgery_open or self.help_open
 
     def _threats(self, now: float, mouse) -> list:
@@ -1548,42 +1561,238 @@ class Game:
             self.sugar_scent = True
             self.brain.poke("scent", "sugar", 0.3)
 
+    # --- real training (memory.py) --------------------------------------------------------------------------------
     def _learn(self, now: float) -> None:
-        """Mushroom body learning, a rule added on top of the fixed connectome. Kenyon cells active with a scent get
-        their fear weight raised while the PPL1 punishment neurons fire, and their liking raised while PAM reward
-        neurons fire. Recall is the current Kenyon cell pattern read through those weights."""
+        """Learning happens inside the brain thread on the real KC -> MBON synapses (memory.py). Here: remember what
+        each smell's Kenyon cell pattern looks like, read the current memory, and autosave."""
         br, fly = self.brain, self.fly
-        if fly.dead:
-            return
-        r = br.sim.activity.rates()[br.kc]
-        present = self.scent_now is not None or self.sugar_scent
-        if not present and br.steps - br.last_poke > CALM_STEPS:
-            self.kc_calm += (r - self.kc_calm) * 0.02
-        act = np.maximum(r - self.kc_calm - 0.01, 0)
-        if np.count_nonzero(act) > KC_SPARSE:          # Kenyon cells code sparsely: keep the most active ~7%
-            act[act < np.partition(act, -KC_SPARSE)[-KC_SPARSE]] = 0
-        total = float(act.sum())
-        if not present or total <= 0:
+        mem = br.memory
+        if mem is None:
             self.fear_now = self.like_now = 0.0
             return
-        a = (act / total).astype(np.float32)
-        self.fear_now, self.like_now = float(a @ self.fear_w), float(a @ self.like_w)
-        g = np.minimum(a * np.count_nonzero(act), 3.0)
-        punish = float(np.clip((br.level("punish") - 1.3) / 1.2, 0, 1))
-        reward = float(np.clip((br.level("reward") - 1.3) / 1.0, 0, 1))
-        if punish > 0:
-            self.fear_w += LEARN_RATE * punish * g * (1 - self.fear_w)
-        if reward > 0:
-            self.like_w += LEARN_RATE * reward * g * (1 - self.like_w)
-        self.fear_w *= np.float32(0.99998)            # slow forgetting
-        self.like_w *= np.float32(0.99998)
-        for key in ([self.scent_now] if self.scent_now else []) + (["sugar"] if self.sugar_scent else []):
-            t = self.templates.get(key)
-            self.templates[key] = a.copy() if t is None else t + (a - t) * 0.05
+        if self.frame % 3 == 0:
+            r = br.sim.activity.rates()
+            for key in ([self.scent_now] if self.scent_now else []) + (["sugar"] if self.sugar_scent else []):
+                mem.observe(key, r)
+            if (self.scent_now or self.sugar_scent) and not fly.dead:
+                # recognise the smell by its stored Kenyon cell pattern and read that pattern's synapses
+                self.fear_now, self.like_now = mem.memory_of(self.scent_now) if self.scent_now else mem.memory_of("sugar")
+            else:
+                self.fear_now = self.like_now = 0.0
+        if mem.dirty and now - self.last_save > 30:
+            self.last_save = now
+            threading.Thread(target=mem.save, daemon=True).start()
 
     def memory_of(self, key: str) -> tuple[float, float]:
-        t = self.templates.get(key)
-        return (0.0, 0.0) if t is None else (float(t @ self.fear_w), float(t @ self.like_w))
+        return (0.0, 0.0) if self.brain.memory is None else self.brain.memory.memory_of(key)
+
+    def start_training(self, kind: str, trials: int = 10) -> None:
+        mem = self.brain.memory
+        if mem is None or self.train is not None:
+            return
+        scent = self.train_scent
+        if kind != "test" and scent not in mem.naive_mbon and not mem.log.get(scent):
+            kind_first = "naive"                       # measure the untrained response first
+        else:
+            kind_first = None
+        self.train = dict(scent=scent, kind=kind, trials=1 if kind == "test" else trials, done=0,
+                          phase="naive" if kind_first else "odor", until=self.brain.steps + (400 if kind_first else 240),
+                          hz=[], first=kind_first)
+        self.brain.speed = self.train_speed
+        self.note(f"TRAINING {kind} on {scent}")
+
+    def stop_training(self) -> None:
+        if self.train is not None:
+            self.note(f"TRAINING stopped ({self.train['done']}/{self.train['trials']})")
+        self.train = None
+        self.brain.speed = 1.0
+        if self.brain.memory is not None:
+            threading.Thread(target=self.brain.memory.save, daemon=True).start()
+
+    def _training_tick(self, now: float) -> None:
+        """Lab-style conditioning, timed in brain steps (5 ms each) so it works at any sim speed:
+        smell 1.2 s -> smell + shock or sugar 1.0 s -> rest 1.3 s, repeated; tests are 2 s of smell alone."""
+        t, br = self.train, self.brain
+        if t is None:
+            return
+        mem = br.memory
+        scent, step = t["scent"], br.steps
+        phase = t["phase"]
+        if phase in ("naive", "odor", "pair", "test"):
+            br.poke("scent", scent, 0.5)
+            if self.frame % 3 == 0:
+                r = br.sim.activity.rates()
+                mem.observe(scent, r)
+                if phase in ("naive", "test", "odor") and step > t["until"] - (300 if phase != "odor" else 180):
+                    t["hz"].append(mem.mbon_response(r))
+        if phase == "pair":
+            if t["kind"] == "fear":
+                br.poke("punish", None, 1.0)                      # the punishment dopamine neurons
+                br.poke("legs", "L", 0.6)                         # and an electric shock through the legs
+                br.poke("legs", "R", 0.6)
+            else:
+                br.poke("reward", None, 0.8)                      # the reward dopamine neurons
+                br.poke("taste", None, 0.6)                       # and the taste of sugar
+        if step < t["until"]:
+            return
+        hz = float(np.mean(t["hz"])) if t["hz"] else None
+        if phase == "naive":
+            if hz is not None:
+                mem.naive_mbon[scent] = hz
+            mem.record(scent, "naive", hz)
+            t.update(phase="rest", until=step + 260, hz=[])
+        elif phase == "odor":
+            t.update(phase="pair", until=step + 200, odor_hz=hz, hz=[])
+        elif phase == "pair":
+            t["done"] += 1
+            mem.record(scent, t["kind"], t.get("odor_hz"))
+            t.update(phase="rest", until=step + 260, hz=[])
+        elif phase == "test":
+            mem.record(scent, "test", hz)
+            t["done"] = 1
+            t.update(phase="rest", until=step + 1, hz=[])
+        elif phase == "rest":
+            if t["first"]:
+                t["first"] = None
+                if t["kind"] == "test":
+                    self.stop_training()
+                    return
+                t.update(phase="test" if t["kind"] == "test" else "odor", until=step + (400 if t["kind"] == "test" else 240))
+            elif t["done"] >= t["trials"]:
+                self.stop_training()
+            else:
+                t.update(phase="test" if t["kind"] == "test" else "odor", until=step + (400 if t["kind"] == "test" else 240))
+
+    def _draw_training(self, surf) -> None:
+        mem = self.brain.memory
+        panel = pygame.Rect(40, 30, min(PLAY_W - 80, 820), min(H - 60, 610))
+        veil = pygame.Surface((W, H), pygame.SRCALPHA)
+        veil.fill((4, 5, 8, 150))
+        surf.blit(veil, (0, 0))
+        pygame.draw.rect(surf, (18, 21, 28), panel, border_radius=16)
+        pygame.draw.rect(surf, BORDER, panel, 1, border_radius=16)
+        x, y = panel.x + 22, panel.y + 14
+        self._text(surf, "TRAINING", (x, y), INK, self.f_title)
+        self._text(surf, "Pair a smell with a shock or with sugar. Dopamine then weakens the fly's real Kenyon cell to "
+                         "output neuron synapses.", (x + 2, y + 46), LABEL, self.f_small)
+        self.train_buttons = []
+        if mem is None:
+            self._text(surf, "Training needs the updated brain pack.", (x, y + 90), S_CRIT, self.f_bold)
+            return
+        # scent list
+        ly = y + 72
+        names = list(TOOL_NAMES)
+        self._text(surf, "SMELL", (x, ly), LABEL, self.f_small)
+        self._text(surf, "fear", (x + 150, ly), (240, 150, 60), self.f_small)
+        self._text(surf, "liking", (x + 225, ly), (255, 150, 190), self.f_small)
+        self._text(surf, "trials", (x + 300, ly), LABEL, self.f_small)
+        ly += 18
+        for name in names:
+            fear, like = mem.memory_of(name)
+            r = pygame.Rect(x - 6, ly - 3, 350, 22)
+            sel = name == self.train_scent
+            if sel:
+                pygame.draw.rect(surf, (44, 50, 64), r, border_radius=6)
+            self._text(surf, name, (x, ly), INK if sel else TEXT, self.f_text if sel else self.f_small)
+            self._bar(surf, x + 150, ly + 4, 64, fear, (240, 150, 60))
+            self._bar(surf, x + 225, ly + 4, 64, like, (255, 150, 190))
+            n = sum(1 for e in mem.log.get(name, []) if e[1] in ("fear", "like"))
+            self._text(surf, str(n), (x + 330, ly), LABEL, self.f_small, "topright")
+            self.train_buttons.append((r, "select", name))
+            ly += 22
+        # learning curve for the selected smell
+        cx, cy, cw, ch = x + 380, y + 90, panel.right - x - 380 - 22, 230
+        pygame.draw.rect(surf, (12, 14, 20), (cx, cy, cw, ch), border_radius=8)
+        log = [e for e in mem.log.get(self.train_scent, []) if e[1] != "naive"]
+        self._text(surf, f"{self.train_scent}: memory after each trial", (cx + 10, cy + 8), INK, self.f_bold)
+        lx = cx + 12
+        for label, col in (("fear", (240, 150, 60)), ("liking", (255, 150, 190))):
+            pygame.draw.rect(surf, col, (lx, cy + 35, 14, 4), border_radius=2)
+            lx = self._text(surf, label, (lx + 20, cy + 28), TEXT, self.f_small).right + 16
+        px0, py0, pw, ph = cx + 36, cy + 54, cw - 50, ch - 80
+        for v in (0, 0.5, 1):
+            gy = py0 + ph - v * ph
+            pygame.draw.line(surf, (40, 44, 54), (px0, gy), (px0 + pw, gy))
+            self._text(surf, f"{v:g}", (px0 - 8, gy - 7), LABEL, self.f_small, "topright")
+        if len(log) >= 1:
+            n = max(len(log), 2)
+            for j, col in ((2, (240, 150, 60)), (3, (255, 150, 190))):
+                pts = [(px0 + k * pw / (n - 1), py0 + ph - float(e[j]) * ph) for k, e in enumerate(log)]
+                if len(pts) > 1:
+                    pygame.draw.lines(surf, col, False, pts, 2)
+                for p in pts:
+                    aacircle(surf, p, 3, col)
+            self._text(surf, f"{len(log)} trials and tests", (px0 + pw, py0 + ph + 6), LABEL, self.f_small, "topright")
+        else:
+            self._text(surf, "no trials yet", (px0 + pw // 2, py0 + ph // 2), DIM, self.f_small, "center")
+        naive = mem.naive_mbon.get(self.train_scent)
+        tests = [e for e in mem.log.get(self.train_scent, []) if e[4] is not None]
+        sy = cy + ch + 12
+        if naive is not None and tests:
+            self._text(surf, "approach output neurons (MBONs) to this smell:", (cx, sy), TEXT, self.f_small)
+            self._text(surf, f"{naive:.1f} spikes/s untrained  >  {tests[-1][4]:.1f} now", (cx, sy + 16), INK, self.f_small)
+        self._text(surf, f"{mem.weakened_share():.1%} of {len(mem.w0):,} Kenyon cell synapses weakened",
+                   (cx, sy + 36), LABEL, self.f_small)
+        # buttons
+        by = panel.bottom - 104
+        t = self.train
+        buttons = (("TRAIN FEAR x10", "fear", (170, 90, 40)), ("TRAIN LIKING x10", "like", (170, 70, 110)),
+                   ("TEST", "test", (60, 90, 140)), (f"SPEED x{self.train_speed:g}", "speed", (60, 64, 76)),
+                   ("WIPE MEMORY" if now_wipe_armed(self) else "wipe memory", "wipe", (130, 40, 40) if now_wipe_armed(self) else (60, 40, 44)))
+        bx = x
+        for label, what, col in buttons:
+            img = self.f_bold.render(label if not (t and what in ("fear", "like", "test")) else label, True, INK)
+            r = pygame.Rect(bx, by, img.get_width() + 24, 34)
+            dim = t is not None and what in ("fear", "like", "test", "wipe")
+            pygame.draw.rect(surf, tuple(c // 2 for c in col) if dim else col, r, border_radius=8)
+            surf.blit(img, img.get_rect(center=r.center))
+            self.train_buttons.append((r, what, None))
+            bx = r.right + 10
+        if t is not None:
+            stop = pygame.Rect(panel.right - 110, by, 88, 34)
+            pygame.draw.rect(surf, (90, 90, 96), stop, border_radius=8)
+            self._text(surf, "STOP", stop.center, INK, self.f_bold, "center")
+            self.train_buttons.append((stop, "stop", None))
+            what = {"naive": "measuring the untrained response", "odor": "smell", "pair": "smell + " +
+                    ("shock" if t["kind"] == "fear" else "sugar"), "rest": "rest", "test": "testing: smell alone"}[t["phase"]]
+            done = t["done"] / max(t["trials"], 1)
+            pygame.draw.rect(surf, (30, 36, 48), (x, by + 44, panel.w - 44, 10), border_radius=5)
+            pygame.draw.rect(surf, AMBER, (x, by + 44, max(8, int((panel.w - 44) * done)), 10), border_radius=5)
+            self._text(surf, f"{t['kind']} training on {t['scent']}: trial {min(t['done'] + 1, t['trials'])}/{t['trials']}   "
+                             f"{what}   brain {self.brain.steps_per_s:.0f} steps/s", (x, by + 60), TEXT, self.f_small)
+        else:
+            self._text(surf, "Kept across new flies and restarts, fades slowly (~30 min). Hurting it near a tool "
+                             "trains it too.", (x, by + 44), LABEL, self.f_small)
+            where = str(mem.path.parent)
+            if len(where) > 80:
+                where = "..." + where[-77:]
+            self._text(surf, f"saved in {where}", (x, by + 62), DIM, self.f_small)
+
+    def _training_click(self, pos) -> None:
+        mem = self.brain.memory
+        for r, what, arg in getattr(self, "train_buttons", []):
+            if not r.collidepoint(pos):
+                continue
+            if what == "select" and self.train is None:
+                self.train_scent = arg
+            elif what in ("fear", "like", "test") and self.train is None:
+                self.start_training(what)
+            elif what == "speed":
+                self.train_speed = {1.0: 2.0, 2.0: 3.0}.get(self.train_speed, 1.0)
+                if self.train is not None:
+                    self.brain.speed = self.train_speed
+            elif what == "stop":
+                self.stop_training()
+            elif what == "wipe" and self.train is None and mem is not None:
+                if now_wipe_armed(self):
+                    mem.wipe()
+                    self.wipe_armed = 0.0
+                    self.note("MEMORY   wiped")
+                else:
+                    self.wipe_armed = time.perf_counter()
+            self.sound.play("click")
+            return
+
 
     def _memory_behavior(self, now: float, free: bool, can_fly: bool) -> None:
         fly = self.fly
@@ -1930,7 +2139,8 @@ class Game:
             self._text(surf, what, (panel.x + 120, y), TEXT, self.f_text)
 
     def _draw_memory(self, surf) -> None:
-        learned = [(k, *self.memory_of(k)) for k in self.templates]
+        mem = self.brain.memory
+        learned = [(k, *self.memory_of(k)) for k in (mem.templates if mem is not None else {})]
         x, y, w = 10, 380, 236
         rows = sorted((r for r in learned if max(r[1], r[2]) >= 0.02), key=lambda r: -max(r[1], r[2]))[:4]
         h = 46 + 16 * max(1, len(rows))
@@ -1949,7 +2159,7 @@ class Game:
             self._bar(surf, x + 84, yy, w - 150, v, (255, 150, 190) if good else (240, 150, 60))
             self._text(surf, f"{'likes' if good else 'fears'} {v:.2f}", (x + w - 12, yy - 3), TEXT, self.f_small, "topright")
             yy += 16
-        self._text(surf, "learning rule added to the connectome", (x + 12, y + h - 16), DIM, self.f_small)
+        self._text(surf, "real synapses, saved   T: train", (x + 12, y + h - 16), DIM, self.f_small)
 
     def _above_head(self):
         """Where a popup over the fly goes (the 3D game overrides this)."""
@@ -2382,6 +2592,7 @@ class Game:
         self._vision(now, mouse)
         self._scents(now, mouse)
         self._learn(now)
+        self._training_tick(now)
         self._sound_update(now)
         if not fly.dead:
             self.pain_peak = max(self.pain_peak, self.pain)
@@ -2615,6 +2826,8 @@ class Game:
             self._draw_autopsy(arena, now)
         elif self.big_view:
             self._draw_big_view(arena)
+        if self.training_open:
+            self._draw_training(arena)
         if self.surgery_open:
             self._draw_surgery(arena)
         if self.help_open:
@@ -2981,13 +3194,15 @@ class Game:
         if ev.type == pygame.QUIT:
             return False
         if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-            if self.help_open or self.surgery_open or self.big_view:   # Esc closes an overlay before it quits
-                self.help_open = self.surgery_open = self.big_view = False
+            if self.help_open or self.surgery_open or self.big_view or self.training_open:   # Esc closes an overlay first
+                self.help_open = self.surgery_open = self.big_view = self.training_open = False
                 return True
             return False
         if ev.type == pygame.KEYDOWN:
             if ev.key == pygame.K_h:
                 self.help_open = not self.help_open
+            elif ev.key == pygame.K_t:
+                self.training_open = not self.training_open
             elif ev.key == pygame.K_o:
                 self.surgery_open = not self.surgery_open
             elif ev.key == pygame.K_e:
@@ -3019,6 +3234,9 @@ class Game:
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             if self.help_open:
                 self.help_open = False
+                return True
+            if self.training_open:
+                self._training_click(ev.pos)
                 return True
             if self.surgery_open:
                 for r, k, mode in self.surgery_buttons:
@@ -3065,6 +3283,11 @@ class Game:
         return True
 
 
+def now_wipe_armed(game) -> bool:
+    """Wiping memory takes a second click within 3 seconds."""
+    return time.perf_counter() - game.wipe_armed < 3.0
+
+
 def load_brain(out: dict) -> None:
     try:
         import brainpack
@@ -3083,6 +3306,10 @@ def load_brain(out: dict) -> None:
         pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
         pain_mask = np.isin(brain.det_id, pain_groups) | (brain.pop_id == [n for n, _ in POPS].index("ascending"))
         out["view"] = BrainView(soma, weights, pain_mask)
+        if getattr(g, "dan_mbon", None) is not None:
+            import memory
+            out["stage"] = "loading the fly's memory"
+            brain.memory = memory.Memory(g, sim)
         out["stage"] = "waking the fly up"
         brain.warmup()
         out["brain"] = brain
@@ -3170,6 +3397,8 @@ def main() -> int:
         pygame.display.flip()
         clock.tick(60)
     brain.stop()
+    if brain.memory is not None:
+        brain.memory.save()
     pygame.quit()
     return 0
 

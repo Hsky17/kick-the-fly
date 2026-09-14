@@ -1,7 +1,9 @@
 """Compact brain pack for Kick the Fly: everything the game needs from the connectome in one ~40 MB file.
 
 Holds the signed synapse matrix [post, pre] as int16 counts plus each neuron's 1 / total input synapses, the
-neuron type, superclass and instance labels, and each neuron's cell-body position. The game rebuilds the
+neuron type, superclass and instance labels, each neuron's cell-body position, and the dopamine-neuron ->
+mushroom body output neuron synapse counts (dopamine synapses have no sign, so the signed matrix drops them; the
+game's learning needs to know which dopamine neurons reach which output neurons). The game rebuilds the
 simulator's rate-normalized matrix from it in about a second, so a packaged build skips the 1.1 GB download.
 
 Derived from Janelia FlyEM MaleCNS v1.0 (CC BY 4.0).
@@ -51,10 +53,14 @@ def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
         return np.array(["" if x is None else str(x) for x in a])
 
     soma = soma_positions(g)
+    types = labels(g.type)
+    dan = np.flatnonzero(np.char.startswith(types, "PAM") | np.char.startswith(types, "PPL1"))
+    mbon = np.flatnonzero(np.char.startswith(types, "MBON"))
+    dan_mbon = g.weights.tocsr()[dan][:, mbon].toarray().astype(np.int16)        # [DAN, MBON] synapse counts
     np.savez_compressed(
         out, indptr=signed.indptr.astype(np.int32), indices=signed.indices.astype(np.int32),
-        data=signed.data.astype(np.int16), inv=inv, type=labels(g.type), superclass=labels(g.superclass),
-        instance=labels(g.instance), soma=soma,
+        data=signed.data.astype(np.int16), inv=inv, type=types, superclass=labels(g.superclass),
+        instance=labels(g.instance), soma=soma, dan=dan.astype(np.int32), mbon=mbon.astype(np.int32), dan_mbon=dan_mbon,
     )
     print(f"[brainpack] wrote {out} ({out.stat().st_size / 1e6:.1f} MB, {g.n:,} neurons, {signed.nnz:,} synapse pairs, "
           f"{int((~np.isnan(soma[:, 0])).sum()):,} cell bodies)")
@@ -81,6 +87,8 @@ def load(path: Path):
     W = sp.csr_array((data, z["indices"], indptr), shape=(n, n))
     inst = z["instance"]
     g = SimpleNamespace(n=n, type=z["type"], superclass=z["superclass"], instance=np.where(inst == "", None, inst))
+    if "dan_mbon" in z:
+        g.dan, g.mbon, g.dan_mbon = z["dan"], z["mbon"], z["dan_mbon"]
     return g, W, z["soma"]
 
 
