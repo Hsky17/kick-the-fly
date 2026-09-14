@@ -121,6 +121,7 @@ the direction of jumps and runs (away from the last hit), being stunned, damage.
 from __future__ import annotations
 
 import math
+import os
 import random
 import sys
 import threading
@@ -1317,6 +1318,7 @@ HELP = (
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
     ("R", "new fly"),
+    ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
     ("H", "this help"),
     ("Esc", "quit"),
 )
@@ -1931,7 +1933,7 @@ class Game:
     def _draw_memory(self, surf) -> None:
         learned = [(k, *self.memory_of(k)) for k in self.templates]
         x, y, w = 10, 380, 236
-        rows = sorted(learned, key=lambda r: -max(r[1], r[2]))[:4]
+        rows = sorted((r for r in learned if max(r[1], r[2]) >= 0.02), key=lambda r: -max(r[1], r[2]))[:4]
         h = 46 + 16 * max(1, len(rows))
         card = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 180), card.get_rect(), border_radius=10)
@@ -2684,7 +2686,7 @@ class Game:
             bits.append("SURGERY ON (O)")
         if self.sound.muted:
             bits.append("muted (M)")
-        bits.append("H help")
+        bits.append("F11 fullscreen   H help")
         self._text(surf, "   ".join(bits), (PLAY_W - 14, 44), AMBER if self.brain.surgery else LABEL, self.f_small, "topright")
         if self.saved_msg and now - self.saved_msg[1] < 4:
             self._text(surf, self.saved_msg[0], (PLAY_W // 2, 66), (170, 230, 190), self.f_small, "midtop")
@@ -3074,9 +3076,15 @@ def load_brain(out: dict) -> None:
 def main() -> int:
     smoke = float(sys.argv[sys.argv.index("--smoke") + 1]) if "--smoke" in sys.argv else 0.0  # build check: run N s, exit
     pygame.mixer.pre_init(Sound.RATE, -16, 1, 512)
+    os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")   # smooth when scaled, not blocky
     pygame.init()
     pygame.display.set_caption("Kick the Fly")
-    screen = pygame.display.set_mode((W, H))
+    # SCALED: the game always draws at 1280x760 and SDL scales that to the window or the whole screen, keeping the
+    # aspect ratio (black bars if needed) and mapping the mouse back, so it can go fullscreen at any resolution.
+    screen = pygame.display.set_mode((W, H), pygame.SCALED | pygame.RESIZABLE)
+    desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (W, H)
+    if "--fullscreen" in sys.argv or desk[0] < W or desk[1] < H + 60:   # asked for, or the window wouldn't fit
+        pygame.display.toggle_fullscreen()
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
     state: dict = {"stage": "starting"}
@@ -3084,6 +3092,10 @@ def main() -> int:
     t0 = time.perf_counter()
     while "brain" not in state:
         for ev in pygame.event.get():
+            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or
+                                              (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
+                pygame.display.toggle_fullscreen()
+                continue
             if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE):
                 return 0
         screen.fill(BG)
@@ -3116,6 +3128,10 @@ def main() -> int:
             break
         mouse = pygame.mouse.get_pos()
         for ev in pygame.event.get():
+            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or
+                                              (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
+                pygame.display.toggle_fullscreen()
+                continue
             running = game.handle(ev, now) and running
         game.update(now, (min(mouse[0], PLAY_W - 5), mouse[1]))
         game.draw(now, mouse)

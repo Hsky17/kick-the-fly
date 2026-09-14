@@ -52,6 +52,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 
 - **Startup:** the first launch takes a few seconds while the exe unpacks.
 - **Windows warning:** the exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **Fullscreen:** press **F11**, or start it with `KickTheFly.exe --fullscreen`. It scales to any screen size.
 - **If it crashes:** it writes `KickTheFly-crash.txt` next to the exe.
 
 ## Run from source
@@ -90,6 +91,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | E | arena: room, fan, flypaper, pool, lamp |
 | M | mute |
 | S / G | save a screenshot / a GIF |
+| F11 | fullscreen (or Alt+Enter); the window can also be resized and the game scales to fit |
 | H | help |
 | P | pain neurons: normal, more, max |
 | I | immortal mode: it can't die |
