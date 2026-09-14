@@ -21,11 +21,28 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **Immortal mode (I):** it feels everything but can't die. It heals when you stop, and breaks out of spider silk.
 - **Reward:** drop **sugar** and it walks over to eat. That lights up its PAM dopamine reward neurons and heals it.
 - **Death and autopsy:** it can die. The autopsy compares every brain region's last 2 s alive with its calm baseline, and shows pain on a timeline.
+- **It sees you coming:** move a weapon at it fast and its real looming detectors (LPLC2 and LC4) fire its giant fiber escape neuron, so it dodges. Sneak up slowly and it won't notice.
+- **Brain surgery (O):** silence or stimulate real neuron groups and watch what happens. Switch on the moonwalker neurons and it backs up; silence the giant fiber and it can't dodge.
+- **Neuron inspector:** in the big brain view, click any neuron to see its type, how fast it's firing, and its strongest connections in the connectome.
+- **It learns (a rule added on top):** each tool has its own scent, which reaches the fly's mushroom body. Hurt it with a tool and it starts running away when that tool comes near. Feed it sugar and it follows the sugar.
+- **Arenas (E):**
+  - **fan:** wind that fires its wind-sensing neurons
+  - **flypaper:** it gets stuck and struggles
+  - **pool:** it floats, gets wet wings, and can drown
+  - **lamp:** it's drawn to the light and singes itself on the bulb
+- **Sound:** every sound is generated in code. The wing buzz follows its flight neurons. **M** mutes.
+- **Save and share:** **S** saves a screenshot and **G** saves a GIF of the last 6 seconds. The autopsy can save a GIF of the death. Files go to Pictures\Kick the Fly.
 - **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Pain-sensing neurons glow orange and everything else glows cyan when firing. Press **B** for the big view.
 
 ![brain lighting up under the blowtorch](docs/brain.png)
 
 ![spider wrapping the fly](docs/spider.png)
+
+![neuron inspector](docs/inspect.png)
+
+![brain surgery](docs/surgery.png)
+
+![the lamp arena](docs/lamp.png)
 
 ![autopsy](docs/autopsy.png)
 
@@ -68,7 +85,12 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | 8 | freeze spray: hold to freeze it solid, then hit the ice to shatter it |
 | 9 | spider: click to drop a spider that hunts, bites and wraps it in silk |
 | 0 | sugar: click to drop sugar and reward it |
-| B | big live brain view (or click the brain panel) |
+| B | big live brain view (or click the brain panel); click a neuron to inspect it |
+| O | brain surgery |
+| E | arena: room, fan, flypaper, pool, lamp |
+| M | mute |
+| S / G | save a screenshot / a GIF |
+| H | help |
 | P | pain neurons: normal, more, max |
 | I | immortal mode: it can't die |
 | R | new fly |
@@ -81,6 +103,8 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - Which sensory neurons each hit drives.
 - The descending neurons read out for reactions. The jump, run and kick groups are the DN types that responded most to head, body and leg touch when the sim was probed.
 - Take-off and flight speed come from DNg02, the wing-power descending neurons.
+- Dodging: the looming detectors LPLC2 and LC4 exciting the giant fiber DNp01 is the connectome's own wiring. Driving LPLC2/LC4 takes DNp01 to 7–12× its calm rate, while on its own it never passed 2.6×.
+- The wind, humidity and light neurons each arena fires, and the Kenyon cell patterns each tool's scent produces.
 - The REWARD meter reads the PAM dopaminergic neurons.
 
 **Game rules**
@@ -92,6 +116,9 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - Brake cleaner dissolving the fly, and the brain slowing as it dissolves. Solvents depress nervous systems, so an inhibitory current grows on every neuron as the fly melts. How strong it is was picked for the game, not measured. The smell and taste neurons it fires are real.
 - Freezing and spider venom damping the brain, and the zapper's shock going into a random 30% of neurons (the sim has no current path to place it).
 - Sugar switching on the PAM reward neurons directly. In this sim taste input alone doesn't reach them, so sugar drives them the way PAM activation experiments do. The fly walking to the sugar is also a game rule.
+- How looming reaches the fly. The game measures how fast an object grows in its view and drives LPLC2/LC4 directly. Streaming pixels through the sim's own photoreceptors didn't work: the looming signal stayed inside the brain's random flicker.
+- Learning. The connectome has no learning in it, so a mushroom body style rule is added: Kenyon cells active with a scent gain fear while the PPL1 punishment neurons fire (pain drives them, a game rule) and liking while PAM reward neurons fire. Each tool's scent is also a game rule. Silence PPL1 or the Kenyon cells in surgery and it stops learning.
+- Being drawn to the lamp, and the arena physics.
 - The flight path. What triggers take-off is from the neurons, but where it flies is not.
 - Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
 

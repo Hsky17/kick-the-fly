@@ -11,7 +11,7 @@ if (-not (Test-Path .venv-build)) {
 .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --onefile --windowed --name KickTheFly `
     --icon build\icon.png --add-data "data\kick_brain.npz;." `
     --exclude-module connectome.loader --exclude-module connectome.layout --exclude-module pyarrow `
-    --exclude-module tkinter --exclude-module matplotlib --exclude-module PIL `
+    --exclude-module tkinter --exclude-module matplotlib `
     kick_the_fly.py
 .\dist\KickTheFly.exe --smoke 3 | Out-Null
 Get-Item dist\KickTheFly.exe | Select-Object Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }
