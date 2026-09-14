@@ -17,9 +17,11 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **Its reactions come from its descending neurons:** running, kicking, walking, backing up and turning.
 - **It can fly:** it takes off when its DNg02 wing-power neurons fire above normal, and flies away when its head-touch escape neurons fire.
 - **Pain meter:** built from touch overload, heat and cold sensors, chemical senses and descending-neuron alarm. The **blowtorch** and **brake cleaner** max it out.
+- **More pain neurons (P):** the wiring can't gain neurons, so the pain setting listens to more of the fly's real ones. **Normal** uses 9,080. **More** uses 11,392 and adds the rest of the body's sensory neurons. **Max** uses 13,238 and adds the ascending neurons that relay body signals to the brain. Higher settings also make each hit fire more of them.
+- **Immortal mode (I):** it feels everything but can't die. It heals when you stop, and breaks out of spider silk.
 - **Reward:** drop **sugar** and it walks over to eat. That lights up its PAM dopamine reward neurons and heals it.
 - **Death and autopsy:** it can die. The autopsy compares every brain region's last 2 s alive with its calm baseline, and shows pain on a timeline.
-- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions. It lights up as the fly gets hurt. Press **B** for the big view.
+- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Pain-sensing neurons glow orange and everything else glows cyan when firing. Press **B** for the big view.
 
 ![brain lighting up under the blowtorch](docs/brain.png)
 
@@ -67,6 +69,8 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | 9 | spider: click to drop a spider that hunts, bites and wraps it in silk |
 | 0 | sugar: click to drop sugar and reward it |
 | B | big live brain view (or click the brain panel) |
+| P | pain neurons: normal, more, max |
+| I | immortal mode: it can't die |
 | R | new fly |
 | Esc | quit |
 

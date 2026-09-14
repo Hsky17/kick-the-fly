@@ -24,8 +24,24 @@ touch in this model, so it isn't used. Wing touches mostly raise DNp09.
 
 Brain view: a front view built from the neurons' real cell-body positions. Each
 neuron is drawn as a fiber from its cell body toward the center of its synaptic
-partners, colored by direction, and glows when it fires above its calm rate.
-Real neuron shapes aren't bundled, so the fibers are estimates. B toggles a big view.
+partners, colored by direction and shaded by depth. Neurons firing above their
+calm rate glow: pain-sensing neurons hot orange, the rest cyan, and strongly
+firing ones sparkle. Real neuron shapes aren't bundled, so the fibers are
+estimates. B toggles a big view.
+
+Pain neurons (P): the connectome can't be given extra neurons, so this setting
+listens to more of the fly's real ones and makes each hit fire more of them.
+  normal  9,080 neurons   touch, heat/cold, smell and taste groups; a light touch
+                          fires 30% of a region's neurons
+  more   11,392 neurons   + the rest of the body's sensory neurons (campaniform
+                          sensilla, hair plates, chordotonal organs...), which
+                          also fire at half strength on every touch; 60%
+  max    13,238 neurons   + the 1,846 ascending neurons that carry body signals
+                          to the brain (the "body relay" pain part); 100%
+
+Immortal (I): it still feels everything, but health stops at 1 and it heals when
+left alone, melting and freezing stop short and wear off, and it breaks out of
+spider silk.
 
 Tracking: every neuron's spikes are counted into its group each 5 ms step. Each
 group's rate is compared with its own calm baseline, a 10 s average taken only
@@ -37,8 +53,10 @@ fly feels. It adds these, capped at 100:
   55%  touch overload  all touch neurons above calm, saturating at +35 spikes/s
   25%  heat / cold     hot cells TRN_VP2 or cold cells TRN_VP3 above calm, +30
   55%  chemical        smell ORNs and taste neurons above calm, +35
-  20%  DN alarm        all descending neurons above calm, saturating at +30%,
-                       held at its peak for ~1 s
+  20%  DN alarm        all descending neurons more than 6% above calm, saturating
+                       at +36%, held at its peak for ~1 s
+  30%  body relay      (max pain setting only) ascending neurons above calm, the
+                       same way
 The blowtorch drives every touch and heat neuron at full strength, which pins it.
 
 More ways to kill it (game rules around real sensory input):
@@ -138,7 +156,10 @@ POPS = (  # population name, superclasses
 # DNg02 (29 wing-power DNs) rests at ~7 spikes/s; over 30 s of play its level never passed 1.64x (p99.9 1.60), so 1.58x
 # takes off now and then.
 THRESH = {"jump": 3.0, "run": 2.4, "kick": 2.0, "walk": 3.0, "back": 3.8, "turn": 2.1, "fly": 1.58}
-PAIN_WEIGHTS = np.array([0.55, 0.25, 0.55, 0.20])   # touch overload, thermal, chemical, DN alarm; capped at 100
+PAIN_WEIGHTS = np.array([0.55, 0.25, 0.55, 0.20, 0.30])   # touch, thermal, chemical, DN alarm, body relay; cap 100
+PAIN_LEVELS = (  # name, share of a region's neurons a light touch recruits, how hard the rest of the body's sensors join
+    ("normal", 0.3, 0.0), ("more", 0.6, 0.5), ("max", 1.0, 1.0),
+)
 STIM_AMP = 0.5              # x ext_gain 4 = 2.0 per step: a driven neuron fires every refractory cycle
 HIST = 1500                  # history samples, one per 20 ms = 30 s
 CALM_STEPS = 400             # 2 s without a touch before the baseline learns again
@@ -184,6 +205,12 @@ class Brain:
             if side:
                 m &= sides == f"_{side}"
             add_detail(name, m)
+        # the rest of the body's sensory neurons (campaniform sensilla, hair plates, chordotonal organs, unnamed SN*):
+        # only counted and driven when the pain setting asks for more neurons
+        body_extra = add_detail("body_extra", np.isin(sc, ("vnc_sensory", "vnc_sensory_tbc", "sensory_ascending",
+                                                            "sensory_ascending_tbc")))
+        self.sense[("body_extra", None)] = np.flatnonzero(body_extra)
+        self.recruit, self.spill, self.pain_level = 0.3, 0.0, 0
         # PAM dopaminergic neurons (316) signal reward in flies; sugar drives them directly (see the docstring)
         self.sense[("reward", None)] = np.flatnonzero(add_detail("reward", np.char.startswith(types, "PAM")))
         self.sense[("all", None)] = np.arange(g.n)   # the zapper's shock
@@ -231,13 +258,25 @@ class Brain:
             return
         s = float(np.clip(strength, 0, 1))
         pop = self.sense[(region, side)]
-        rows = self.rng.choice(pop, size=max(1, int(len(pop) * (0.3 + 0.7 * s))), replace=False)
+        rows = self.rng.choice(pop, size=max(1, int(len(pop) * (self.recruit + (1 - self.recruit) * s))), replace=False)
         steps = 8 + int(40 * s)
         with self._lock:
             self.last_poke = self.steps
             old = self._pending.get((region, side))
             if old is None or steps > old[1]:
                 self._pending[(region, side)] = [rows, steps]
+        if region in TOUCH and self.spill > 0:       # more pain neurons: the rest of the body's sensors fire too
+            self.poke("body_extra", None, s * self.spill)
+
+    def set_pain_level(self, level: int) -> None:
+        _, self.recruit, self.spill = PAIN_LEVELS[level]
+        self.pain_level = level
+
+    def pain_neurons(self, level: int | None = None) -> int:
+        """How many real neurons the pain index listens to at this setting."""
+        level = self.pain_level if level is None else level
+        names = list(TOUCH) + ["heat", "cold", "smell", "taste"] + (["body_extra"] if level >= 1 else [])             + (["ascending"] if level >= 2 else [])
+        return int(sum(self.g_size[self.col[n]] for n in names))
 
     def kill(self) -> None:
         with self._lock:
@@ -333,7 +372,7 @@ class Brain:
         return float(self.fast[self.col[name]])
 
     def pain_parts(self, rates: np.ndarray, base: np.ndarray) -> np.ndarray:
-        """(touch overload, thermal, chemical, DN alarm) in 0..1 per row of group rates. See the module docstring."""
+        """(touch overload, thermal, chemical, DN alarm, body relay) in 0..1 per row of group rates. See the docstring."""
         rates = np.atleast_2d(rates)
 
         def above(names, full):
@@ -341,12 +380,14 @@ class Brain:
             sz = self.g_size[idx]
             return ((rates[:, idx] - base[idx]) * sz).sum(1) / sz.sum() / full
 
-        touch = above(TOUCH, 35.0)
+        touch = above(list(TOUCH) + (["body_extra"] if self.pain_level else []), 35.0)
         thermal = np.maximum(above(["heat"], 30.0), above(["cold"], 30.0))   # thermosensors fire ~24 spikes/s at rest
         chemical = above(["smell", "taste"], 35.0)
         d = self.col["descending"]
-        alarm = (rates[:, d] / max(float(base[d]), 1.0) - 1.0) / 0.3
-        return np.clip(np.stack([touch, thermal, chemical, alarm], 1), 0, 1)
+        alarm = (rates[:, d] / max(float(base[d]), 1.0) - 1.06) / 0.3        # 6% deadzone: resting DN flicker
+        a = self.col["ascending"]                    # ascending neurons carry body signals up to the brain
+        relay = (rates[:, a] / max(float(base[a]), 1.0) - 1.06) / 0.35 if self.pain_level >= 2 else np.zeros(len(rates))
+        return np.clip(np.stack([touch, thermal, chemical, alarm, relay], 1), 0, 1)
 
     @staticmethod
     def hold_alarm(parts: np.ndarray, decay: float = 0.95) -> np.ndarray:
@@ -379,14 +420,17 @@ class BrainView:
 
     Every neuron is a fiber from its real cell body (MaleCNS soma positions) to the synapse-weighted center of its
     partners' cell bodies, with a tuft of points there for its arbor. Neurons without a soma in the data (most sensory
-    neurons) are just the tuft. Real neuron shapes aren't in the pack, so fibers are estimates. Color is the fiber's
-    direction (red left-right, green up-down, blue front-back); brightness is how far a neuron fires above its own
-    calm rate, on top of a dim image of the whole brain. Neurons in the nerve cord are cut off at the neck.
+    neurons) are just the tuft. Real neuron shapes aren't in the pack, so fibers are estimates. The wiring is colored by
+    fiber direction (red left-right, green up-down, blue front-back) and shaded by depth, front brightest. Firing above
+    a neuron's own calm rate glows: pain-sensing neurons (touch, heat, cold, chemical, and the ascending relay) glow
+    hot orange, everything else cool white, and firing neurons that spiked on the latest step sparkle at their cell
+    body. The nerve cord is cut off at the neck, so ascending fibers enter through it.
     """
 
     FIBER, ARBOR = 18, 3
+    HOT = np.array([1.0, 0.34, 0.07], np.float32)
 
-    def __init__(self, soma: np.ndarray, W, seed: int = 1):
+    def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1):
         rng = np.random.default_rng(seed)
         n = len(soma)
         has = ~np.isnan(soma[:, 0])
@@ -404,6 +448,9 @@ class BrainView:
         col = dirv ** 2
         col = col / col.max(axis=1, keepdims=True)                   # saturated direction color
         self.col = (0.06 + 0.94 * col).astype(np.float32)
+        self.hot_mask = np.asarray(pain_mask, bool)
+        cool = (0.35 * self.col + 0.65 * np.array([0.3, 0.75, 1.0], np.float32)) * 0.55   # everything else: dim cyan
+        self.tint = np.where(self.hot_mask[:, None], self.HOT * 2.2, cool).astype(np.float32)
 
         t = np.linspace(0, 1, self.FIBER, dtype=np.float32)[None, :, None]
         bend = rng.normal(size=(n, 3)).astype(np.float32) * (0.12 * length)[:, None]
@@ -413,34 +460,42 @@ class BrainView:
         arbor = A[:, None] + rng.normal(size=(n, self.ARBOR, 3)).astype(np.float32) * r[:, None, None]
         pts = np.concatenate([fiber, arbor], 1)                      # (n, samples, 3)
         wts = np.concatenate([np.ones(self.FIBER), np.full(self.ARBOR, 2.0)]).astype(np.float32)
+        depth = np.clip(1.2 - (pts[..., 2] - 5000.0) / 50000.0, 0.35, 1.0)   # the front of the brain is brighter
         nid = np.broadcast_to(np.arange(n)[:, None], pts.shape[:2])
         keep = ok[:, None] & (pts[..., 2] < VIEW_ZCUT)
 
-        self.M, self.base, self.gain = {}, {}, {}
+        self.M, self.base, self.gain, self.spark_pix = {}, {}, {}, {}
         for key, (w, h) in VIEW_SIZES.items():
             px = ((pts[..., 0] - VIEW_X[0]) / (VIEW_X[1] - VIEW_X[0]) * w).astype(np.int32)
             py = ((pts[..., 1] - VIEW_Y[0]) / (VIEW_Y[1] - VIEW_Y[0]) * h).astype(np.int32)
             m = keep & (px >= 0) & (px < w) & (py >= 0) & (py < h)
-            P = sp.coo_array((np.broadcast_to(wts, pts.shape[:2])[m], ((py * w + px)[m], nid[m])), shape=(w * h, n)).tocsr()
+            P = sp.coo_array(((wts * depth)[m], ((py * w + px)[m], nid[m])), shape=(w * h, n)).tocsr()
             self.M[key] = P
             struct = P @ self.col
             p99 = float(np.percentile(struct.max(1), 99.0)) or 1.0
             self.base[key] = struct * (0.5 / p99)
-            self.gain[key] = 3.2 / p99
+            self.gain[key] = 3.4 / p99
+            self.spark_pix[key] = np.where(m[:, 0], py[:, 0] * w + px[:, 0], -1)   # cell body (or arbor) pixel
         self.calm = np.full(n, 0.025, np.float32)                   # per-neuron calm rate, spikes per step
+        self.firing = self.hot_firing = 0
 
-    def render(self, key: str, rates: np.ndarray, learn: bool) -> pygame.Surface:
+    def render(self, key: str, rates: np.ndarray, spiked: np.ndarray, t: float, learn: bool) -> pygame.Surface:
         if learn:
             self.calm += (rates - self.calm) * 0.01
-        r = rates / 0.025                                            # 1.0 = 5 Hz
-        excess = np.maximum(r - self.calm / 0.025 - 0.3, 0)
-        act = (0.04 * r + 2.2 * excess).astype(np.float32)
-        light = (self.M[key] @ (act[:, None] * self.col)) * self.gain[key]
+        excess = np.maximum(rates / 0.025 - self.calm / 0.025 - np.where(self.hot_mask, 1.0, 0.6), 0)
+        act = (2.2 * excess).astype(np.float32)
+        firing = act > 0.05
+        self.firing, self.hot_firing = int(firing.sum()), int((firing & self.hot_mask).sum())
+        light = (self.M[key] @ (act[:, None] * self.tint)) * self.gain[key]
+        if len(spiked):                               # sparkles: firing neurons that spiked on the latest step
+            s = spiked[act[spiked] > 2.0]
+            pix = self.spark_pix[key][s]
+            s, pix = s[pix >= 0], pix[pix >= 0]
+            np.add.at(light, pix, np.where(self.hot_mask[s, None], self.HOT * 3.0, np.float32(0.7)))
         w, h = VIEW_SIZES[key]
         img = (255 * (1 - np.exp(-(self.base[key] + light)))).astype(np.uint8)
         surf = pygame.image.frombuffer(img.tobytes(), (w, h), "RGB").copy()
-        # bloom from the firing only, so the wiring stays sharp and activity glows
-        hot = (255 * (1 - np.exp(-0.6 * light))).astype(np.uint8)
+        hot = (255 * (1 - np.exp(-0.7 * light))).astype(np.uint8)          # bloom from the firing only
         glow = pygame.image.frombuffer(hot.tobytes(), (w, h), "RGB")
         glow = pygame.transform.smoothscale(pygame.transform.smoothscale(glow, (w // 6, h // 6)), (w, h))
         surf.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
@@ -1040,6 +1095,9 @@ class Game:
         self.big_view = False
         self.view_stop = False
         view.calm[:] = brain.sim.activity.rates()   # the warmed-up brain's own resting rates
+        self.born_view = time.perf_counter()
+        self.immortal = False
+        self.pain_level = 0
         threading.Thread(target=self._view_loop, name="brain-view", daemon=True).start()
         self.new_fly()
 
@@ -1070,7 +1128,8 @@ class Game:
         self.brain.sedation = 0.0
         self.reward = 0.0
         self.pain = 0.0
-        self.pain_parts = np.zeros(4)
+        self.pain_parts = np.zeros(5)
+        self.last_damage = 0.0
         self.pain_peak = 0.0
         self.pain_max_s = 0.0
         self.pain_trace: list[float] = []
@@ -1084,7 +1143,9 @@ class Game:
             key = "big" if self.big_view else "panel"
             br = self.brain
             calm = not br.dead and br.sedation == 0 and br.steps - br.last_poke > CALM_STEPS
-            self.view_surf[key] = self.view.render(key, br.sim.activity.rates(), learn=calm)
+            raster = br.sim.activity.raster()
+            spiked = raster[-1] if raster else np.zeros(0, np.int64)
+            self.view_surf[key] = self.view.render(key, br.sim.activity.rates(), spiked, t0 - self.born_view, learn=calm)
             time.sleep(max(0.005, 0.05 - (time.perf_counter() - t0)))
 
     def _view_surface(self, key: str) -> pygame.Surface:
@@ -1094,18 +1155,55 @@ class Game:
             surf.fill((4, 5, 8))
         return surf
 
+    def _hud_overlay(self, surf, rect: pygame.Rect, now: float, small: bool) -> None:
+        """Sci-fi dressing over a brain view: a sweeping scan band, corner brackets and live counters."""
+        ph = (now * 0.22) % 1.0
+        band_y = rect.y + int(ph * rect.h)
+        band = pygame.Surface((rect.w, 34))
+        for k in range(34):                          # additive glow that fades in toward the scan line
+            a = 0.16 * (k / 33) ** 2
+            band.fill((int(80 * a), int(200 * a), int(255 * a)), (0, k, rect.w, 1))
+        clip = surf.get_clip()
+        surf.set_clip(rect)
+        surf.blit(band, (rect.x, band_y - 34), special_flags=pygame.BLEND_RGB_ADD)
+        pygame.draw.line(surf, (60, 120, 150), (rect.x, band_y), (rect.right, band_y), 1)
+        surf.set_clip(clip)
+        L = 10 if small else 22
+        for cx, cy, sx, sy in ((rect.x, rect.y, 1, 1), (rect.right - 1, rect.y, -1, 1),
+                               (rect.x, rect.bottom - 1, 1, -1), (rect.right - 1, rect.bottom - 1, -1, -1)):
+            pygame.draw.line(surf, ACCENT, (cx, cy), (cx + sx * L, cy), 2)
+            pygame.draw.line(surf, ACCENT, (cx, cy), (cx, cy + sy * L), 2)
+        v = self.view
+        if small:
+            self._text(surf, f"{v.firing:,} firing", (rect.x + 6, rect.y + 4), (150, 215, 240), self.f_small)
+            self._text(surf, f"{v.hot_firing:,} pain", (rect.right - 6, rect.y + 4), (255, 150, 70), self.f_small, "topright")
+
     def _draw_big_view(self, surf) -> None:
         w, h = VIEW_SIZES["big"]
-        veil = pygame.Surface((PLAY_W, h + 96), pygame.SRCALPHA)
-        pygame.draw.rect(veil, (4, 5, 8, 235), veil.get_rect(), border_radius=14)
-        surf.blit(veil, (0, 8))
-        surf.blit(self._view_surface("big"), ((PLAY_W - w) // 2, 58))
-        self._text(surf, "THE FLY'S BRAIN, LIVE", (22, 18), INK, self.f_head)
-        self._text(surf, "front view   |   color = fiber direction: red left-right, green up-down, blue front-back   |   "
-                         "bright = firing above normal", (24, 42), LABEL, self.f_small)
-        self._text(surf, "B to close", (PLAY_W - 22, 20), LABEL, self.f_small, "topright")
+        now = time.perf_counter()
+        veil = pygame.Surface((PLAY_W, h + 120), pygame.SRCALPHA)
+        pygame.draw.rect(veil, (3, 4, 7, 252), veil.get_rect(), border_radius=14)
+        surf.blit(veil, (0, 0))
+        rect = pygame.Rect((PLAY_W - w) // 2, 58, w, h)
+        surf.blit(self._view_surface("big"), rect)
+        self._hud_overlay(surf, rect, now, small=False)
+        for label, fx, fy in (("optic lobe", 0.10, 0.18), ("optic lobe", 0.90, 0.18), ("mushroom bodies", 0.50, 0.06),
+                              ("central brain", 0.50, 0.42), ("to nerve cord", 0.50, 0.93)):
+            self._text(surf, label.upper(), (rect.x + int(fx * w), rect.y + int(fy * h)), (120, 170, 190), self.f_small, "center")
+        self._text(surf, "LIVE CONNECTOME", (22, 16), INK, self.f_head)
+        v = self.view
+        pulse = 0.5 + 0.5 * math.sin(now * 6)
+        self._text(surf, f"{v.firing:,} neurons firing above normal", (230, 20), (150, 215, 240), self.f_bold)
+        self._text(surf, f"{v.hot_firing:,} pain neurons", (520, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
+        self._text(surf, "B to close", (PLAY_W - 22, 22), LABEL, self.f_small, "topright")
+        ly = rect.bottom + 12
+        aacircle(surf, (30, ly + 7), 5, (255, 130, 40))
+        r = self._text(surf, "pain-sensing neurons firing", (42, ly), TEXT, self.f_small)
+        aacircle(surf, (r.right + 22, ly + 7), 5, (110, 200, 255))
+        r = self._text(surf, "other neurons firing", (r.right + 34, ly), TEXT, self.f_small)
+        self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
         self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
-                   (24, 58 + h + 14), DIM, self.f_small)
+                   (24, ly + 20), DIM, self.f_small)
 
     def hit(self, i: int, strength: float) -> None:
         key = particle_region(i)
@@ -1198,7 +1296,7 @@ class Game:
         if kind == "cleaner":
             fly.soak = min(1.0, fly.soak + 0.04)
         else:
-            fly.frost = min(1.0, fly.frost + 0.006)
+            fly.frost = min(0.9 if self.immortal else 1.0, fly.frost + 0.006)
         if fly.dead:
             return
         if kind == "cleaner":
@@ -1256,9 +1354,14 @@ class Game:
     def _effects(self, now: float) -> None:
         """Brake cleaner, freezing, venom and sugar over time. Their brain damping is a game rule (see docstring)."""
         fly = self.fly
+        if self.immortal:                                    # melting and venom stop short and wear off
+            fly.melt = min(fly.melt, 0.85)
+            if fly.soak < 0.05:
+                fly.melt = max(0.0, fly.melt - 0.002)
+            fly.venom = max(0.0, fly.venom - 0.002)
         if fly.dissolved_at is None and fly.soak > 0.02:
-            fly.melt = min(1.0, fly.melt + 0.0045 * fly.soak)
-            fly.soak *= 0.997
+            fly.melt = min(0.85 if self.immortal else 1.0, fly.melt + 0.0045 * fly.soak)
+            fly.soak *= 0.985 if self.immortal else 0.997     # immortal: the solvent evaporates fast
             if not fly.dead:
                 self.damage(0.25 * fly.soak, "brake cleaner")
                 for region, side in TORCH_KEYS[:-1]:  # the solvent eating the cuticle hits the touch neurons too
@@ -1310,6 +1413,12 @@ class Game:
                 if sp["bites"] >= 2 and not fly.wrapped:
                     fly.wrapped = True
                     self.note("WRAPPED  in spider silk")
+                if self.immortal and sp["bites"] >= 5:          # it can't be eaten: it breaks out and the spider leaves
+                    fly.wrapped, fly.grabbed = False, None
+                    sp["state"] = "leave"
+                    self.popup(fly.p[HEAD] + (0, -60), "BROKE FREE!", (255, 225, 120), force=True)
+                    self.note("BROKE FREE of the silk")
+                    return
             if fly.wrapped:
                 fly.grabbed = THX
         elif sp["state"] in ("leave", "carry"):
@@ -1506,9 +1615,13 @@ class Game:
                 self.bucks += int(1 + 9 * s)
                 self.hits += 1
             if self.pending_damage:
-                fly.health = max(0.0, fly.health - self.pending_damage)
+                floor = 1.0 if self.immortal else 0.0          # immortal: it can be hurt, never killed
+                fly.health = max(floor, fly.health - self.pending_damage)
+                self.last_damage = now
                 if fly.health <= 0:
                     self._die(now)
+            elif self.immortal and now - self.last_damage > 1.5:
+                fly.health = min(MAX_HEALTH, fly.health + 0.1)   # heals ~6 health/s once you stop
         self.pending_hits.clear()
         self.pending_damage = 0.0
         if fly.dead:
@@ -1764,18 +1877,19 @@ class Game:
         # health
         bw, bx, by = 300, PLAY_W // 2 - 150, 16
         frac = fly.health / MAX_HEALTH
-        col = S_GOOD if frac > 0.5 else S_WARN if frac > 0.25 else S_CRIT
+        col = (230, 185, 60) if self.immortal else S_GOOD if frac > 0.5 else S_WARN if frac > 0.25 else S_CRIT
         pygame.draw.rect(surf, (10, 12, 18), (bx - 4, by - 4, bw + 8, 26), border_radius=13)
         if frac > 0:
             pygame.draw.rect(surf, col, (bx, by, max(18, int(bw * frac)), 18), border_radius=9)
             pygame.draw.rect(surf, tuple(min(255, c + 60) for c in col), (bx + 6, by + 3, max(6, int(bw * frac) - 12), 4), border_radius=2)
-        self._text(surf, "DEAD" if fly.dead else f"HEALTH {fly.health:.0f}", (PLAY_W // 2, by + 9), INK, self.f_bold, "center")
-        self._text(surf, "1-9, 0 tools   B brain   R new fly   Esc quit", (PLAY_W - 14, 14), LABEL, self.f_small, "topright")
+        label = "DEAD" if fly.dead else f"HEALTH {fly.health:.0f}" + ("  IMMORTAL" if self.immortal else "")
+        self._text(surf, label, (PLAY_W // 2, by + 9), INK, self.f_bold, "center")
+        self._text(surf, "B brain   P pain   I immortal   R new fly   Esc quit", (PLAY_W - 14, 44), LABEL, self.f_small, "topright")
         self._draw_pain(surf)
         self._draw_reward(surf)
 
     def _draw_reward(self, surf) -> None:
-        x, y, w, h = 10, 276, 236, 64
+        x, y, w, h = 10, 308, 236, 64
         card = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 180), card.get_rect(), border_radius=10)
         surf.blit(card, (x, y))
@@ -1792,7 +1906,7 @@ class Game:
         self._text(surf, f"PAM dopamine neurons x{lvl:.2f} calm", (x + 12, y + 46), LABEL, self.f_small)
 
     def _draw_pain(self, surf) -> None:
-        x, y, w, h = 10, 78, 236, 190
+        x, y, w, h = 10, 78, 236, 222
         card = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 180), card.get_rect(), border_radius=10)
         surf.blit(card, (x, y))
@@ -1808,19 +1922,22 @@ class Game:
         if p > 0.5:
             pygame.draw.rect(surf, col, (bx, y + 64, max(8, int(bw * p / 100)), 10), border_radius=5)
         yy = y + 84
-        for label, v in zip(("touch overload", "heat / cold", "chemical", "DN alarm"), self.pain_parts):
+        for label, v in zip(("touch overload", "heat / cold", "chemical", "DN alarm", "body relay"), self.pain_parts):
             self._text(surf, label, (bx, yy - 3), TEXT, self.f_small)
             self._bar(surf, bx + 112, yy, bw - 146, float(v), (170, 176, 188))
             self._text(surf, f"{v * 100:3.0f}", (bx + bw, yy - 3), TEXT, self.f_small, "topright")
             yy += 15
         tr = self.pain_trace
-        sy, sh = y + 147, 22
+        sy, sh = y + 162, 22
         pygame.draw.rect(surf, (22, 26, 34), (bx, sy, bw, sh), border_radius=3)
         if len(tr) > 2:
             pts = [(bx + k * bw / 719, sy + sh - tr[k] / 100 * (sh - 2)) for k in range(0, len(tr), 3)]
             if len(pts) > 1:
                 pygame.draw.aalines(surf, S_CRIT, False, pts)
-        self._text(surf, f"peak {self.pain_peak:.0f}   maxed {self.pain_max_s:.1f}s", (bx, y + h - 17), LABEL, self.f_small)
+        self._text(surf, f"peak {self.pain_peak:.0f}   maxed {self.pain_max_s:.1f}s", (bx, y + h - 34), LABEL, self.f_small)
+        lvl = PAIN_LEVELS[self.pain_level][0]
+        self._text(surf, f"P  {lvl} ({self.brain.pain_neurons():,} neurons)", (bx, y + h - 18),
+                   AMBER if self.pain_level else TEXT, self.f_small)
 
     def _draw_toolbar(self, surf) -> None:
         bw, gap = 80, 6
@@ -1860,6 +1977,7 @@ class Game:
             self._text(scr, "shown in big view", self.view_rect.center, DIM, self.f_small, "center")
         else:
             scr.blit(self._view_surface("panel"), (x, 54))
+            self._hud_overlay(scr, self.view_rect, now, small=True)
             self._text(scr, "B: big view", (x + nw - 6, 54 + nh - 16), LABEL, self.f_small, "topright")
         y = 54 + nh + 12
 
@@ -2040,6 +2158,14 @@ class Game:
                 self.new_fly()
             elif ev.key == pygame.K_b:
                 self.big_view = not self.big_view
+            elif ev.key == pygame.K_i:
+                self.immortal = not self.immortal
+                self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
+                self.popup(self.fly.p[HEAD] + (0, -70), "IMMORTAL!" if self.immortal else "MORTAL", (255, 225, 120), force=True)
+            elif ev.key == pygame.K_p:
+                self.pain_level = (self.pain_level + 1) % len(PAIN_LEVELS)
+                self.brain.set_pain_level(self.pain_level)
+                self.note(f"PAIN     {PAIN_LEVELS[self.pain_level][0]}: {self.brain.pain_neurons():,} neurons")
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             if self.report is not None:
                 if getattr(self, "new_fly_rect", None) and self.new_fly_rect.collidepoint(ev.pos):
@@ -2074,9 +2200,11 @@ def load_brain(out: dict) -> None:
         g, weights, soma = brainpack.load(pack)
         out["stage"] = f"wiring {g.n:,} neurons"
         sim = LIFSim(None, LIFParams(), W_in=weights)
-        out["stage"] = "placing neurons"
-        out["view"] = BrainView(soma, weights)
         brain = Brain(g, sim)
+        out["stage"] = "placing neurons"
+        pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
+        pain_mask = np.isin(brain.det_id, pain_groups) | (brain.pop_id == [n for n, _ in POPS].index("ascending"))
+        out["view"] = BrainView(soma, weights, pain_mask)
         out["stage"] = "waking the fly up"
         brain.warmup()
         out["brain"] = brain
