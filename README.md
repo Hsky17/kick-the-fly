@@ -42,6 +42,8 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 
 ![stuck on flypaper](docs/flypaper3d.png)
 
+![see-through brain panel](docs/see-through.png)
+
 ![brain lighting up under the blowtorch](docs/brain.png)
 
 ![spider wrapping the fly](docs/spider.png)
@@ -94,7 +96,9 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | P / I | pain neurons / immortal mode |
 | M | mute |
 | F12 / G | save a screenshot / a GIF of the last 6 seconds |
-| F11 | fullscreen (it scales to any screen) |
+| V | brain panel: solid, see-through, faint, hidden (hidden gives the room the whole screen) |
+| U | menu size: crisp (sharp whole-pixel scaling, the default) or large |
+| F11 | fullscreen; the game fills any screen with no black bars |
 | R | new fly |
 | Esc | free the mouse, close menus, then quit |
 

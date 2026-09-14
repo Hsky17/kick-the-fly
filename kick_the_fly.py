@@ -1951,6 +1951,23 @@ class Game:
             yy += 16
         self._text(surf, "learning rule added to the connectome", (x + 12, y + h - 16), DIM, self.f_small)
 
+    def _above_head(self):
+        """Where a popup over the fly goes (the 3D game overrides this)."""
+        return self.fly.p[HEAD] + (0, -70)
+
+    def _panel_image(self, surf: pygame.Surface) -> pygame.Surface:
+        """In see-through panel modes the brain image's black background turns transparent; bright neurons stay."""
+        pa = getattr(self, "panel_alpha", 255)
+        if pa >= 255:
+            return surf
+        out = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        out.blit(surf, (0, 0))
+        rgb = pygame.surfarray.pixels3d(out)
+        alpha = pygame.surfarray.pixels_alpha(out)
+        alpha[:] = np.clip(rgb.max(axis=2).astype(np.int16) * 2 + pa // 3, 0, 255)
+        del rgb, alpha
+        return out
+
     def hit(self, i: int, strength: float) -> None:
         key = particle_region(i)
         self.pending_hits[key] = max(self.pending_hits.get(key, 0.0), strength)
@@ -2682,7 +2699,7 @@ class Game:
             bits.append("SURGERY ON (O)")
         if self.sound.muted:
             bits.append("muted (M)")
-        bits.append("F11 fullscreen   H help")
+        bits.append(getattr(self, "hint_extra", "F11 fullscreen   H help"))
         hint = self.f_small.render("   ".join(bits), True, AMBER if self.brain.surgery else TEXT)
         box = hint.get_rect(topright=(PLAY_W - 14, 44)).inflate(14, 6)
         pygame.draw.rect(surf, (10, 12, 18, 170), box, border_radius=6)
@@ -2766,7 +2783,8 @@ class Game:
     def _draw_brain(self, now: float) -> None:
         scr, br = self.screen, self.brain
         x0 = PLAY_W
-        pygame.draw.rect(scr, PANEL_BG, (x0, 0, W - x0, H))
+        pa = getattr(self, "panel_alpha", 255)
+        pygame.draw.rect(scr, (*PANEL_BG, pa), (x0, 0, W - x0, H))
         pygame.draw.line(scr, BORDER, (x0, 0), (x0, H))
         x = x0 + 12
         self._text(scr, "THE FLY'S BRAIN", (x, 8), ACCENT, self.f_head)
@@ -2781,7 +2799,7 @@ class Game:
             pygame.draw.rect(scr, (4, 5, 8), self.view_rect)
             self._text(scr, "shown in big view", self.view_rect.center, DIM, self.f_small, "center")
         else:
-            scr.blit(self._view_surface("panel"), (x, 54))
+            scr.blit(self._panel_image(self._view_surface("panel")), (x, 54))
             self._hud_overlay(scr, self.view_rect, now, small=True)
             self._text(scr, "B: big view", (x + nw - 6, 54 + nh - 16), LABEL, self.f_small, "topright")
         y = 54 + nh + 12
@@ -2817,7 +2835,7 @@ class Game:
 
         self._text(scr, "REACTIONS", (x, y), LABEL, self.f_small)
         y += 16
-        for t, msg in reversed(self.log[-4:]):
+        for t, msg in reversed(self.log[-(4 if H >= 740 else 3):]):
             age = now - t
             col = AMBER if age < 1.0 else TEXT if age < 5 else DIM
             self._text(scr, f"{age:4.1f}s  {msg}", (x, y), col, self.f_small)
@@ -2827,7 +2845,7 @@ class Game:
 
     def _card(self, scr, x, y, w, title, unit, rows) -> int:
         h = 24 + rows * 16
-        pygame.draw.rect(scr, CARD, (x - 4, y - 4, w + 8, h + 4), border_radius=8)
+        pygame.draw.rect(scr, (*CARD, min(255, getattr(self, "panel_alpha", 255) + 40)), (x - 4, y - 4, w + 8, h + 4), border_radius=8)
         self._text(scr, title, (x + 4, y), LABEL, self.f_small)
         self._text(scr, unit, (x + w - 6, y), DIM, self.f_small, "topright")
         return y + 22
@@ -2993,7 +3011,7 @@ class Game:
             elif ev.key == pygame.K_i:
                 self.immortal = not self.immortal
                 self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
-                self.popup(self.fly.p[HEAD] + (0, -70), "IMMORTAL!" if self.immortal else "MORTAL", (255, 225, 120), force=True)
+                self.popup(self._above_head(), "IMMORTAL!" if self.immortal else "MORTAL", (255, 225, 120), force=True)
             elif ev.key == pygame.K_p:
                 self.pain_level = (self.pain_level + 1) % len(PAIN_LEVELS)
                 self.brain.set_pain_level(self.pain_level)

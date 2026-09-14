@@ -43,8 +43,25 @@ LAMP3 = np.array([0.0, 2.2, -0.8])
 FAN3 = np.array([-RX + 0.45, 0.0, 0.6])
 PAPER3 = (-1.6, 1.6, -1.9, 1.1)             # flypaper x0, x1, z0, z1
 REACH, GRAB_REACH = 3.0, 3.2
-VIEW_W, VIEW_H = k2.PLAY_W, k2.H            # the 3D view covers the arena part of the 1280x760 HUD
-HUD_W, HUD_H = k2.W, k2.H
+PANEL_W = k2.W - k2.PLAY_W                 # the brain panel's width in HUD units (390)
+PANEL_MODES = (("solid", 255), ("see-through", 150), ("faint", 70), ("hidden", 0))
+UI_MODES = ("crisp", "large")
+
+
+def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int):
+    """HUD units -> window pixels. The HUD always fills the window (no black bars). In "crisp" mode the scale is a
+    whole number whenever the window is at least 700 px tall per step (1440p -> 2x), so text maps to whole pixels;
+    "large" keeps the original 760-unit-tall HUD, smoothly scaled. Returns (scale, hud_w, hud_h, play_w, view_w):
+    play_w is the HUD area left of the brain panel, view_w how wide the 3D view is."""
+    s = max(1, Hn // 700) if ui_mode == "crisp" and Hn >= 700 else Hn / 760
+    need = 1280 if PANEL_MODES[panel_mode][0] != "hidden" else 900
+    if Wn / s < need:                               # too narrow for the HUD: scale down to fit the width
+        s = Wn / need
+    hud_w, hud_h = max(1, int(round(Wn / s))), max(1, int(round(Hn / s)))
+    hidden = PANEL_MODES[panel_mode][0] == "hidden"
+    play_w = hud_w if hidden else hud_w - PANEL_W
+    view_w = play_w if PANEL_MODES[panel_mode][0] == "solid" else hud_w
+    return s, hud_w, hud_h, play_w, view_w
 TOOL_SIZE = {"flick": 0.06, "swatter": 0.2, "bomb": 0.08, "torch": 0.09, "cleaner": 0.09, "zapper": 0.12,
              "freeze": 0.09, "spider": 0.08}
 SKY_CLEAR = (0.08, 0.09, 0.11)
@@ -67,6 +84,8 @@ HELP3D = (
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
     ("F12 / G", "save a screenshot / a GIF of the last 6 s"),
+    ("V", "brain panel: solid, see-through, faint, hidden"),
+    ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
     ("R", "new fly"),
     ("Esc", "free the mouse, close menus, then quit"),
@@ -452,6 +471,10 @@ class Game3D(k2.Game):
         self.popups3: list = []
         self._room = self._build_room()
         self.quit_armed = False
+        self.panel_mode, self.ui_mode = 0, "crisp"
+        self.panel_alpha = 255
+        self.view_w, self.hud_h = k2.PLAY_W, k2.H
+        self.hint_extra = "V panel   F11 fullscreen   H help"
 
     # --- lifecycle -------------------------------------------------------------------------------------------------
     def new_fly(self) -> None:
@@ -501,6 +524,9 @@ class Game3D(k2.Game):
 
     def _overlay_open(self) -> bool:
         return self.report is not None or self.big_view or self.surgery_open or self.help_open
+
+    def _above_head(self):
+        return self.fly.p[HEAD] + (0, 0.45, 0)
 
     # --- tools --------------------------------------------------------------------------------------------------------
     def use_tool3d(self, now: float) -> None:
@@ -1532,7 +1558,7 @@ class Game3D(k2.Game):
             hud.blit(shd, (x + 3, y + 3))
             hud.blit(txt, (x, y))
         if not self._overlay_open():
-            cx, cy = VIEW_W // 2, VIEW_H // 2
+            cx, cy = k2.PLAY_W // 2, self.hud_h // 2
             eye, d = self.aim()
             i, t, _ = self.fly.nearest_to_ray(eye, d, REACH, 0.25)
             col = (255, 190, 90) if i is not None else (240, 240, 240)
@@ -1544,7 +1570,7 @@ class Game3D(k2.Game):
         if not self.look and not self._overlay_open():
             msg = self.f_bold.render("click the room (or press Tab) to look around" if not self.quit_armed else
                                      "press Esc again to quit, or click the room to keep playing", True, INK_ON)
-            box = msg.get_rect(center=(VIEW_W // 2, VIEW_H // 2 + 60)).inflate(24, 12)
+            box = msg.get_rect(center=(k2.PLAY_W // 2, self.hud_h // 2 + 60)).inflate(24, 12)
             pygame.draw.rect(hud, (8, 10, 16, 200), box, border_radius=8)
             hud.blit(msg, msg.get_rect(center=box.center))
         if self.report is not None:
@@ -1555,7 +1581,10 @@ class Game3D(k2.Game):
             self._draw_surgery(hud)
         if self.help_open:
             self._draw_help(hud)
-        self._draw_brain(now)
+        if PANEL_MODES[self.panel_mode][0] != "hidden":
+            self._draw_brain(now)
+        else:
+            self.view_rect = pygame.Rect(0, 0, 0, 0)
 
     def _draw_help(self, surf) -> None:
         panel = pygame.Rect(135, 80, 620, 64 + 30 * len(HELP3D))
@@ -1596,6 +1625,15 @@ class Game3D(k2.Game):
             if ev.key == pygame.K_F12:
                 self.save_png()
                 return True
+            if ev.key == pygame.K_v:
+                self.panel_mode = (self.panel_mode + 1) % len(PANEL_MODES)
+                self.panel_alpha = PANEL_MODES[self.panel_mode][1]
+                self.saved_msg = (f"brain panel: {PANEL_MODES[self.panel_mode][0]}", time.perf_counter())
+                return True
+            if ev.key == pygame.K_u:
+                self.ui_mode = UI_MODES[(UI_MODES.index(self.ui_mode) + 1) % len(UI_MODES)]
+                self.saved_msg = (f"menu size: {self.ui_mode}", time.perf_counter())
+                return True
             if ev.key in (pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_LSHIFT, pygame.K_LCTRL, pygame.K_c, pygame.K_SPACE):
                 return True
             if ev.key == pygame.K_r and self.report is not None:
@@ -1610,7 +1648,7 @@ class Game3D(k2.Game):
                 self.use_tool3d(now)
                 return True
             pos = to_logical(ev.pos)
-            if not self._overlay_open() and pos[0] < VIEW_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
+            if not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
                 self.set_look(True)
                 return True
             if self.surgery_open or self.help_open or self.report is not None or self.big_view:
@@ -1646,24 +1684,32 @@ class App:
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
-        pygame.display.set_mode((HUD_W, HUD_H), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
+        pygame.display.set_mode((k2.W, k2.H), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
         pygame.display.set_caption("Kick the Fly")
         self.ctx = moderngl.create_context()
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.rd = Renderer(self.ctx)
-        desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (HUD_W, HUD_H)
-        if fullscreen or desk[0] < HUD_W or desk[1] < HUD_H + 60:
+        desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (k2.W, k2.H)
+        if fullscreen or desk[0] < k2.W or desk[1] < k2.H + 60:
             pygame.display.toggle_fullscreen()
-        self.hud_tex = self.ctx.texture((HUD_W, HUD_H), 4)
-        self.hud_tex.filter = moderngl.LINEAR, moderngl.LINEAR
+        self.hud_tex = None
+        self.hud_size = None
         self.scene_size = None
         self.small = self.ctx.simple_framebuffer(k2.GIF_SIZE)
 
-    def layout(self):
-        Wn, Hn = pygame.display.get_window_size()
-        s = min(Wn / HUD_W, Hn / HUD_H)
-        ox, oy = (Wn - HUD_W * s) / 2, (Hn - HUD_H * s) / 2
-        return Wn, Hn, s, ox, oy
+    def layout(self, game=None, size=None):
+        Wn, Hn = size or pygame.display.get_window_size()
+        ui, panel = (game.ui_mode, game.panel_mode) if game is not None else ("crisp", 0)
+        s, hud_w, hud_h, play_w, view_w = compute_layout(Wn, Hn, ui, panel)
+        return Wn, Hn, s, hud_w, hud_h, play_w, view_w
+
+    def hud_texture(self, hud_w: int, hud_h: int, s: float) -> moderngl.Texture:
+        if self.hud_size != (hud_w, hud_h):
+            self.hud_size = (hud_w, hud_h)
+            self.hud_tex = self.ctx.texture((hud_w, hud_h), 4)
+        crisp = abs(s - round(s)) < 1e-6
+        self.hud_tex.filter = (moderngl.NEAREST, moderngl.NEAREST) if crisp else (moderngl.LINEAR, moderngl.LINEAR)
+        return self.hud_tex
 
     def _ensure_scene(self, w: int, h: int):
         if self.scene_size == (w, h):
@@ -1681,8 +1727,12 @@ class App:
 
     def render(self, game: Game3D, now: float, target=None, size=None):
         ctx, rd = self.ctx, self.rd
-        Wn, Hn, s, ox, oy = self.layout() if target is None else (size[0], size[1], size[0] / HUD_W, 0, 0)
-        vw, vh = max(1, int(round(VIEW_W * s))), max(1, int(round(VIEW_H * s)))
+        Wn, Hn, s, hud_w, hud_h, play_w, view_w = self.layout(game, size)
+        k2.W, k2.H, k2.PLAY_W, k2.FLOOR = hud_w, hud_h, play_w, hud_h - 120   # the shared HUD code reads these
+        game.view_w, game.hud_h = view_w, hud_h
+        if game.screen.get_size() != (hud_w, hud_h):
+            game.screen = pygame.Surface((hud_w, hud_h), pygame.SRCALPHA)
+        vw, vh = max(1, int(round(view_w * s))), Hn
         self._ensure_scene(vw, vh)
         fb = self.ms or self.scene
         fb.use()
@@ -1695,6 +1745,11 @@ class App:
         f, r, u = pl.basis()
         view = look_at(eye + shake, eye + shake + f)
         proj = perspective(math.radians(70), vw / vh, 0.03, 40.0)
+        # when the 3D view runs under a see-through panel, shift the lens so the crosshair and your hand stay centered
+        # on the open part of the screen
+        lens = np.eye(4)
+        lens[0, 3] = play_w / view_w - 1                  # shift in clip x by w: moves the image center left
+        proj = lens @ proj
         lamp_on = k2.ARENAS[game.arena_i] == "lamp"
         lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
                       u_sky=(0.42, 0.44, 0.5), u_ground=(0.24, 0.2, 0.17), u_lp0=(0.0, RY - 0.3, 0.0), u_lc0=(2.4, 2.2, 1.9),
@@ -1714,7 +1769,7 @@ class App:
         cam_lights["u_lp0"] = (view @ np.append(lights["u_lp0"], 1))[:3]
         cam_lights["u_lp1"] = (view @ np.append(lights["u_lp1"], 1))[:3]
         squeeze = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.1, -0.9], [0, 0, 0, 1.0]])
-        rd.set_scene(np.eye(4), squeeze @ perspective(math.radians(60), vw / vh, 0.01, 5.0), (0, 0, 0), cam_lights, now)
+        rd.set_scene(np.eye(4), squeeze @ lens @ perspective(math.radians(60), vw / vh, 0.01, 5.0), (0, 0, 0), cam_lights, now)
         rd.draw_layer("view")
         rd.draw_layer("view_blend")
         if self.ms is not None:
@@ -1727,17 +1782,19 @@ class App:
             ndc = c[:3] / c[3]
             if abs(ndc[0]) > 1.2 or abs(ndc[1]) > 1.2:
                 return None
-            return ((ndc[0] + 1) / 2 * VIEW_W, (1 - ndc[1]) / 2 * VIEW_H)
+            return ((ndc[0] + 1) / 2 * view_w, (1 - ndc[1]) / 2 * hud_h)
 
         game.draw_hud3d(now, project)
-        self.hud_tex.write(pygame.image.tobytes(game.screen, "RGBA", False))
+        tex = self.hud_texture(hud_w, hud_h, s)
+        tex.write(pygame.image.tobytes(game.screen, "RGBA", False))
         out = target or ctx.screen
         out.use()
         ctx.viewport = (0, 0, Wn, Hn)
         out.clear(0, 0, 0, 1)
-        rd.blit_texture(self.scene_tex, (ox, oy, vw, vh), (Wn, Hn), flip=False, blend=False)
-        rd.blit_texture(self.hud_tex, (ox, oy, HUD_W * s, HUD_H * s), (Wn, Hn), flip=True, blend=True)
-        return (Wn, Hn, s, ox, oy)
+        rd.blit_texture(self.scene_tex, (0, 0, vw, vh), (Wn, Hn), flip=False, blend=False)
+        rd.blit_texture(tex, (0, 0, hud_w * s, hud_h * s), (Wn, Hn), flip=True, blend=True)
+        self.view_frac = view_w / hud_w
+        return (Wn, Hn, s, hud_w, hud_h, play_w, view_w)
 
     def capture(self, game: Game3D) -> None:
         """Downscale the finished frame into the GIF buffer (15 fps)."""
@@ -1749,17 +1806,18 @@ class App:
         self.scene_tex.filter = moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR
         self.hud_tex.build_mipmaps()
         self.hud_tex.filter = moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR
-        self.rd.blit_texture(self.scene_tex, (0, 0, w * VIEW_W / HUD_W, h), (w, h), flip=False, blend=False)
+        self.rd.blit_texture(self.scene_tex, (0, 0, w * getattr(self, "view_frac", 0.7), h), (w, h), flip=False, blend=False)
         self.rd.blit_texture(self.hud_tex, (0, 0, w, h), (w, h), flip=True, blend=True)
         self.scene_tex.filter = moderngl.LINEAR, moderngl.LINEAR
         self.hud_tex.filter = moderngl.LINEAR, moderngl.LINEAR
+        self.hud_size = None                            # restore the right filter next frame
         data = self.small.read(components=3)
         rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
         game.frames.append(rows.tobytes())
 
     def screenshot(self, path: Path, lay) -> None:
-        Wn, Hn, s, ox, oy = lay
-        data = self.ctx.screen.read(components=3)
+        Wn, Hn = lay[0], lay[1]
+        data = self.ctx.screen.read(viewport=(0, 0, Wn, Hn), components=3)   # the screen's own size is stale after F11
         img = pygame.image.frombytes(data, (Wn, Hn), "RGB", True)
         pygame.image.save(img, str(path))
 
@@ -1771,7 +1829,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -
     state: dict = {"stage": "starting"}
     threading.Thread(target=k2.load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
-    splash = pygame.Surface((HUD_W, HUD_H), pygame.SRCALPHA)
+    splash = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
     while "brain" not in state:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE):
@@ -1781,28 +1839,29 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -
         splash.fill((9, 11, 15, 255))
         msg = state.get("error") or f"{state['stage']}{'.' * (int((time.perf_counter() - t0) * 3) % 4)}"
         img = font.render(msg, True, k2.RED if "error" in state else k2.TEXT)
-        splash.blit(img, img.get_rect(center=(HUD_W // 2, HUD_H // 2)))
-        app.hud_tex.write(pygame.image.tobytes(splash, "RGBA", False))
-        Wn, Hn, s, ox, oy = app.layout()
+        splash.blit(img, img.get_rect(center=(k2.W // 2, k2.H // 2)))
+        Wn, Hn = pygame.display.get_window_size()
+        s = min(Wn / k2.W, Hn / k2.H)
+        tex = app.hud_texture(k2.W, k2.H, 1.5)
+        tex.write(pygame.image.tobytes(splash, "RGBA", False))
         app.ctx.screen.use()
         app.ctx.viewport = (0, 0, Wn, Hn)
         app.ctx.screen.clear(0, 0, 0, 1)
-        app.rd.blit_texture(app.hud_tex, (ox, oy, HUD_W * s, HUD_H * s), (Wn, Hn), flip=True)
+        app.rd.blit_texture(tex, ((Wn - k2.W * s) / 2, (Hn - k2.H * s) / 2, k2.W * s, k2.H * s), (Wn, Hn), flip=True)
         pygame.display.flip()
         clock.tick(30)
 
     brain = state["brain"]
     brain.start()
-    hud = pygame.Surface((HUD_W, HUD_H), pygame.SRCALPHA)
+    hud = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
     game = Game3D(hud, brain, state["view"])
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()
-    lay = app.layout()
+    lay = app.layout(game)
 
     def to_logical(pos):
-        Wn, Hn, s, ox, oy = lay
-        return (int((pos[0] - ox) / s), int((pos[1] - oy) / s))
+        return (int(pos[0] / lay[2]), int(pos[1] / lay[2]))
 
     while running:
         now = time.perf_counter()
