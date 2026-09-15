@@ -35,6 +35,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - hurting it fires its punishment dopamine neurons, so it learns to fear you, and it runs away and stops shooting.
 
   Silence its tracking neurons in brain surgery and it can't aim.
+- **Multiple flies (N):** press N to spawn another fly, up to 8 at once, each running its own complete, independent connectome — 166,700 neurons apiece. They notice each other for real: a fly closing in fast fires another's actual looming detectors (LPLC2/LC4) and makes it dodge, and bumping into each other fires real touch neurons. Press F to switch which fly's brain panel, training and surgery you're looking at; R goes back to one fly. Only the original fly's mushroom-body learning is saved between sessions.
 - **Real training (T):** the fly learns with its actual mushroom body. Pair a smell with a shock or with sugar and dopamine weakens the real Kenyon cell to output neuron synapses for that smell, just like in real flies. The Training panel runs lab-style conditioning and graphs the learning curve. Memory is saved to Documents\Kick the Fly\memory and kept between flies and sessions. Hurting the fly while it smells a tool trains it too.
 - **Arenas (E):**
   - **fan:** wind that fires its wind-sensing neurons
@@ -136,7 +137,9 @@ To build the AppImage yourself (same prerequisite):
 | V | brain panel: solid, see-through, faint, hidden (hidden gives the room the whole screen) |
 | U | menu size: crisp (sharp whole-pixel scaling, the default) or large |
 | F11 | fullscreen; the game fills any screen with no black bars |
-| R | new fly |
+| N | spawn another fly (up to 8), each running its own independent brain |
+| F | cycle which fly's brain panel, training and surgery apply to |
+| R | reset to a single fresh fly |
 | Esc | free the mouse, close menus, then quit |
 
 Start with `--2d` for the original 2D game. It also starts automatically in 2D on PCs without OpenGL 3.3.

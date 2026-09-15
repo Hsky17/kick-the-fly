@@ -75,6 +75,7 @@ STEER_GAIN = 0.004                                             # rad/frame of tu
 STEER_MAX = 0.035                                              # rad/frame (2 rad/s)
 TRACK_SCALE = 0.45                                             # sideness that drives LC10 fully
 PUNISH_PULSE_S = 0.6                                           # getting hurt while it smells you: PPL1 fires this long
+FLY_TOUCH_RADIUS3 = k2.FLY_TOUCH_RADIUS * S                    # how close two flies get before they bump, in meters
 
 # furniture you and the fly bump into: (min corner, max corner)
 COLLIDERS = [
@@ -99,7 +100,9 @@ HELP3D = (
     ("V", "brain panel: solid, see-through, faint, hidden"),
     ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
-    ("R", "new fly"),
+    ("N", "spawn another fly, up to 8, each with its own brain"),
+    ("F", "cycle which fly's brain panel/training/surgery is shown"),
+    ("R", "reset to a single fresh fly"),
     ("Esc", "free the mouse, close menus, then quit"),
 )
 
@@ -472,9 +475,9 @@ def _c(col, alpha: float | None = None):
 
 
 class Game3D(k2.Game):
-    def __init__(self, hud: pygame.Surface, brain, view):
+    def __init__(self, hud: pygame.Surface, brain, view, graph=None, weights=None):
         self.player = Player()
-        super().__init__(hud, brain, view)
+        super().__init__(hud, brain, view, graph, weights)
         self.look = False
         self.swing_t = -9.0
         self.flick_t = -9.0
@@ -492,12 +495,26 @@ class Game3D(k2.Game):
         self.duel_stats = dict(shots=0, hits=0, deaths=0)
 
     # --- lifecycle -------------------------------------------------------------------------------------------------
+    def _spawn_point(self) -> tuple[np.ndarray, float]:
+        """A point in front of the player (or a random spot if the player isn't set up yet), and a facing yaw."""
+        pl = getattr(self, "player", None)
+        if pl is None:
+            return np.zeros(2), math.pi / 2
+        start = pl.pos + np.array([math.cos(pl.yaw), math.sin(pl.yaw)]) * random.uniform(2.0, 3.5)
+        start += np.array([random.uniform(-0.8, 0.8), random.uniform(-0.8, 0.8)])
+        start = np.clip(start, (-RX + 0.8, -RZ + 0.8), (RX - 0.8, RZ - 0.8))
+        return start, pl.yaw + math.pi / 2
+
+    def _new_primary_fly(self) -> "Fly3D":
+        start, yaw = self._spawn_point()
+        return Fly3D(tuple(start), yaw=yaw)
+
+    def _new_spawn_fly(self) -> "Fly3D":
+        start, yaw = self._spawn_point()
+        return Fly3D(tuple(start), yaw=yaw)
+
     def new_fly(self) -> None:
         super().new_fly()
-        pl = self.player                                  # 3 m ahead of you, side-on so you can see all of it
-        start = pl.pos + np.array([math.cos(pl.yaw), math.sin(pl.yaw)]) * 3.0
-        start = np.clip(start, (-RX + 0.8, -RZ + 0.8), (RX - 0.8, RZ - 0.8))
-        self.fly = Fly3D(tuple(start), yaw=pl.yaw + math.pi / 2)
         self.bombs3: list = []
         self.sugars3: list = []
         self.parts: list = []                     # particles: dict(p, v, t, life, kind, size, color)
@@ -508,9 +525,7 @@ class Game3D(k2.Game):
         self.pellets3: list = []
         self.fly_reward_until = self.fly_punish_until = self.fire_ready = 0.0
         self.steer = self.valence = self.trigger = self.hurt_flash = 0.0
-        self.player_scent = False
         self.spider = None
-        self.threat_x = self.fly.p[THX].copy()
 
     # --- helpers ---------------------------------------------------------------------------------------------------
     def popup(self, pos, text: str, color=(255, 245, 235), force=False) -> None:
@@ -547,26 +562,40 @@ class Game3D(k2.Game):
     def _above_head(self):
         return self.fly.p[HEAD] + (0, 0.45, 0)
 
+    def _nearest_fly3d(self, eye, d, reach: float, max_perp: float):
+        """The living fly (and its nearest particle) a ray hits first, across every spawned fly."""
+        best_slot, best_i, best_t = None, None, None
+        for slot in self.flies:
+            i, t, _ = slot.fly.nearest_to_ray(eye, d, reach, max_perp)
+            if i is not None and (best_t is None or t < best_t):
+                best_slot, best_i, best_t = slot, i, t
+        return best_slot, best_i, best_t
+
+    def _flies_within3d(self, pos, radius: float) -> list:
+        """Every fly with at least one particle within radius of a point (for area-effect tools)."""
+        return [slot for slot in self.flies if np.any(np.linalg.norm(slot.fly.p - pos, axis=1) < radius)]
+
     # --- tools --------------------------------------------------------------------------------------------------------
     def use_tool3d(self, now: float) -> None:
-        fly = self.fly
         name = TOOLS[self.tool][0]
         eye, d = self.aim()
-        if fly.frozen_at is not None and fly.shattered_at is None and name in ("hand", "flick", "swatter", "zapper"):
-            i, t, _ = fly.nearest_to_ray(eye, d, REACH, 0.35)
-            if i is not None:
-                self._shatter(now)
+        if name in ("hand", "flick", "swatter", "zapper"):
+            slot, i, _ = self._nearest_fly3d(eye, d, REACH, 0.35)
+            if slot is not None and slot.fly.frozen_at is not None and slot.fly.shattered_at is None:
+                self._shatter(slot, now)
                 return
         if name == "hand":
-            i, t, _ = fly.nearest_to_ray(eye, d, GRAB_REACH, 0.18)
-            if i is not None and fly.frozen_at is None:
-                fly.grabbed, self.hold_dist = i, float(np.clip(t, 0.6, 2.2))
-                fly.last_hit = eye.copy()
-                self.hit(i, 0.25)
+            slot, i, t = self._nearest_fly3d(eye, d, GRAB_REACH, 0.18)
+            if slot is not None and i is not None and slot.fly.frozen_at is None:
+                slot.fly.grabbed, self.hold_dist = i, float(np.clip(t, 0.6, 2.2))
+                slot.fly.last_hit = eye.copy()
+                self.hit(slot, i, 0.25)
+                self.focus = self.flies.index(slot)
         elif name == "flick":
             self.flick_t = now
-            i, t, _ = fly.nearest_to_ray(eye, d, 2.6, 0.4)
-            if i is not None:
+            slot, i, t = self._nearest_fly3d(eye, d, 2.6, 0.4)
+            if slot is not None:
+                fly = slot.fly
                 center = eye + d * t
                 fly.last_hit = eye.copy()
                 for j in range(N_P):
@@ -575,11 +604,12 @@ class Game3D(k2.Game):
                         s = 1 - dist / 0.45
                         push = d * 0.7 + np.array([0, 0.6, 0])
                         fly.impulse(j, push * (10 + 16 * s) * S)
-                        self.hit(j, 0.35 + 0.4 * s)
+                        self.hit(slot, j, 0.35 + 0.4 * s)
                 fly.stun(now, 0.35)
-                self.damage(4, "a flick")
+                self.damage(slot, 4, "a flick")
                 self.popup(center + (0, 0.25, 0), "FLICK!")
                 self.sound.play("flick")
+                self.focus = self.flies.index(slot)
         elif name == "swatter":
             if now - self.swing_t > 0.35:
                 self.swing_t = now
@@ -591,7 +621,7 @@ class Game3D(k2.Game):
             self.torching = True
         elif name == "zapper" and now >= self.zap_ready:
             self._zap3d(now)
-        elif name == "spider" and self.spider3 is None and not fly.dead:
+        elif name == "spider" and self.spider3 is None and any(not s.fly.dead for s in self.flies):
             if d[1] < -0.05:
                 pt = eye + d * (-eye[1] / d[1])
             else:
@@ -606,31 +636,31 @@ class Game3D(k2.Game):
             self.sound.play("pop")
 
     def _swat3d(self, now: float) -> None:
-        fly = self.fly
         eye, d = self.aim()
         center = eye + d * 1.05
         self.shake_until = now + 0.15
         self.sound.play("whack")
-        near = [i for i in range(N_P) if np.linalg.norm(fly.p[i] - center) < 0.8]
-        if not near:
-            return
-        if fly.frozen_at is not None and fly.shattered_at is None:
-            self._shatter(now)
-            return
-        fly.last_hit = eye.copy()
         dh = np.array([d[0], 0, d[2]])
         dh /= max(float(np.linalg.norm(dh)), 1e-6)
-        for i in near:
-            push = (fly.p[i] - center) * 0.15 + dh * 8 * S + np.array([0, -32 * S, 0])
-            fly.impulse(i, push)
-            self.hit(i, 1.0)
-        fly.stun(now, 1.8)
-        self.damage(14, "the swatter")
-        self.popup(fly.p[THX] + (0, 0.45, 0), "SWAT!", (255, 230, 120))
-        self.puff(np.array([fly.p[THX, 0], 0.02, fly.p[THX, 2]]), 10, 4)
+        for slot in self._flies_within3d(center, 0.8):
+            fly = slot.fly
+            near = [i for i in range(N_P) if np.linalg.norm(fly.p[i] - center) < 0.8]
+            if not near:
+                continue
+            if fly.frozen_at is not None and fly.shattered_at is None:
+                self._shatter(slot, now)
+                continue
+            fly.last_hit = eye.copy()
+            for i in near:
+                push = (fly.p[i] - center) * 0.15 + dh * 8 * S + np.array([0, -32 * S, 0])
+                fly.impulse(i, push)
+                self.hit(slot, i, 1.0)
+            fly.stun(now, 1.8)
+            self.damage(slot, 14, "the swatter")
+            self.popup(fly.p[THX] + (0, 0.45, 0), "SWAT!", (255, 230, 120))
+            self.puff(np.array([fly.p[THX, 0], 0.02, fly.p[THX, 2]]), 10, 4)
 
     def _explode3d(self, b: dict, now: float) -> None:
-        fly = self.fly
         pos = b["p"]
         self.shake_until = now + 0.4
         self.sound.play("boom")
@@ -640,36 +670,45 @@ class Game3D(k2.Game):
             v = v / np.linalg.norm(v) * random.uniform(0.02, 0.07)
             self.parts.append(dict(p=pos.copy(), v=v, t=now, life=random.uniform(0.25, 0.5), kind="fire",
                                    size=random.uniform(0.12, 0.3)))
-        d = np.linalg.norm(fly.p - pos, axis=1)
         R = 330 * S
-        worst = 0.0
-        for i in np.flatnonzero(d < R):
-            f = 48 * (1 - d[i] / R) ** 1.3
-            dirv = (fly.p[i] - pos) / max(d[i], 1e-6) + np.array([0, 0.8, 0])
-            fly.impulse(i, dirv * f * S)
-            if f > 4:
-                self.hit(i, f / 40)
-                worst = max(worst, f)
-        if fly.frozen_at is not None and fly.shattered_at is None and worst:
-            self._shatter(now)
-        elif worst:
-            fly.last_hit = pos.copy()
-            fly.stun(now, 2.4)
-            self.damage(32 * worst / 48, "a bomb")
+        for slot in self._flies_within3d(pos, R):
+            fly = slot.fly
+            d = np.linalg.norm(fly.p - pos, axis=1)
+            worst = 0.0
+            for i in np.flatnonzero(d < R):
+                f = 48 * (1 - d[i] / R) ** 1.3
+                dirv = (fly.p[i] - pos) / max(d[i], 1e-6) + np.array([0, 0.8, 0])
+                fly.impulse(i, dirv * f * S)
+                if f > 4:
+                    self.hit(slot, i, f / 40)
+                    worst = max(worst, f)
+            if fly.frozen_at is not None and fly.shattered_at is None and worst:
+                self._shatter(slot, now)
+            elif worst:
+                fly.last_hit = pos.copy()
+                fly.stun(now, 2.4)
+                self.damage(slot, 32 * worst / 48, "a bomb")
         self.popup(pos + (0, 0.5, 0), "KABOOM!", (255, 160, 60), force=True)
 
     def _zap3d(self, now: float) -> None:
-        fly = self.fly
         self.zap_ready = now + 0.3
         self.sound.play("zap")
         eye, d = self.aim()
         tip = self.tool_tip()
-        to = fly.p[THX] - eye
-        dist = float(np.linalg.norm(to))
-        i, _, _ = fly.nearest_to_ray(eye, d, REACH, 0.5)
-        if (i is None and (dist > REACH or float(to @ d) / max(dist, 1e-6) < 0.93)) or fly.dissolved_at or fly.shattered_at:
+        best_slot, best_dist = None, None
+        for slot in self.flies:
+            fly = slot.fly
+            to = fly.p[THX] - eye
+            dist = float(np.linalg.norm(to))
+            aligned = float(to @ d) / max(dist, 1e-6) >= 0.93
+            i, _, _ = fly.nearest_to_ray(eye, d, REACH, 0.5)
+            hit_ok = i is not None or (dist <= REACH and aligned)
+            if hit_ok and fly.dissolved_at is None and fly.shattered_at is None and (best_dist is None or dist < best_dist):
+                best_slot, best_dist = slot, dist
+        if best_slot is None:
             self.bolts3.append([tip, eye + d * 2.0, now])
             return
+        slot, fly = best_slot, best_slot.fly
         self.bolts3.append([tip, fly.p[THX].copy(), now])
         fly.zap_until = now + 0.3
         fly.char = min(1.0, fly.char + 0.06)
@@ -680,15 +719,14 @@ class Game3D(k2.Game):
         if fly.dead:
             return
         for region, side in TORCH_KEYS[:-1]:
-            self.brain.poke(region, side, 1.0)
-        self.brain.poke("all", None, 0.0)
+            slot.brain.poke(region, side, 1.0)
+        slot.brain.poke("all", None, 0.0)
         fly.stun(now, 1.0)
-        self.damage(16, "the zapper")
+        self.damage(slot, 16, "the zapper")
         self.popup(fly.p[THX] + (0, 0.45, 0), random.choice(("BZZZT!", "ZAP!", "KRZZT!")), (200, 235, 255))
 
     def _jet(self, now: float, kind: str) -> None:
-        """Blowtorch flame or a spray can: a cone from the tool tip along the view."""
-        fly = self.fly
+        """Blowtorch flame or a spray can: a cone from the tool tip along the view, hitting every fly it crosses."""
         eye, d = self.aim()
         tip = self.tool_tip()
         n, spread, speed = (7, 0.12, (0.05, 0.08)) if kind == "torch" else (5, 0.18, (0.035, 0.055))
@@ -697,55 +735,57 @@ class Game3D(k2.Game):
             v = (d + jitter) / np.linalg.norm(d + jitter) * random.uniform(*speed)
             self.parts.append(dict(p=tip.copy(), v=v, t=now, life=random.uniform(0.22, 0.4) if kind == "torch" else random.uniform(0.4, 0.65),
                                    kind="flame" if kind == "torch" else kind, size=0.05))
-        rel = fly.p - tip
-        dist = np.linalg.norm(rel, axis=1)
-        cosang = (rel @ d) / np.maximum(dist, 1e-6)
         rng, cone = (1.9, 0.85) if kind == "torch" else (2.0, 0.8)
-        inside = np.flatnonzero((dist < rng) & (cosang > cone))
-        if kind == "torch":
-            if len(inside):
-                fly.burn_until = now + 0.9
-                for i in inside:
-                    fly.impulse(i, d * 0.5 * S + np.array([0, 0.2 * S, 0]))
-            if now >= fly.burn_until:
-                return
-            fly.char = min(1.0, fly.char + 0.004)
-            fly.hurt = max(fly.hurt, 0.5)
-            fly.last_hit = eye.copy()
-            if fly.dead:
-                return
-            for region, side in TORCH_KEYS:
-                self.brain.poke(region, side, 1.0)
-            self.damage(0.35, "the blowtorch")
-            words, col = ("SIZZLE!", "TSSSS!", "HOT HOT!"), (255, 150, 60)
-        else:
-            if fly.dissolved_at is not None or fly.frozen_at is not None or not len(inside):
-                return
-            fly.last_hit = eye.copy()
-            if kind == "cleaner":
-                fly.soak = min(1.0, fly.soak + 0.04)
+        for slot in self.flies:
+            fly = slot.fly
+            rel = fly.p - tip
+            dist = np.linalg.norm(rel, axis=1)
+            cosang = (rel @ d) / np.maximum(dist, 1e-6)
+            inside = np.flatnonzero((dist < rng) & (cosang > cone))
+            if kind == "torch":
+                if len(inside):
+                    fly.burn_until = now + 0.9
+                    for i in inside:
+                        fly.impulse(i, d * 0.5 * S + np.array([0, 0.2 * S, 0]))
+                if now >= fly.burn_until:
+                    continue
+                fly.char = min(1.0, fly.char + 0.004)
+                fly.hurt = max(fly.hurt, 0.5)
+                fly.last_hit = eye.copy()
+                if fly.dead:
+                    continue
+                for region, side in TORCH_KEYS:
+                    slot.brain.poke(region, side, 1.0)
+                self.damage(slot, 0.35, "the blowtorch")
+                words, col = ("SIZZLE!", "TSSSS!", "HOT HOT!"), (255, 150, 60)
             else:
-                fly.frost = min(0.9 if self.immortal else 1.0, fly.frost + 0.006)
-            if fly.dead:
-                return
-            if kind == "cleaner":
-                self.brain.poke("smell", None, 1.0)
-                self.brain.poke("taste", None, 0.8)
-                self.damage(0.12, "brake cleaner")
-                words, col = ("FSSSSH!", "MELTING!", "IT BURNS!"), (170, 230, 255)
-            else:
-                self.brain.poke("cold", None, 1.0)
-                for region, side in TORCH_KEYS[:-1]:
-                    self.brain.poke(region, side, 0.35)
-                self.damage(0.1, "freezing")
-                words, col = ("SO COLD!", "BRRRR!", "ICING!"), (190, 230, 255)
-        if int(now * 2) != int((now - 1 / 60) * 2):
-            self.hits += 1
-        if random.random() < 0.02:
-            self.popup(fly.p[HEAD] + (0, 0.4, 0), random.choice(words), col)
+                if fly.dissolved_at is not None or fly.frozen_at is not None or not len(inside):
+                    continue
+                fly.last_hit = eye.copy()
+                if kind == "cleaner":
+                    fly.soak = min(1.0, fly.soak + 0.04)
+                else:
+                    fly.frost = min(0.9 if self.immortal else 1.0, fly.frost + 0.006)
+                if fly.dead:
+                    continue
+                if kind == "cleaner":
+                    slot.brain.poke("smell", None, 1.0)
+                    slot.brain.poke("taste", None, 0.8)
+                    self.damage(slot, 0.12, "brake cleaner")
+                    words, col = ("FSSSSH!", "MELTING!", "IT BURNS!"), (170, 230, 255)
+                else:
+                    slot.brain.poke("cold", None, 1.0)
+                    for region, side in TORCH_KEYS[:-1]:
+                        slot.brain.poke(region, side, 0.35)
+                    self.damage(slot, 0.1, "freezing")
+                    words, col = ("SO COLD!", "BRRRR!", "ICING!"), (190, 230, 255)
+            if int(now * 2) != int((now - 1 / 60) * 2):
+                slot.hits += 1
+            if random.random() < 0.02:
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), random.choice(words), col)
 
-    def _shatter(self, now: float) -> None:
-        fly = self.fly
+    def _shatter(self, slot: "k2.FlySlot", now: float) -> None:
+        fly = slot.fly
         fly.shattered_at = now
         self.shake_until = now + 0.25
         self.sound.play("shatter")
@@ -757,7 +797,7 @@ class Game3D(k2.Game):
         self.popup(fly.p[THX] + (0, 0.5, 0), "SHATTERED!", (200, 235, 255), force=True)
 
     # --- the fly's senses ------------------------------------------------------------------------------------------------
-    def _threats(self, now: float, mouse=None) -> list:
+    def _threats(self, slot: "k2.FlySlot", now: float, mouse=None) -> list:
         out = []
         if not self._overlay_open():
             eye = self.player.eye
@@ -775,52 +815,56 @@ class Game3D(k2.Game):
             out.append(("spider", self.spider3["p"].copy(), 0.1))
         for b in self.bombs3:
             out.append((("bomb", id(b)), b["p"].copy(), 0.08))
+        for other in self.flies:                      # other flies loom too: a real, symmetric dodge reaction
+            if other is slot or other.fly.dead:
+                continue
+            out.append((("fly", id(other.fly)), other.fly.p[THX].copy(), RAD3[THX] * 2))
         return out
 
-    def _vision(self, now: float, mouse=None) -> None:
-        fly = self.fly
+    def _vision(self, slot: "k2.FlySlot", now: float, mouse=None) -> None:
+        fly = slot.fly
         if fly.dead or fly.frozen_at is not None:
-            self.loom = 0.0
+            slot.loom = 0.0
             return
         head = fly.p[HEAD]
         best, best_pos, seen = 0.0, None, {}
-        for key, pos, r in self._threats(now):
+        for key, pos, r in self._threats(slot, now):
             dist = max(float(np.linalg.norm(pos - head)), r + 0.02)
             theta = 2 * math.atan(r / dist)
-            prev = self.loom_prev.get(key)
+            prev = slot.loom_prev.get(key)
             seen[key] = theta
             if prev is not None and (theta - prev) * 60.0 > best:
                 best, best_pos = (theta - prev) * 60.0, pos
-        self.loom_prev = seen
-        self.loom += (best - self.loom) * 0.5
+        slot.loom_prev = seen
+        slot.loom += (best - slot.loom) * 0.5
         strength = float(np.clip((best - k2.LOOM_MIN) / k2.LOOM_FULL, 0, 1))
         if strength > 0 and best_pos is not None:
-            self.brain.poke("loom", None, strength, recruit=0.6 * strength)
-            self.threat_x = np.asarray(best_pos, float).copy()
+            slot.brain.poke("loom", None, strength, recruit=0.6 * strength)
+            slot.threat_x = np.asarray(best_pos, float).copy()
 
-    def _scents(self, now: float, mouse=None) -> None:
-        fly = self.fly
-        self.scent_now, self.sugar_scent = None, False
+    def _scents(self, slot: "k2.FlySlot", now: float, mouse=None) -> None:
+        fly = slot.fly
+        slot.scent_now, slot.sugar_scent = None, False
         if fly.dead:
             return
         head = fly.p[HEAD]
         if not self._overlay_open() and np.linalg.norm(self.tool_tip() - head) < 2.5:
-            self.scent_now = TOOLS[self.tool][0]
-            self.brain.poke("scent", self.scent_now, 0.3)
+            slot.scent_now = TOOLS[self.tool][0]
+            slot.brain.poke("scent", slot.scent_now, 0.3)
         if any(np.linalg.norm((s["p"] - head)[[0, 2]]) < 2.4 for s in self.sugars3):
-            self.sugar_scent = True
-            self.brain.poke("scent", "sugar", 0.3)
-        self.player_scent = bool(getattr(self, "duel", False) and self.player_dead_at is None
+            slot.sugar_scent = True
+            slot.brain.poke("scent", "sugar", 0.3)
+        slot.player_scent = bool(self.duel and slot is self.flies[self.focus] and self.player_dead_at is None
                                  and np.linalg.norm((self.player.eye - head)[[0, 2]]) < 3.5)
-        if self.player_scent:
-            self.brain.poke("scent", "player", 0.35)               # you smell like you
+        if slot.player_scent:
+            slot.brain.poke("scent", "player", 0.35)               # you smell like you
 
-    def _memory_behavior(self, now: float, free: bool, can_fly: bool) -> None:
-        fly = self.fly
-        if self.duel and self.player_scent and free and now >= self.avoid_ready and now >= fly.stun_until:
+    def _memory_behavior(self, slot: "k2.FlySlot", now: float, free: bool, can_fly: bool) -> None:
+        fly = slot.fly
+        if self.duel and getattr(slot, "player_scent", False) and free and now >= slot.avoid_ready and now >= fly.stun_until:
             fear, like = self._valence()
             if fear - like > k2.FEAR_ACT:                           # its mushroom body learned to fear you
-                self.avoid_ready = now + 2.5
+                slot.avoid_ready = now + 2.5
                 fly.last_hit = self.player.eye.copy()
                 if can_fly and fear - like > 0.6:
                     fly.escape(now)
@@ -830,29 +874,33 @@ class Game3D(k2.Game):
                 self.note(f"FLEE     fears you ({fear:.2f})")
                 self.popup(fly.p[HEAD] + (0, 0.4, 0), "RUN AWAY!", (140, 200, 255))
                 return
-        if not self.scent_now or not free or now < self.avoid_ready or fly.frozen_at is not None or now < fly.stun_until:
+        if not slot.scent_now or not free or now < slot.avoid_ready or fly.frozen_at is not None or now < fly.stun_until:
             return
         eye = self.player.eye
-        if self.scent_now != "sugar" and self.fear_now > k2.FEAR_ACT:
-            self.avoid_ready = now + 2.5
+        if slot.scent_now != "sugar" and slot.fear_now > k2.FEAR_ACT:
+            slot.avoid_ready = now + 2.5
             fly.last_hit = eye.copy()
-            if can_fly and self.fear_now > 0.6:
+            if can_fly and slot.fear_now > 0.6:
                 fly.escape(now)
             else:
                 fly.yaw_target = angle_to(fly.away_from(eye))
                 fly.walk_until, fly.back_until, fly.run = now + 1.2, 0.0, True
-            self.note(f"AVOID    remembers the {self.scent_now} ({self.fear_now:.2f})")
+            self.note(f"AVOID    remembers the {slot.scent_now} ({slot.fear_now:.2f})")
             self.popup(fly.p[HEAD] + (0, 0.4, 0), "NOPE!", (255, 220, 120))
-        elif self.scent_now == "sugar" and self.like_now > k2.LIKE_ACT and now >= fly.walk_until:
-            self.avoid_ready = now + 1.5
+        elif slot.scent_now == "sugar" and slot.like_now > k2.LIKE_ACT and now >= fly.walk_until:
+            slot.avoid_ready = now + 1.5
             fly.yaw_target = angle_to(-fly.away_from(eye))
             fly.walk_until, fly.run = now + 1.0, False
-            self.note(f"APPROACH remembers sugar ({self.like_now:.2f})")
+            self.note(f"APPROACH remembers sugar ({slot.like_now:.2f})")
 
     # --- arenas and ongoing effects -------------------------------------------------------------------------------------------
     def _environment(self, now: float, mouse=None) -> None:
-        fly, br = self.fly, self.brain
         arena = k2.ARENAS[self.arena_i]
+        for slot in self.flies:
+            self._environment_one(slot, arena, now)
+
+    def _environment_one(self, slot: "k2.FlySlot", arena: str, now: float) -> None:
+        fly, br = slot.fly, slot.brain
         fly.arena, fly.wind = arena, np.zeros(3)
         if arena != "flypaper":
             fly.stuck.clear()
@@ -879,7 +927,7 @@ class Game3D(k2.Game):
                     br.poke("legs", "R", 0.4)
                     br.poke("body", None, 0.2)
                 if len(fly.stuck) >= 3:
-                    self.damage(0.012, "the flypaper")
+                    self.damage(slot, 0.012, "the flypaper")
         elif arena == "pool":
             sub = fly.p[:, 1] < WATER3
             if sub.any():
@@ -892,7 +940,7 @@ class Game3D(k2.Game):
                         br.poke("humid", None, 0.9)
                         br.poke("body", None, 0.25)
                     if fly.p[HEAD, 1] < WATER3 - 6 * S:
-                        self.damage(0.05, "drowning")
+                        self.damage(slot, 0.05, "drowning")
         elif arena == "lamp":
             dist = float(np.linalg.norm(fly.p[HEAD] - LAMP3))
             if not fly.dead:
@@ -901,7 +949,7 @@ class Game3D(k2.Game):
                     br.poke("light", None, light, recruit=0.25 * light)
                 if dist < 0.36:
                     br.poke("heat", None, 0.8)
-                    self.damage(0.08, "the hot lamp")
+                    self.damage(slot, 0.08, "the hot lamp")
                     away = (fly.p[HEAD] - LAMP3) / max(dist, 1e-6)
                     for i in (HEAD, THX, ABD):
                         fly.impulse(i, away * 1.5 * S)
@@ -911,39 +959,47 @@ class Game3D(k2.Game):
             fly.wet = max(0.0, fly.wet - 1 / 60)
 
     def _kick(self, now: float) -> None:
-        """Your legs are a 0.28 m cylinder: walking into the fly shoves it, and walking into it fast is a kick."""
-        fly, pl = self.fly, self.player
-        if fly.frozen_at is not None or fly.dissolved_at is not None or fly.shattered_at is not None:
-            return
-        rel = fly.p[:, [0, 2]] - pl.pos
-        dist = np.linalg.norm(rel, axis=1)
-        inside = np.flatnonzero((dist < 0.28 + RAD3) & (fly.p[:, 1] < 0.9))
-        if not len(inside):
-            return
-        speed = float(np.linalg.norm(pl.vel))
-        for i in inside:
-            n = rel[i] / max(dist[i], 1e-6)
-            fly.p[i, [0, 2]] = pl.pos + n * (0.28 + RAD3[i])
-        if speed > 1.2 and now - getattr(self, "kick_t", 0) > 0.4:
-            self.kick_t = now
-            push = np.append(pl.vel, 0)[[0, 2, 1]] / 60 * 1.6 + np.array([0, 0.012 + 0.006 * speed, 0])
-            for i in range(N_P):
-                fly.impulse(i, push)
+        """Your legs are a 0.28 m cylinder: walking into a fly shoves it, and walking into it fast is a kick."""
+        pl = self.player
+        for slot in self.flies:
+            fly = slot.fly
+            if fly.frozen_at is not None or fly.dissolved_at is not None or fly.shattered_at is not None:
+                continue
+            rel = fly.p[:, [0, 2]] - pl.pos
+            dist = np.linalg.norm(rel, axis=1)
+            inside = np.flatnonzero((dist < 0.28 + RAD3) & (fly.p[:, 1] < 0.9))
+            if not len(inside):
+                continue
+            speed = float(np.linalg.norm(pl.vel))
             for i in inside:
-                self.hit(i, min(1.0, speed / 5))
-            fly.last_hit = pl.eye.copy()
-            if speed > 2.5:
-                fly.stun(now, 0.6)
-                self.damage(3 + 2 * speed, "a kick")
-                self.popup(fly.p[THX] + (0, 0.4, 0), random.choice(("KICK!", "BOOT!", "PUNT!")), (255, 235, 150))
-                self.sound.play("whack", 0.6)
+                n = rel[i] / max(dist[i], 1e-6)
+                fly.p[i, [0, 2]] = pl.pos + n * (0.28 + RAD3[i])
+            if speed > 1.2 and now - getattr(self, "kick_t", 0) > 0.4:
+                self.kick_t = now
+                push = np.append(pl.vel, 0)[[0, 2, 1]] / 60 * 1.6 + np.array([0, 0.012 + 0.006 * speed, 0])
+                for i in range(N_P):
+                    fly.impulse(i, push)
+                for i in inside:
+                    self.hit(slot, i, min(1.0, speed / 5))
+                fly.last_hit = pl.eye.copy()
+                if speed > 2.5:
+                    fly.stun(now, 0.6)
+                    self.damage(slot, 3 + 2 * speed, "a kick")
+                    self.popup(fly.p[THX] + (0, 0.4, 0), random.choice(("KICK!", "BOOT!", "PUNT!")), (255, 235, 150))
+                    self.sound.play("whack", 0.6)
 
     def _hold_point(self) -> np.ndarray:
         eye, d = self.aim()
         return eye + d * self.hold_dist
 
     def _effects(self, now: float) -> None:
-        fly = self.fly
+        for slot in self.flies:
+            self._effects_one(slot, now)
+        self._spider3d(now)
+        self._sugar3d(now)
+
+    def _effects_one(self, slot: "k2.FlySlot", now: float) -> None:
+        fly = slot.fly
         if self.immortal:
             fly.melt = min(fly.melt, 0.85)
             if fly.soak < 0.05:
@@ -953,16 +1009,16 @@ class Game3D(k2.Game):
             fly.melt = min(0.85 if self.immortal else 1.0, fly.melt + 0.0045 * fly.soak)
             fly.soak *= 0.985 if self.immortal else 0.997
             if not fly.dead:
-                self.damage(0.25 * fly.soak, "brake cleaner")
+                self.damage(slot, 0.25 * fly.soak, "brake cleaner")
                 for region, side in TORCH_KEYS[:-1]:
-                    self.brain.poke(region, side, 0.5 * fly.soak)
+                    slot.brain.poke(region, side, 0.5 * fly.soak)
         if fly.melt >= 1.0 and fly.dissolved_at is None:
             fly.dissolved_at = now
             self.puff(np.array([fly.p[THX, 0], 0.05, fly.p[THX, 2]]), 14, 3)
             self.popup(fly.p[THX] + (0, 0.4, 0), "DISSOLVED", (170, 230, 255), force=True)
             self.sound.play("squish")
             if not fly.dead:
-                self.damage(MAX_HEALTH, "brake cleaner")
+                self.damage(slot, MAX_HEALTH, "brake cleaner")
         if fly.frozen_at is None and fly.frost > 0:
             if not (self.torching and TOOLS[self.tool][0] == "freeze"):
                 fly.frost = max(0.0, fly.frost - 0.0015)
@@ -970,14 +1026,12 @@ class Game3D(k2.Game):
                 fly.frozen_at = now
                 self.popup(fly.p[THX] + (0, 0.45, 0), "FROZEN SOLID", (190, 230, 255), force=True)
                 if not fly.dead:
-                    self.damage(MAX_HEALTH, "freezing")
+                    self.damage(slot, MAX_HEALTH, "freezing")
         if not fly.dead:
-            self.brain.sedation = max(0.25 * fly.melt ** 2.5, 0.2 * fly.frost ** 2, 0.3 * fly.venom ** 1.5)
-        self._spider3d(now)
-        self._sugar3d(now)
+            slot.brain.sedation = max(0.25 * fly.melt ** 2.5, 0.2 * fly.frost ** 2, 0.3 * fly.venom ** 1.5)
 
     def _spider3d(self, now: float) -> None:
-        sp, fly = self.spider3, self.fly
+        sp = self.spider3
         if sp is None:
             return
         if sp["state"] == "drop":
@@ -985,10 +1039,13 @@ class Game3D(k2.Game):
             if sp["p"][1] <= 0.12:
                 sp["p"][1], sp["state"] = 0.12, "hunt"
             return
+        candidates = [s for s in self.flies if not (s.fly.dead or s.fly.dissolved_at is not None or s.fly.shattered_at is not None)]
         if sp["state"] == "hunt":
-            if fly.dead or fly.dissolved_at is not None or fly.shattered_at is not None:
+            if not candidates:
                 sp["state"] = "leave"
                 return
+            slot = min(candidates, key=lambda s: float(np.linalg.norm(s.fly.p[THX] - sp["p"])))
+            fly = slot.fly
             d = fly.p[THX] + (0, 0.1, 0) - sp["p"]
             dist = float(np.linalg.norm(d))
             if dist > 0.2:
@@ -1001,14 +1058,15 @@ class Game3D(k2.Game):
                 fly.venom = min(1.0, fly.venom + 0.3)
                 fly.last_hit = sp["p"].copy()
                 fly.hurt = 1.0
-                self.brain.poke("body", None, 0.9)
-                self.brain.poke("legs", "L", 0.6)
-                self.brain.poke("legs", "R", 0.6)
-                self.damage(16, "a spider")
+                slot.brain.poke("body", None, 0.9)
+                slot.brain.poke("legs", "L", 0.6)
+                slot.brain.poke("legs", "R", 0.6)
+                self.damage(slot, 16, "a spider")
                 self.sound.play("chomp")
                 self.popup(sp["p"] + (0, 0.3, 0), random.choice(("CHOMP!", "BITE!", "SLURP!")), (230, 120, 120))
                 if sp["bites"] >= 2 and not fly.wrapped:
                     fly.wrapped = True
+                    sp["target"] = slot
                     self.note("WRAPPED  in spider silk")
                 if self.immortal and sp["bites"] >= 5:
                     fly.wrapped, fly.grabbed = False, None
@@ -1019,18 +1077,18 @@ class Game3D(k2.Game):
             if fly.wrapped:
                 fly.grabbed = THX
         elif sp["state"] in ("leave", "carry"):
-            if fly.wrapped and fly.dead and fly.frozen_at is None:
+            wrapped = sp.get("target")
+            if wrapped is not None and wrapped.fly.wrapped and wrapped.fly.dead and wrapped.fly.frozen_at is None:
                 sp["state"] = "carry"
             sp["p"][1] += 2.2 * S * 2
-            if sp["state"] == "carry":
-                fly.grabbed = THX
+            if sp["state"] == "carry" and wrapped is not None:
+                wrapped.fly.grabbed = THX
             if sp["p"][1] > RY + 0.4:
                 self.spider3 = self.spider = None
-                if fly.wrapped:
-                    fly.grabbed = None
+                if wrapped is not None and wrapped.fly.wrapped:
+                    wrapped.fly.grabbed = None
 
     def _sugar3d(self, now: float) -> None:
-        fly = self.fly
         for s in self.sugars3:
             if not s["landed"]:
                 s["v"][1] -= GRAV
@@ -1041,41 +1099,48 @@ class Game3D(k2.Game):
                         s["v"][ax] *= -0.4
                 if s["p"][1] <= 0.035:
                     s["p"][1], s["landed"] = 0.035, True
-        if not self.sugars3 or fly.dead or fly.wrapped or fly.frozen_at is not None or fly.grabbed is not None:
+        if not self.sugars3:
             return
-        s = min(self.sugars3, key=lambda s: float(np.linalg.norm((s["p"] - fly.p[THX])[[0, 2]])))
-        dxz = (s["p"] - fly.p[HEAD])[[0, 2]]
-        on_floor = fly.p[THX, 1] < STAND3 + 0.2 and now >= fly.escape_until
-        if float(np.linalg.norm(dxz)) > 0.2:
-            if on_floor and now >= fly.stun_until and s["landed"]:
-                fly.yaw_target = math.atan2(dxz[1], dxz[0])
-                fly.walk_until, fly.run = now + 0.2, False
-            return
-        if not on_floor or not s["landed"]:
-            return
-        if now >= fly.eating_until:
-            self.popup(fly.p[HEAD] + (0, 0.4, 0), random.choice(("YUM!", "SWEET!", "NOM NOM")), (255, 160, 190))
-            self.sound.play("yum")
-            self.note("EATING   sugar: taste + PAM reward")
-        fly.eating_until = now + 0.4
-        s["left"] -= 1 / 240
-        self.brain.poke("taste", None, 0.5)
-        self.brain.poke("reward", None, 0.4)
-        fly.health = min(MAX_HEALTH, fly.health + 0.15)
-        if s["left"] <= 0:
-            self.sugars3.remove(s)
+        for slot in self.flies:
+            fly = slot.fly
+            if fly.dead or fly.wrapped or fly.frozen_at is not None or fly.grabbed is not None:
+                continue
+            s = min(self.sugars3, key=lambda s: float(np.linalg.norm((s["p"] - fly.p[THX])[[0, 2]])))
+            dxz = (s["p"] - fly.p[HEAD])[[0, 2]]
+            on_floor = fly.p[THX, 1] < STAND3 + 0.2 and now >= fly.escape_until
+            if float(np.linalg.norm(dxz)) > 0.2:
+                if on_floor and now >= fly.stun_until and s["landed"]:
+                    fly.yaw_target = math.atan2(dxz[1], dxz[0])
+                    fly.walk_until, fly.run = now + 0.2, False
+                continue
+            if not on_floor or not s["landed"]:
+                continue
+            if now >= fly.eating_until:
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), random.choice(("YUM!", "SWEET!", "NOM NOM")), (255, 160, 190))
+                self.sound.play("yum")
+                self.note("EATING   sugar: taste + PAM reward")
+            fly.eating_until = now + 0.4
+            s["left"] -= 1 / 240
+            slot.brain.poke("taste", None, 0.5)
+            slot.brain.poke("reward", None, 0.4)
+            fly.health = min(MAX_HEALTH, fly.health + 0.15)
+            if s["left"] <= 0:
+                self.sugars3.remove(s)
+                break
 
-    def _die(self, now: float) -> None:
-        fly = self.fly
+    def _die(self, slot: "k2.FlySlot", now: float) -> None:
+        fly = slot.fly
         fly.dead_at = now
         fly.grabbed = None
-        self.killed_by = self.damage_src or "being kicked"
         self.kills += 1
-        self.brain.kill()
+        slot.brain.kill()
         self.sound.play("death")
         self.note("DIED     brain drive cut, activity fading")
         self.popup(fly.p[HEAD] + (0, 0.5, 0), "K.O.!", (255, 90, 80), force=True)
         self.shake_until = now + 0.3
+        if all(s.fly.dead for s in self.flies):
+            self.killed_by = slot.damage_src or "being kicked"
+            self.focus = self.flies.index(slot)
 
     def _fly_state(self, now: float) -> str:
         f = self.fly
@@ -1098,30 +1163,64 @@ class Game3D(k2.Game):
         return f.action
 
     # --- per frame ----------------------------------------------------------------------------------------------------------
+    def _fly_collisions3d(self, now: float) -> None:
+        """Two flies that bump: a soft push-apart always, and if the impact is hard enough, a real touch-neuron poke
+        on both brains (the same pattern as _kick, but fly-on-fly and symmetric)."""
+        flies = self.flies
+        for a in range(len(flies)):
+            sa = flies[a]
+            if sa.fly.dead or sa.fly.dissolved_at is not None or sa.fly.shattered_at is not None:
+                continue
+            for b in range(a + 1, len(flies)):
+                sb = flies[b]
+                if sb.fly.dead or sb.fly.dissolved_at is not None or sb.fly.shattered_at is not None:
+                    continue
+                fa, fb = sa.fly, sb.fly
+                d = fb.p[THX] - fa.p[THX]
+                dist = float(np.linalg.norm(d))
+                overlap = FLY_TOUCH_RADIUS3 * 2 - dist
+                if overlap <= 0:
+                    continue
+                n = d / dist if dist > 1e-6 else np.array([1.0, 0.0, 0.0])
+                closing = float(np.dot((fb.p[THX] - fb.prev[THX]) - (fa.p[THX] - fa.prev[THX]), n))
+                for i in range(N_P):
+                    fa.p[i] -= n * overlap * 0.5
+                    fb.p[i] += n * overlap * 0.5
+                if closing < -0.02:                       # a real bump, not just jostling
+                    s = float(np.clip(-closing / 0.12, 0.15, 1.0))
+                    for slot, fly, side in ((sa, fa, -n), (sb, fb, n)):
+                        fly.impulse(THX, side * -0.03)
+                        if not fly.dead:
+                            slot.brain.poke("body", None, 0.5 * s)
+                            slot.brain.poke("legs", None, 0.3 * s)
+                            fly.hurt = max(fly.hurt, 0.3)
+
     def update3d(self, now: float, dt: float, keys, rel) -> None:
-        fly, br = self.fly, self.brain
         self.frame += 1
+        self._poll_spawn()
         if self.player_dead_at is not None:
             self.player.eye_h += (0.3 - self.player.eye_h) * 0.05       # you slump to the floor
         elif self.look:
             self.player.update(dt, keys, rel)
         self._environment(now)
         self._kick(now)
-        pin = self._hold_point()
-        if fly.wrapped and self.spider3 is not None:
-            pin = self.spider3["p"] - (0, 0.16, 0)
-        for i, sp in fly.step(now, pin):
-            s = float(np.clip((sp - 9) / 35, 0.05, 1))
-            self.hit(i, s)
-            if sp > 18:
-                self.damage(min(8.0, (sp - 18) * 0.35), "the floor" if fly.p[i, 1] < 0.2 else "the wall")
-            if sp > 14 and fly.p[i, 1] < 0.2:
-                self.puff(np.array([fly.p[i, 0], 0.02, fly.p[i, 2]]), 3)
-            if sp > 24 and not fly.dead:
-                self.sound.play("bonk", 0.4 + 0.6 * s)
-                fly.stun(now, 0.8 * s + 0.3)
-                if random.random() < 0.5:
-                    self.popup(fly.p[i] + (0, 0.3, 0), random.choice(k2.OUCH))
+        for slot in list(self.flies):
+            fly = slot.fly
+            pin = self._hold_point()
+            if fly.wrapped and self.spider3 is not None and self.spider3.get("target") is slot:
+                pin = self.spider3["p"] - (0, 0.16, 0)
+            for i, sp in fly.step(now, pin):
+                s = float(np.clip((sp - 9) / 35, 0.05, 1))
+                self.hit(slot, i, s)
+                if sp > 18:
+                    self.damage(slot, min(8.0, (sp - 18) * 0.35), "the floor" if fly.p[i, 1] < 0.2 else "the wall")
+                if sp > 14 and fly.p[i, 1] < 0.2:
+                    self.puff(np.array([fly.p[i, 0], 0.02, fly.p[i, 2]]), 3)
+                if sp > 24 and not fly.dead:
+                    self.sound.play("bonk", 0.4 + 0.6 * s)
+                    fly.stun(now, 0.8 * s + 0.3)
+                    if random.random() < 0.5:
+                        self.popup(fly.p[i] + (0, 0.3, 0), random.choice(k2.OUCH))
         for sw in self.swats:
             if not sw[2] and now - sw[1] > 0.12:
                 sw[2] = True
@@ -1168,104 +1267,115 @@ class Game3D(k2.Game):
         self.bolts3 = [b for b in self.bolts3 if now - b[2] < 0.25]
         self.popups3 = [pu for pu in self.popups3 if now - pu[2] < 0.9]
 
-        parts = br.pain_parts(br.fast, br.base)[0]
-        parts[3] = max(parts[3], self.pain_parts[3] * 0.96)
-        self.pain_parts += (parts - self.pain_parts) * 0.15
-        self.pain += (float(br.pain_index(parts)) - self.pain) * 0.15
-        self.reward += (float(np.clip((br.level("reward") - 1.0) / 0.6, 0, 1)) * 100 - self.reward) * 0.1
-        if not fly.dead and self.pain > 25 and self.frame % 3 == 0:
-            br.poke("punish", None, self.pain / 100)
-        self._vision(now)
-        self._scents(now)
+        self._fly_collisions3d(now)
+
+        all_dead = all(s.fly.dead for s in self.flies)
+        duel_free = duel_can_fly = None
+        for slot in list(self.flies):
+            fly, br = slot.fly, slot.brain
+            parts = br.pain_parts(br.fast, br.base)[0]
+            parts[3] = max(parts[3], slot.pain_parts[3] * 0.96)
+            slot.pain_parts += (parts - slot.pain_parts) * 0.15
+            slot.pain += (float(br.pain_index(parts)) - slot.pain) * 0.15
+            slot.reward += (float(np.clip((br.level("reward") - 1.0) / 0.6, 0, 1)) * 100 - slot.reward) * 0.1
+            if not fly.dead and slot.pain > 25 and self.frame % 3 == 0:
+                br.poke("punish", None, slot.pain / 100)
+            self._vision(slot, now)
+            self._scents(slot, now)
+            self._learn(slot, now)
+            if not fly.dead:
+                slot.pain_peak = max(slot.pain_peak, slot.pain)
+                if slot.pain >= 99:
+                    slot.pain_max_s += 1 / 60
+            slot.pain_trace.append(slot.pain)
+            slot.pain_trace = slot.pain_trace[-720:]
+
+            if not fly.dead:
+                for (region, side), s in slot.pending_hits.items():
+                    br.poke(region, side, s)
+                    slot.hits += 1
+                if slot.pending_damage:
+                    if self.duel and getattr(slot, "player_scent", False):   # hurt it up close: it learns to fear you
+                        self.fly_punish_until = max(self.fly_punish_until, now + PUNISH_PULSE_S)
+                    floor = 1.0 if self.immortal else 0.0
+                    fly.health = max(floor, fly.health - slot.pending_damage)
+                    slot.last_damage = now
+                    if fly.health <= 0:
+                        self._die(slot, now)
+                elif self.immortal and now - slot.last_damage > 1.5:
+                    fly.health = min(MAX_HEALTH, fly.health + 0.1)
+            slot.pending_hits.clear()
+            slot.pending_damage = 0.0
+            if fly.dead:
+                if (all_dead and self.report is None and slot is self.flies[self.focus]
+                        and now - fly.dead_at > k2.AUTOPSY_DELAY):
+                    self.report = self._autopsy(slot, now)
+                    self.death_frames = list(self.frames)
+                continue
+
+            # reactions read from the descending neurons
+            can_fly = fly.grabbed is None and not fly.wrapped and fly.frost < 0.5 and fly.melt < 0.3 and fly.venom < 0.5
+            can_fly = can_fly and fly.wet <= 0 and len(fly.stuck) < 2
+            free = fly.grabbed is None and now >= fly.escape_until
+            lv = {n: br.level(n) for n in ("jump", "run", "kick", "walk", "back", "turn_l", "turn_r", "fly", "escape")}
+            fly.power = lv["fly"]
+            if lv["escape"] > THRESH["escape"] and now >= fly.escape_ready and fly.grabbed is None and can_fly:
+                fly.stun_until = 0.0
+                fly.last_hit = np.asarray(slot.threat_x, float).copy()
+                fly.escape(now)
+                self.note(f"DODGE    giant fiber DNp01 x{lv['escape']:.1f}")
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), "DODGE!", (170, 255, 200))
+                self.sound.play("dodge")
+            elif lv["jump"] > THRESH["jump"] and now >= fly.escape_ready and free and can_fly:
+                fly.stun_until = 0.0
+                fly.escape(now)
+                self.note(f"FLY AWAY head-touch DNs x{lv['jump']:.1f}")
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), "YIKES!", (160, 230, 255))
+            elif (lv["fly"] > THRESH["fly"] and now >= fly.escape_ready and free and can_fly and now >= fly.stun_until
+                  and now >= fly.eating_until):
+                fly.escape(now, seconds=random.uniform(2.5, 4.0), wander=True)
+                self.note(f"TAKE OFF DNg02 x{lv['fly']:.2f}")
+            if lv["run"] > THRESH["run"] and now >= fly.walk_until and free:
+                fly.stun_until = min(fly.stun_until, now + 0.2)
+                fly.yaw_target = angle_to(fly.away_from(fly.last_hit))
+                fly.walk_until, fly.back_until, fly.run = now + 1.1, 0.0, True
+                self.note(f"RUN      body-touch DNs x{lv['run']:.1f}")
+            if lv["kick"] > THRESH["kick"] and now >= fly.flail_until:
+                fly.flail_until = now + 0.6
+                self.note(f"KICK     leg-touch DNs x{lv['kick']:.1f}")
+            if lv["back"] > THRESH["back"] and now >= fly.back_until and now >= fly.walk_until:
+                fly.back_until = now + 0.8
+                self.note(f"BACK UP  MDN x{lv['back']:.1f}")
+            elif lv["walk"] > THRESH["walk"] and now >= fly.walk_until and now >= fly.back_until:
+                fly.walk_until, fly.run = now + 1.2, False
+                self.note(f"WALK     DNp09 x{lv['walk']:.1f}")
+            self._memory_behavior(slot, now, free, can_fly)
+            if self.duel and slot is self.flies[self.focus]:
+                duel_free, duel_can_fly = free, can_fly
+            lamp_idle = free and now >= fly.escape_until and now >= fly.stun_until and now >= fly.walk_until
+            if k2.ARENAS[self.arena_i] == "lamp" and lamp_idle and now >= slot.photo_ready:
+                slot.photo_ready = now + random.uniform(3.0, 6.0)
+                fly.yaw_target = angle_to(LAMP3 - fly.p[THX])
+                if can_fly and random.random() < 0.6:
+                    fly.escape(now, seconds=random.uniform(3.0, 5.0), wander=True)
+                    fly.fly_target = LAMP3 - (0, 0.5, 0)
+                    self.note("TO LIGHT flies to the lamp")
+                else:
+                    fly.walk_until, fly.run = now + 1.5, False
+            turn = lv["turn_r"] - lv["turn_l"]
+            if abs(turn) > THRESH["turn"] and now >= fly.turn_ready and free and now >= fly.walk_until \
+                    and not (self.duel and slot is self.flies[self.focus]):
+                fly.turn_ready = now + 1.5
+                fly.yaw_target = fly.yaw + math.copysign(random.uniform(0.9, 1.6), turn)
+                self.note(f"TURN {'R' if turn > 0 else 'L'}   DNa01/02 R-L {turn:+.1f}")
+
         if self.duel:
             self._duel_senses(now)
         self._pellets3d(now)
-        self._learn(now)
+        if self.duel and duel_free is not None:
+            self._duel_motor(now, duel_free, duel_can_fly)
         self._training_tick(now)
         self._sound_update(now)
-        if not fly.dead:
-            self.pain_peak = max(self.pain_peak, self.pain)
-            if self.pain >= 99:
-                self.pain_max_s += 1 / 60
-        self.pain_trace.append(self.pain)
-        self.pain_trace = self.pain_trace[-720:]
-
-        if not fly.dead:
-            for (region, side), s in self.pending_hits.items():
-                br.poke(region, side, s)
-                self.hits += 1
-            if self.pending_damage:
-                if self.duel and self.player_scent:                     # you hurt it up close: it learns to fear you
-                    self.fly_punish_until = max(self.fly_punish_until, now + PUNISH_PULSE_S)
-                floor = 1.0 if self.immortal else 0.0
-                fly.health = max(floor, fly.health - self.pending_damage)
-                self.last_damage = now
-                if fly.health <= 0:
-                    self._die(now)
-            elif self.immortal and now - self.last_damage > 1.5:
-                fly.health = min(MAX_HEALTH, fly.health + 0.1)
-        self.pending_hits.clear()
-        self.pending_damage = 0.0
-        if fly.dead:
-            if self.report is None and now - fly.dead_at > k2.AUTOPSY_DELAY:
-                self.report = self._autopsy(now)
-                self.death_frames = list(self.frames)
-            return
-
-        # reactions read from the descending neurons
-        can_fly = fly.grabbed is None and not fly.wrapped and fly.frost < 0.5 and fly.melt < 0.3 and fly.venom < 0.5
-        can_fly = can_fly and fly.wet <= 0 and len(fly.stuck) < 2
-        free = fly.grabbed is None and now >= fly.escape_until
-        lv = {n: br.level(n) for n in ("jump", "run", "kick", "walk", "back", "turn_l", "turn_r", "fly", "escape")}
-        fly.power = lv["fly"]
-        if lv["escape"] > THRESH["escape"] and now >= fly.escape_ready and fly.grabbed is None and can_fly:
-            fly.stun_until = 0.0
-            fly.last_hit = np.asarray(self.threat_x, float).copy()
-            fly.escape(now)
-            self.note(f"DODGE    giant fiber DNp01 x{lv['escape']:.1f}")
-            self.popup(fly.p[HEAD] + (0, 0.4, 0), "DODGE!", (170, 255, 200))
-            self.sound.play("dodge")
-        elif lv["jump"] > THRESH["jump"] and now >= fly.escape_ready and free and can_fly:
-            fly.stun_until = 0.0
-            fly.escape(now)
-            self.note(f"FLY AWAY head-touch DNs x{lv['jump']:.1f}")
-            self.popup(fly.p[HEAD] + (0, 0.4, 0), "YIKES!", (160, 230, 255))
-        elif (lv["fly"] > THRESH["fly"] and now >= fly.escape_ready and free and can_fly and now >= fly.stun_until
-              and now >= fly.eating_until):
-            fly.escape(now, seconds=random.uniform(2.5, 4.0), wander=True)
-            self.note(f"TAKE OFF DNg02 x{lv['fly']:.2f}")
-        if lv["run"] > THRESH["run"] and now >= fly.walk_until and free:
-            fly.stun_until = min(fly.stun_until, now + 0.2)
-            fly.yaw_target = angle_to(fly.away_from(fly.last_hit))
-            fly.walk_until, fly.back_until, fly.run = now + 1.1, 0.0, True
-            self.note(f"RUN      body-touch DNs x{lv['run']:.1f}")
-        if lv["kick"] > THRESH["kick"] and now >= fly.flail_until:
-            fly.flail_until = now + 0.6
-            self.note(f"KICK     leg-touch DNs x{lv['kick']:.1f}")
-        if lv["back"] > THRESH["back"] and now >= fly.back_until and now >= fly.walk_until:
-            fly.back_until = now + 0.8
-            self.note(f"BACK UP  MDN x{lv['back']:.1f}")
-        elif lv["walk"] > THRESH["walk"] and now >= fly.walk_until and now >= fly.back_until:
-            fly.walk_until, fly.run = now + 1.2, False
-            self.note(f"WALK     DNp09 x{lv['walk']:.1f}")
-        self._memory_behavior(now, free, can_fly)
-        if self.duel:
-            self._duel_motor(now, free, can_fly)
-        lamp_idle = free and now >= fly.escape_until and now >= fly.stun_until and now >= fly.walk_until
-        if k2.ARENAS[self.arena_i] == "lamp" and lamp_idle and now >= self.photo_ready:
-            self.photo_ready = now + random.uniform(3.0, 6.0)
-            fly.yaw_target = angle_to(LAMP3 - fly.p[THX])
-            if can_fly and random.random() < 0.6:
-                fly.escape(now, seconds=random.uniform(3.0, 5.0), wander=True)
-                fly.fly_target = LAMP3 - (0, 0.5, 0)
-                self.note("TO LIGHT flies to the lamp")
-            else:
-                fly.walk_until, fly.run = now + 1.5, False
-        turn = lv["turn_r"] - lv["turn_l"]
-        if abs(turn) > THRESH["turn"] and now >= fly.turn_ready and free and now >= fly.walk_until and not self.duel:
-            fly.turn_ready = now + 1.5
-            fly.yaw_target = fly.yaw + math.copysign(random.uniform(0.9, 1.6), turn)
-            self.note(f"TURN {'R' if turn > 0 else 'L'}   DNa01/02 R-L {turn:+.1f}")
 
     # --- world drawing --------------------------------------------------------------------------------------------------------
     def _build_room(self) -> list:
@@ -1341,7 +1451,8 @@ class Game3D(k2.Game):
             rd.add("sphere", trs(LAMP3, None, (0.11, 0.13, 0.11)), (1.0, 0.95, 0.8), P_NONE, 3.0)
             for k in range(3):
                 rd.particle(LAMP3, 0.35 + 0.25 * k + 0.03 * math.sin(now * 3 + k), (1.0, 0.85, 0.5, 0.12), additive=True)
-        self._draw_fly(rd, now)
+        for slot in self.flies:
+            self._draw_fly(rd, now, slot.fly)
         self._draw_extras(rd, now)
 
     def _draw_fan(self, rd: Renderer, now: float) -> None:
@@ -1360,8 +1471,7 @@ class Game3D(k2.Game):
             rd.add("sphere", trs(hub + offset, blade, (0.03, 0.22, 0.1)), (0.6, 0.8, 0.95, 0.85))
         rd.add("sphere", trs(hub + (0.08, 0, 0), None, (0.05, 0.05, 0.05)), (0.3, 0.3, 0.35))
 
-    def _draw_fly(self, rd: Renderer, now: float) -> None:
-        fly = self.fly
+    def _draw_fly(self, rd: Renderer, now: float, fly: "Fly3D") -> None:
         p = fly.p
         hurt, dead = fly.hurt, fly.dead
         if fly.dissolved_at is not None:
@@ -1426,7 +1536,7 @@ class Game3D(k2.Game):
             span = float(np.linalg.norm(tip - base))
             rd.add("sphere", trs((base + tip) / 2, frame_from_x(tip - base), (span / 2 + 6 * S, 1.2 * S, 13 * S)),
                    (0.82, 0.87, 0.95, 0.38 if not fly.melt else 0.2), P_NONE, 0.15)
-        if self.duel and not dead:                                # the blaster, strapped under its head
+        if self.duel and not dead and fly is self.fly:             # the blaster, strapped under its head (duelist only)
             muzzle, _ = self._muzzle()
             base = p[THX] + fwd * 10 * S - up * 4 * S
             rd.add("cube", trs((base + muzzle) / 2 - up * 0.02, Rb, (0.2, 0.06, 0.07)), (0.25, 0.26, 0.3))
@@ -1633,7 +1743,7 @@ class Game3D(k2.Game):
             return
         fear, like = self._valence()
         self.valence += ((like - fear) - self.valence) * 0.05
-        if self.frame % 3 == 0 and br.memory is not None and self.player_scent:
+        if self.frame % 3 == 0 and br.memory is not None and getattr(self.flies[self.focus], "player_scent", False):
             br.memory.observe("player", br.sim.activity.rates())
         head = fly.p[HEAD]
         to = self.player.eye - head
@@ -1812,7 +1922,7 @@ class Game3D(k2.Game):
         if not self._overlay_open():
             cx, cy = k2.PLAY_W // 2, self.hud_h // 2
             eye, d = self.aim()
-            i, t, _ = self.fly.nearest_to_ray(eye, d, REACH, 0.25)
+            _, i, _ = self._nearest_fly3d(eye, d, REACH, 0.25)
             col = (255, 190, 90) if i is not None else (240, 240, 240)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 pygame.draw.line(hud, (0, 0, 0, 120), (cx + dx * 5 + 1, cy + dy * 5 + 1), (cx + dx * 13 + 1, cy + dy * 13 + 1), 3)
@@ -2122,7 +2232,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -
     brain = state["brain"]
     brain.start()
     hud = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
-    game = Game3D(hud, brain, state["view"])
+    game = Game3D(hud, brain, state["view"], state.get("graph"), state.get("weights"))
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()
@@ -2172,8 +2282,9 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -
                     fh.write(status)
             break
         clock.tick(60)
-    brain.stop()
-    if brain.memory is not None:
-        brain.memory.save()
+    for slot in game.flies:
+        slot.brain.stop()
+        if slot.persist_memory and slot.brain.memory is not None:
+            slot.brain.memory.save()
     pygame.quit()
     return 0
