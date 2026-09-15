@@ -28,6 +28,13 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **It sees you coming:** move a weapon at it fast and its real looming detectors (LPLC2 and LC4) fire its giant fiber escape neuron, so it dodges. Sneak up slowly and it won't notice.
 - **Brain surgery (O):** silence or stimulate real neuron groups and watch what happens. Switch on the moonwalker neurons and it backs up; silence the giant fiber and it can't dodge.
 - **Neuron inspector:** in the big brain view, click any neuron to see its type, how fast it's firing, and its strongest connections in the connectome.
+- **1v1 duel (X):** the fly gets a blaster and can kill you, and every part of the fight runs through its brain:
+  - it sees you through its real target-tracking neurons (LC10), which steer it toward you through its steering neurons (DNa02);
+  - it shoots when its small-object detectors fire its DNp35 neurons;
+  - landing a hit fires its reward dopamine neurons, so it learns to like hunting you;
+  - hurting it fires its punishment dopamine neurons, so it learns to fear you, and it runs away and stops shooting.
+
+  Silence its tracking neurons in brain surgery and it can't aim.
 - **Real training (T):** the fly learns with its actual mushroom body. Pair a smell with a shock or with sugar and dopamine weakens the real Kenyon cell to output neuron synapses for that smell, just like in real flies. The Training panel runs lab-style conditioning and graphs the learning curve. Memory is saved to Documents\Kick the Fly\memory and kept between flies and sessions. Hurting the fly while it smells a tool trains it too.
 - **Arenas (E):**
   - **fan:** wind that fires its wind-sensing neurons
@@ -47,6 +54,8 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 ![brain lighting up under the blowtorch](docs/brain.png)
 
 ![spider wrapping the fly](docs/spider.png)
+
+![1v1 duel](docs/duel.png)
 
 ![training](docs/training.png)
 
@@ -95,6 +104,7 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 | B | big live brain view; click a neuron to inspect it |
 | O | brain surgery |
 | T | training: teach it to fear or like a smell (saved between sessions) |
+| X | 1v1 duel: the fly gets a blaster and can kill you (R respawns you) |
 | E | arena: room, fan, flypaper, pool, lamp |
 | P / I | pain neurons / immortal mode |
 | M | mute |
@@ -114,6 +124,7 @@ Start with `--2d` for the original 2D game. It also starts automatically in 2D o
 - Which sensory neurons each hit drives.
 - The descending neurons read out for reactions. The jump, run and kick groups are the DN types that responded most to head, body and leg touch when the sim was probed.
 - Take-off and flight speed come from DNg02, the wing-power descending neurons.
+- In the 1v1 duel: aiming comes from the steering neurons DNa02 and DNa01 (right minus left), shooting from DNp35 and DNpe052, and walking toward you from DNp09. The pathways from target-tracking LC10 to DNa02 and from the small-object detectors LC11/18/21/26 to DNp35 are the connectome's own wiring. In testing, driving LC10 on one side took that side's DNa02 from about 1 to about 19 spikes/s. Whether it fights or flees is read from its mushroom body synapses for your smell.
 - Dodging: the looming detectors LPLC2 and LC4 exciting the giant fiber DNp01 is the connectome's own wiring. Driving LPLC2/LC4 takes DNp01 to 7–12× its calm rate, while on its own it never passed 2.6×.
 - The wind, humidity and light neurons each arena fires, and the Kenyon cell patterns each tool's scent produces.
 - The REWARD meter reads the PAM dopaminergic neurons.
@@ -130,6 +141,15 @@ Start with `--2d` for the original 2D game. It also starts automatically in 2D o
 - How looming reaches the fly. The game measures how fast an object grows in its view and drives LPLC2/LC4 directly. Streaming pixels through the sim's own photoreceptors didn't work: the looming signal stayed inside the brain's random flicker.
 - Learning. The plasticity happens on the connectome's own synapses: all 41,495 Kenyon cell to MBON connections that dopamine neurons reach. Which dopamine neurons gate which output neurons comes from the connectome's 37,909 dopamine to output neuron synapses: PPL1 punishment dopamine for MBON11-20 and 30-35, and PAM reward dopamine for MBON01-10, 21, 24 and 26-29. That matches the published map. The rule is the one found in real flies: dopamine plus Kenyon cell activity weakens the synapse. Game rules: pain driving PPL1, sugar driving PAM, each tool having a smell, and the learning rate and forgetting speed. In testing, 10 pairings raised fear of the trained smell from 0 to 0.65 while an untrained smell stayed at 0.01, and the trained smell's approach output neurons dropped from 32 to 30 spikes/s.
 - Being drawn to the lamp, and the arena physics.
+- In the 1v1 duel:
+  - that it has a blaster at all;
+  - where you appear in its view, which the game computes;
+  - the gun's automatic up/down aim toward your chest;
+  - hits firing its reward dopamine neurons, and getting hurt near you firing its punishment ones;
+  - how learned fear switches its attention off you;
+  - reversal learning: new opposite dopamine restores that smell's weakened synapses in the other compartment, so fear can overturn liking.
+
+  The overall fly-brain firing of those output neurons was too noisy in this sim to read a decision from, so the choice is read from the learned synapses themselves.
 - The flight path.
 - Everything about the 3D room: the fly's 3D body, physics, walking and flight, and your tools. They use the 2D game's tuned physics scaled to meters, so the brain gets the same kinds of hits as before. What triggers take-off is from the neurons, but where it flies is not.
 - Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.

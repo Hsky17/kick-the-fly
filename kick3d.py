@@ -65,6 +65,16 @@ def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int):
 TOOL_SIZE = {"flick": 0.06, "swatter": 0.2, "bomb": 0.08, "torch": 0.09, "cleaner": 0.09, "zapper": 0.12,
              "freeze": 0.09, "spider": 0.08}
 SKY_CLEAR = (0.08, 0.09, 0.11)
+PLAYER_HP, PLAYER_RADIUS = 100.0, 0.32
+PELLET_SPEED, PELLET_SPREAD, PELLET_DAMAGE = 9.0, 0.035, 9.0     # m/s, radians of scatter, health per hit
+FIRE_COOLDOWN, REWARD_PULSE_S = 0.45, 0.45
+# steering: tested on a still player 2.5-4 m away from 60-140 degrees off. Faster gains overshoot, because the brain
+# loop (poke -> LC10 -> DNa02 -> 150 ms rate average) lags ~0.2 s; these hit 82% of shots, ~9 hits per 15 s.
+STEER_DEADZONE_HZ = 1.5                                        # DNa02 R-L Hz below this is noise
+STEER_GAIN = 0.004                                             # rad/frame of turning per Hz above the deadzone
+STEER_MAX = 0.035                                              # rad/frame (2 rad/s)
+TRACK_SCALE = 0.45                                             # sideness that drives LC10 fully
+PUNISH_PULSE_S = 0.6                                           # getting hurt while it smells you: PPL1 fires this long
 
 # furniture you and the fly bump into: (min corner, max corner)
 COLLIDERS = [
@@ -81,6 +91,7 @@ HELP3D = (
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery"),
     ("T", "training: teach it to fear or like a smell (saved)"),
+    ("X", "1v1 duel: the fly gets a blaster and can kill you"),
     ("E", "arena: room, fan, flypaper, pool, lamp"),
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
@@ -475,7 +486,10 @@ class Game3D(k2.Game):
         self.panel_mode, self.ui_mode = 0, "crisp"
         self.panel_alpha = 255
         self.view_w, self.hud_h = k2.PLAY_W, k2.H
-        self.hint_extra = "V panel   F11 fullscreen   H help"
+        self.hint_extra = "V panel   X 1v1   F11 fullscreen   H help"
+        self.duel = False
+        self.player_hp, self.player_dead_at = PLAYER_HP, None
+        self.duel_stats = dict(shots=0, hits=0, deaths=0)
 
     # --- lifecycle -------------------------------------------------------------------------------------------------
     def new_fly(self) -> None:
@@ -491,6 +505,10 @@ class Game3D(k2.Game):
         self.shards3: list = []
         self.popups3 = []
         self.spider3: dict | None = None
+        self.pellets3: list = []
+        self.fly_reward_until = self.fly_punish_until = self.fire_ready = 0.0
+        self.steer = self.valence = self.trigger = self.hurt_flash = 0.0
+        self.player_scent = False
         self.spider = None
         self.threat_x = self.fly.p[THX].copy()
 
@@ -792,9 +810,26 @@ class Game3D(k2.Game):
         if any(np.linalg.norm((s["p"] - head)[[0, 2]]) < 2.4 for s in self.sugars3):
             self.sugar_scent = True
             self.brain.poke("scent", "sugar", 0.3)
+        self.player_scent = bool(getattr(self, "duel", False) and self.player_dead_at is None
+                                 and np.linalg.norm((self.player.eye - head)[[0, 2]]) < 3.5)
+        if self.player_scent:
+            self.brain.poke("scent", "player", 0.35)               # you smell like you
 
     def _memory_behavior(self, now: float, free: bool, can_fly: bool) -> None:
         fly = self.fly
+        if self.duel and self.player_scent and free and now >= self.avoid_ready and now >= fly.stun_until:
+            fear, like = self._valence()
+            if fear - like > k2.FEAR_ACT:                           # its mushroom body learned to fear you
+                self.avoid_ready = now + 2.5
+                fly.last_hit = self.player.eye.copy()
+                if can_fly and fear - like > 0.6:
+                    fly.escape(now)
+                else:
+                    fly.yaw_target = angle_to(fly.away_from(self.player.eye))
+                    fly.walk_until, fly.back_until, fly.run = now + 1.2, 0.0, True
+                self.note(f"FLEE     fears you ({fear:.2f})")
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), "RUN AWAY!", (140, 200, 255))
+                return
         if not self.scent_now or not free or now < self.avoid_ready or fly.frozen_at is not None or now < fly.stun_until:
             return
         eye = self.player.eye
@@ -1066,7 +1101,9 @@ class Game3D(k2.Game):
     def update3d(self, now: float, dt: float, keys, rel) -> None:
         fly, br = self.fly, self.brain
         self.frame += 1
-        if self.look:
+        if self.player_dead_at is not None:
+            self.player.eye_h += (0.3 - self.player.eye_h) * 0.05       # you slump to the floor
+        elif self.look:
             self.player.update(dt, keys, rel)
         self._environment(now)
         self._kick(now)
@@ -1140,6 +1177,9 @@ class Game3D(k2.Game):
             br.poke("punish", None, self.pain / 100)
         self._vision(now)
         self._scents(now)
+        if self.duel:
+            self._duel_senses(now)
+        self._pellets3d(now)
         self._learn(now)
         self._training_tick(now)
         self._sound_update(now)
@@ -1155,6 +1195,8 @@ class Game3D(k2.Game):
                 br.poke(region, side, s)
                 self.hits += 1
             if self.pending_damage:
+                if self.duel and self.player_scent:                     # you hurt it up close: it learns to fear you
+                    self.fly_punish_until = max(self.fly_punish_until, now + PUNISH_PULSE_S)
                 floor = 1.0 if self.immortal else 0.0
                 fly.health = max(floor, fly.health - self.pending_damage)
                 self.last_damage = now
@@ -1207,6 +1249,8 @@ class Game3D(k2.Game):
             fly.walk_until, fly.run = now + 1.2, False
             self.note(f"WALK     DNp09 x{lv['walk']:.1f}")
         self._memory_behavior(now, free, can_fly)
+        if self.duel:
+            self._duel_motor(now, free, can_fly)
         lamp_idle = free and now >= fly.escape_until and now >= fly.stun_until and now >= fly.walk_until
         if k2.ARENAS[self.arena_i] == "lamp" and lamp_idle and now >= self.photo_ready:
             self.photo_ready = now + random.uniform(3.0, 6.0)
@@ -1218,7 +1262,7 @@ class Game3D(k2.Game):
             else:
                 fly.walk_until, fly.run = now + 1.5, False
         turn = lv["turn_r"] - lv["turn_l"]
-        if abs(turn) > THRESH["turn"] and now >= fly.turn_ready and free and now >= fly.walk_until:
+        if abs(turn) > THRESH["turn"] and now >= fly.turn_ready and free and now >= fly.walk_until and not self.duel:
             fly.turn_ready = now + 1.5
             fly.yaw_target = fly.yaw + math.copysign(random.uniform(0.9, 1.6), turn)
             self.note(f"TURN {'R' if turn > 0 else 'L'}   DNa01/02 R-L {turn:+.1f}")
@@ -1382,6 +1426,12 @@ class Game3D(k2.Game):
             span = float(np.linalg.norm(tip - base))
             rd.add("sphere", trs((base + tip) / 2, frame_from_x(tip - base), (span / 2 + 6 * S, 1.2 * S, 13 * S)),
                    (0.82, 0.87, 0.95, 0.38 if not fly.melt else 0.2), P_NONE, 0.15)
+        if self.duel and not dead:                                # the blaster, strapped under its head
+            muzzle, _ = self._muzzle()
+            base = p[THX] + fwd * 10 * S - up * 4 * S
+            rd.add("cube", trs((base + muzzle) / 2 - up * 0.02, Rb, (0.2, 0.06, 0.07)), (0.25, 0.26, 0.3))
+            rd.add("cylinder", segment(muzzle - fwd * 0.08, muzzle + fwd * 0.02, 0.018), (0.45, 0.47, 0.5))
+            rd.add("sphere", trs(muzzle + fwd * 0.02, None, (0.022,) * 3), (0.45, 1.0, 0.4), P_NONE, 2.5)
         # overlays on the body
         if fly.soak > 0.05:
             rng = random.Random(int(now * 8))
@@ -1428,6 +1478,9 @@ class Game3D(k2.Game):
                (0.0, 0.0, 0.0, 0.35 * k), layer="blend")
 
     def _draw_extras(self, rd: Renderer, now: float) -> None:
+        for b in self.pellets3:
+            rd.add("sphere", trs(b["p"], None, (0.035,) * 3), (0.55, 1.0, 0.45), P_NONE, 3.0)
+            rd.particle(b["p"], 0.12, (0.4, 1.0, 0.35, 0.45), additive=True)
         for b in self.bombs3:
             rd.add("sphere", trs(b["p"], None, (0.08, 0.08, 0.08)), (0.12, 0.12, 0.14))
             rd.add("cylinder", segment(b["p"] + (0, 0.06, 0), b["p"] + (0.03, 0.13, 0), 0.01), (0.7, 0.6, 0.4))
@@ -1479,6 +1532,10 @@ class Game3D(k2.Game):
                 rd.particle(pt["p"], 0.04 + 0.16 * e, (0.9, 0.97, 1.0, 0.5 * (1 - e)))
             elif kind == "dust":
                 rd.particle(pt["p"], pt["size"] * (0.6 + e), (0.75, 0.7, 0.65, 0.45 * (1 - e)))
+            elif kind == "muzzle":
+                rd.particle(pt["p"], 0.06 + 0.1 * e, (0.7, 1.0, 0.5, 0.9 * (1 - e)), additive=True)
+            elif kind == "trail":
+                rd.particle(pt["p"], 0.04, (0.4, 1.0, 0.35, 0.4 * (1 - e)), additive=True)
             elif kind == "streak":
                 rd.particle(pt["p"], 0.025, (0.9, 0.95, 1.0, 0.35 * (1 - e)))
 
@@ -1542,6 +1599,199 @@ class Game3D(k2.Game):
                 rd.add("cube", trs(base + (0, 0.05, -0.05), rot_y(0.5), (0.055, 0.055, 0.055)), (0.98, 0.98, 1.0), layer="view")
             hand(base, 0.6)
 
+    # --- 1v1 duel ------------------------------------------------------------------------------------------------------------------
+    def toggle_duel(self) -> None:
+        self.duel = not self.duel
+        self.player_hp, self.player_dead_at = PLAYER_HP, None
+        self.pellets3.clear()
+        self.note("1V1      on: it has a blaster" if self.duel else "1V1      off")
+        self.saved_msg = ("1v1 duel: " + ("ON, the fly can shoot you" if self.duel else "off"), time.perf_counter())
+        self.sound.play("click")
+
+    def respawn_player(self) -> None:
+        fly = self.fly.p[THX]
+        corners = [np.array([x, z]) for x in (-RX + 0.8, RX - 0.8) for z in (-RZ + 0.8, RZ - 0.8)]
+        self.player.pos = max(corners, key=lambda c: float(np.hypot(*(c - fly[[0, 2]])))).astype(float)
+        v = fly[[0, 2]] - self.player.pos
+        self.player.yaw, self.player.pitch = math.atan2(v[1], v[0]), -0.25
+        self.player.eye_h = EYE
+        self.player_hp, self.player_dead_at = PLAYER_HP, None
+        self.note("RESPAWN  back in the fight")
+
+    def _valence(self) -> tuple[float, float]:
+        """How the fly's mushroom body sees you: (fear, liking) read from its real KC -> MBON synapses."""
+        mem = self.brain.memory
+        return (0.0, 0.0) if mem is None else mem.memory_of("player")
+
+    def _duel_senses(self, now: float) -> None:
+        """What the fly sees of you, fed into its real visual neurons: LC10 target tracking on the side you're on
+        (which drives the same-side DNa02 steering neurons), and small-object detectors when you're in front (which
+        drive DNp35). How strongly it attends to you is set by what it has learned about your smell."""
+        fly, br = self.fly, self.brain
+        if (fly.dead or self.player_dead_at is not None or fly.frozen_at is not None or fly.wrapped
+                or fly.grabbed is not None):
+            return
+        fear, like = self._valence()
+        self.valence += ((like - fear) - self.valence) * 0.05
+        if self.frame % 3 == 0 and br.memory is not None and self.player_scent:
+            br.memory.observe("player", br.sim.activity.rates())
+        head = fly.p[HEAD]
+        to = self.player.eye - head
+        dist = float(np.linalg.norm(to[[0, 2]]))
+        if dist > 7.5:
+            return
+        to_h = np.array([to[0], 0, to[2]]) / max(dist, 1e-6)
+        fwd, _, side = body_axes(fly.yaw)
+        ahead, sideness = float(to_h @ fwd), float(to_h @ side)
+        attend = float(np.clip(0.7 + 1.5 * self.valence, 0, 1))      # learned fear switches the pursuit off
+        if attend <= 0.02:
+            return
+        near = float(np.clip(1.3 - dist / 7.0, 0.3, 1.0))
+        s_side = float(np.clip(abs(sideness) / TRACK_SCALE, 0, 1)) * attend * near
+        key = "R" if sideness > 0 else "L"
+        if ahead < 0.995 and s_side > 0.03:
+            br.poke("track", key, 0.05, recruit=0.15 + 0.45 * s_side)    # short pulses renewed each frame: little lag
+        if ahead > 0.985 and dist < 7.0:                                # you are dead ahead: small-object detectors
+            s = attend * near * float(np.clip((ahead - 0.985) / 0.012, 0, 1))
+            if s > 0.02:
+                for sd in ("L", "R") if abs(sideness) < 0.12 else (key,):
+                    br.poke("small", sd, 0.05, recruit=0.2 + 0.4 * s)
+
+    def _duel_motor(self, now: float, free: bool, can_fly: bool) -> None:
+        """Steering from DNa02/DNa01 right minus left, shooting when DNp35/DNpe052 fire above threshold."""
+        fly, br = self.fly, self.brain
+        turn = br.hz("turn_r") - br.hz("turn_l")
+        self.steer += (turn - self.steer) * 0.35
+        grounded = free and now >= fly.stun_until and fly.p[THX, 1] < STAND3 + 0.25
+        if grounded and self.player_dead_at is None:
+            mag = max(0.0, abs(self.steer) - STEER_DEADZONE_HZ)
+            if mag > 0:
+                fly.yaw_target = fly.yaw + math.copysign(min(STEER_MAX, mag * STEER_GAIN), self.steer)
+        if now < self.fly_reward_until:
+            br.poke("reward", None, 0.8)                                # hitting you is rewarding (game rule)
+        if now < self.fly_punish_until:
+            br.poke("punish", None, 1.0)                                # getting hurt by you is punishing (game rule)
+        self.trigger = br.level("fire")
+        armed = (fly.grabbed is None and not fly.wrapped and now >= fly.stun_until and fly.frost < 0.5 and fly.melt < 0.5
+                 and self.player_dead_at is None)
+        if armed and self.trigger > THRESH["fire"] and now >= self.fire_ready:
+            self.fire_ready = now + FIRE_COOLDOWN
+            self._fly_shoot(now)
+            self.note(f"SHOOT    DNp35/DNpe052 x{self.trigger:.1f}")
+
+    def _muzzle(self):
+        fly = self.fly
+        fwd, up, _ = body_axes(fly.yaw)
+        return fly.p[HEAD] + fwd * 0.22 + up * 0.03, fwd
+
+    def _fly_shoot(self, now: float) -> None:
+        """The blaster fires along the fly's heading (its brain aims it by turning). Elevation toward your chest is
+        automatic, a game rule, since a fly on the floor has no neurons for aiming up at a person."""
+        muzzle, fwd = self._muzzle()
+        target = self.player.eye - (0, 0.35, 0)
+        horiz = max(0.4, float(np.linalg.norm((target - muzzle)[[0, 2]])))
+        pitch = math.atan2(target[1] - muzzle[1], horiz)
+        v = fwd * math.cos(pitch) + np.array([0, math.sin(pitch), 0])
+        v = v + np.random.normal(0, PELLET_SPREAD, 3)
+        v = v / np.linalg.norm(v) * PELLET_SPEED
+        self.pellets3.append(dict(p=muzzle.copy(), v=v / 60.0, t=now))
+        self.duel_stats["shots"] += 1
+        self.sound.play("pew", 0.8)
+        for _ in range(6):
+            self.parts.append(dict(p=muzzle.copy(), v=v / 60 * 0.2 + np.random.normal(0, 0.006, 3), t=now, life=0.15,
+                                   kind="muzzle", size=0.05))
+
+    def _pellets3d(self, now: float) -> None:
+        pl = self.player
+        keep = []
+        for b in self.pellets3:
+            b["v"][1] -= 0.9 / 3600.0
+            b["p"] = b["p"] + b["v"]
+            p = b["p"]
+            if random.random() < 0.6:
+                self.parts.append(dict(p=p.copy(), v=np.zeros(3), t=now, life=0.2, kind="trail", size=0.035))
+            hit_player = (self.player_dead_at is None and float(np.hypot(p[0] - pl.pos[0], p[2] - pl.pos[1])) < PLAYER_RADIUS
+                          and 0.05 < p[1] < pl.eye_h + 0.15)
+            if hit_player:
+                self._player_hit(now)
+                continue
+            outside = abs(p[0]) > RX or abs(p[2]) > RZ or p[1] < 0 or p[1] > RY
+            inside_box = any(np.all((p > lo) & (p < hi)) for lo, hi in COLLIDERS)
+            if outside or inside_box or now - b["t"] > 2.0:
+                self.puff(np.clip(p, (-RX, 0.02, -RZ), (RX, RY, RZ)), 5, 1.5)
+                continue
+            keep.append(b)
+        self.pellets3 = keep
+        self.hurt_flash = max(0.0, self.hurt_flash - 1 / 30)
+
+    def _player_hit(self, now: float) -> None:
+        self.player_hp = max(0.0, self.player_hp - PELLET_DAMAGE)
+        self.hurt_flash = 1.0
+        self.shake_until = now + 0.15
+        self.sound.play("hurt")
+        self.duel_stats["hits"] += 1
+        self.fly_reward_until = now + REWARD_PULSE_S                   # its reward dopamine neurons fire
+        self.note("HIT YOU  PAM reward dopamine fires")
+        if random.random() < 0.5:
+            self.popup(self.fly.p[HEAD] + (0, 0.45, 0), random.choice(("GOTCHA!", "PEW PEW!", "TAKE THAT!")), (180, 255, 150))
+        if self.player_hp <= 0:
+            self.player_dead_at = now
+            self.duel_stats["deaths"] += 1
+            self.sound.play("death")
+            self.note("YOU DIED the fly wins this round")
+            self.popup(self.fly.p[HEAD] + (0, 0.55, 0), "FLY WINS!", (255, 120, 90), force=True)
+            self.set_look(False)
+
+    def _draw_duel(self, hud, now: float) -> None:
+        w, h = 262, 150
+        x, y = k2.PLAY_W - w - 12, 72
+        card = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(card, (14, 8, 10, 205), card.get_rect(), border_radius=10)
+        pygame.draw.rect(card, (170, 60, 60, 220), card.get_rect(), 1, border_radius=10)
+        hud.blit(card, (x, y))
+        self._text(hud, "1V1", (x + 12, y + 6), (255, 110, 90), self.f_head)
+        self._text(hud, "X to end", (x + w - 12, y + 10), k2.LABEL, self.f_small, "topright")
+        frac = self.player_hp / PLAYER_HP
+        col = k2.S_GOOD if frac > 0.5 else k2.S_WARN if frac > 0.25 else k2.S_CRIT
+        pygame.draw.rect(hud, (40, 30, 34), (x + 12, y + 34, w - 24, 14), border_radius=7)
+        if frac > 0:
+            pygame.draw.rect(hud, col, (x + 12, y + 34, max(10, int((w - 24) * frac)), 14), border_radius=7)
+        self._text(hud, f"YOU {self.player_hp:.0f}", ((x + w // 2), y + 41), k2.INK, self.f_small, "center")
+        fear, like = self._valence()
+        mood, mcol = (("HUNTING YOU", (255, 120, 90)) if self.valence > 0.15 else ("FEARS YOU", (120, 190, 255))
+                      if self.valence < -0.2 else ("SIZING YOU UP", k2.TEXT))
+        self._text(hud, mood, (x + 12, y + 54), mcol, self.f_bold)
+        self._text(hud, f"likes you {like:.2f}   fears you {fear:.2f}", (x + 12, y + 76), k2.LABEL, self.f_small)
+        self._text(hud, f"steer DNa02 R-L {self.steer:+5.1f} Hz", (x + 12, y + 94), k2.TEXT, self.f_small)
+        tc = k2.AMBER if self.trigger > THRESH["fire"] else k2.TEXT
+        self._text(hud, f"trigger DNp35 x{self.trigger:.1f}", (x + 12, y + 110), tc, self.f_small)
+        st = self.duel_stats
+        self._text(hud, f"shots {st['shots']}  hits {st['hits']}  you died {st['deaths']}x", (x + 12, y + 128), k2.LABEL, self.f_small)
+        if self.hurt_flash > 0:                                          # red edges when you get hit, blended over the HUD
+            size = (self.view_w, self.hud_h)
+            if getattr(self, "_vignette_size", None) != size:
+                self._vignette_size = size
+                vw, vh = size
+                xs = np.minimum(np.arange(vw), np.arange(vw)[::-1])[:, None]
+                ys = np.minimum(np.arange(vh), np.arange(vh)[::-1])[None, :]
+                edge = np.clip(1 - np.minimum(xs, ys) / 90.0, 0, 1) ** 2
+                vig = pygame.Surface(size, pygame.SRCALPHA)
+                vig.fill((210, 20, 20, 0))
+                pygame.surfarray.pixels_alpha(vig)[:] = (edge * 190).astype(np.uint8)
+                self._vignette = vig
+            self._vignette.set_alpha(int(255 * self.hurt_flash))
+            hud.blit(self._vignette, (0, 0))
+        if self.player_dead_at is not None:
+            veil = pygame.Surface((self.view_w, self.hud_h), pygame.SRCALPHA)
+            veil.fill((60, 0, 0, int(min(140, (now - self.player_dead_at) * 200))))
+            hud.blit(veil, (0, 0))
+            cx, cy = k2.PLAY_W // 2, self.hud_h // 2 - 40
+            t1 = self.f_title.render("YOU DIED", True, (255, 90, 80))
+            hud.blit(t1, t1.get_rect(center=(cx, cy)))
+            self._text(hud, f"The fly shot you {st['hits']} times with {st['shots']} shots.", (cx, cy + 36), k2.INK, self.f_text, "midtop")
+            self._text(hud, f"Its mushroom body now likes you {like:.2f} and fears you {fear:.2f}.", (cx, cy + 60), k2.TEXT, self.f_text, "midtop")
+            self._text(hud, "press R to respawn", (cx, cy + 92), k2.AMBER, self.f_bold, "midtop")
+
     # --- HUD --------------------------------------------------------------------------------------------------------------------------
     def draw_hud3d(self, now: float, project) -> None:
         hud = self.screen
@@ -1569,7 +1819,9 @@ class Game3D(k2.Game):
                 pygame.draw.line(hud, col, (cx + dx * 5, cy + dy * 5), (cx + dx * 13, cy + dy * 13), 2)
         self._draw_toolbar(hud)
         self._draw_hud(hud, now)
-        if not self.look and not self._overlay_open():
+        if self.duel:
+            self._draw_duel(hud, now)
+        if not self.look and not self._overlay_open() and self.player_dead_at is None:
             msg = self.f_bold.render("click the room (or press Tab) to look around" if not self.quit_armed else
                                      "press Esc again to quit, or click the room to keep playing", True, INK_ON)
             box = msg.get_rect(center=(k2.PLAY_W // 2, self.hud_h // 2 + 60)).inflate(24, 12)
@@ -1640,8 +1892,14 @@ class Game3D(k2.Game):
                 return True
             if ev.key in (pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_LSHIFT, pygame.K_LCTRL, pygame.K_c, pygame.K_SPACE):
                 return True
+            if ev.key == pygame.K_r and self.player_dead_at is not None:
+                self.respawn_player()
+                return True
             if ev.key == pygame.K_r and self.report is not None:
                 self.new_fly()
+                return True
+            if ev.key == pygame.K_x:
+                self.toggle_duel()
                 return True
             return k2.Game.handle(self, ev, now)
         if ev.type == pygame.MOUSEWHEEL and self.look:
@@ -1652,7 +1910,7 @@ class Game3D(k2.Game):
                 self.use_tool3d(now)
                 return True
             pos = to_logical(ev.pos)
-            if not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
+            if self.player_dead_at is None and not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
                 self.set_look(True)
                 return True
             if self.surgery_open or self.help_open or self.report is not None or self.big_view or self.training_open:

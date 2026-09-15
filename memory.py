@@ -20,6 +20,9 @@ This module does exactly that on the simulator's synapse matrix:
   - Memory for a smell is read from those synapses: how much input the smell's KC pattern still delivers to the
     punishment-compartment MBONs (fear) and to the reward-compartment MBONs (liking), relative to the untrained
     connectome.
+  - Reversal: dopamine in one compartment also restores the same smell's weakened synapses in the opposite
+    compartment (Felsenberg et al. 2018 describe opposing memories in separate compartments competing), so being
+    hurt by something that used to be rewarding turns liking into fear. Its rate is a game choice.
   - Everything learned is saved to Documents\\Kick the Fly\\memory and loaded next time, so training carries over
     between flies and sessions until you wipe it.
 
@@ -40,6 +43,7 @@ import numpy as np
 KC_SPARSE = 280                 # Kenyon cells counted per pattern (of 4,064), like the ~5-10% a real odor activates
 LEARN_RATE = 0.012              # per 50 ms update at full dopamine and eligibility: ~6-10 pairings to full memory
 FLOOR = 0.1                     # a synapse can be weakened to 10% of its connectome weight
+REVERSAL_RATE = 0.03            # opposite dopamine restores a smell's weakened synapses (reversal learning)
 FORGET_HALF_LIFE_S = 1800.0     # brain-time seconds for a weakened synapse to recover half-way
 DA_MIN_HZ, DA_FULL_HZ = 12.0, 28.0   # measured: calm dopamine flicker peaks at 11 Hz above calm, punishment/reward
                                      # drive the right compartment to ~30 Hz and the other to ~1 Hz
@@ -149,6 +153,13 @@ class Memory:
             if dw.max() > 1e-7:
                 w -= dw
                 changed = True
+            # reversal: dopamine in one compartment restores the smell's synapses in the opposite one, so a new
+            # experience (hurt after being rewarded, or the reverse) overturns the old memory instead of cancelling it
+            pun_da = float(da[self.punish_comp].mean()) if self.punish_comp.any() else 0.0
+            rew_da = float(da[~self.punish_comp].mean()) if (~self.punish_comp).any() else 0.0
+            opp = np.where(self.punish_syn, rew_da, pun_da)
+            if opp.max() > 0.02:
+                w += REVERSAL_RATE * opp * e * (self.w0 - w)
         k = 1 - 0.5 ** (UPDATE_STEPS * 0.005 / FORGET_HALF_LIFE_S)
         w += (self.w0 - w) * k                                               # slow forgetting
         if changed or k > 0:

@@ -159,8 +159,10 @@ SERIES = ((57, 135, 229), (217, 89, 38), (25, 158, 112))   # blue, orange, aqua
 SENSE = {"wind": ("JO-C", "JO-E"), "head": ("BM_", "JO-"), "body": ("SNta",), "legs": ("SNpp",), "wing": ("WG",),
          "heat": ("TRN_VP2",), "cold": ("TRN_VP3",), "humid": ("HRN_",), "smell": ("ORN_",),
          "taste": ("LgLG", "LgAG", "LB", "PhG", "claw_"), "light": ("R1-R6", "R7", "R8"),
-         "loom": ("LPLC2", "LC4")}               # wind goes first so it keeps JO-C/E; head keeps the rest of JO
-NOT_SENSORY = {"loom"}                          # LPLC2/LC4 are visual projection neurons, not sensory neurons
+         "loom": ("LPLC2", "LC4"),               # wind goes first so it keeps JO-C/E; head keeps the rest of JO
+         "track": ("LC10",),                     # target tracking (LC10a-e): drives same-side DNa02 steering
+         "small": ("LC11", "LC18", "LC21", "LC26")}   # small-object detectors: drive same-side DNp35
+NOT_SENSORY = {"loom", "track", "small"}        # visual projection neurons, not sensory neurons
 TOUCH = ("head", "body", "legs", "wing")
 MOTOR = (  # name, types, side, label
     ("jump", ("DNg85", "DNg48", "DNg37", "DNge067", "DNg29", "DNge132"), None, "head-touch DNs  > JUMP"),
@@ -172,6 +174,7 @@ MOTOR = (  # name, types, side, label
     ("turn_r", ("DNa01", "DNa02"), "R", "DNa01/02 right  > TURN"),
     ("fly", tuple(f"DNg02_{c}" for c in "abcdefg"), None, "DNg02 wing power> FLY"),
     ("escape", ("DNp01",), None, "DNp01 giant fiber> DODGE"),
+    ("fire", ("DNp35", "DNpe052"), None, "DNp35 object DNs> SHOOT"),
 )
 POPS = (  # population name, superclasses
     ("photoreceptors", ("ol_sensory",)),
@@ -190,7 +193,7 @@ POPS = (  # population name, superclasses
 # DNg02 (29 wing-power DNs) rests at ~7 spikes/s; over 30 s of play its level never passed 1.64x (p99.9 1.60), so 1.58x
 # takes off now and then.
 # DNp01, the giant fiber: over 60 s calm its level never passed 2.64x; driving the looming detectors took it to 7-12x.
-THRESH = {"jump": 3.0, "run": 2.4, "kick": 2.0, "walk": 3.0, "back": 3.8, "turn": 2.1, "fly": 1.58, "escape": 4.0}
+THRESH = {"jump": 3.0, "run": 2.4, "kick": 2.0, "walk": 3.0, "back": 3.8, "turn": 2.1, "fly": 1.58, "escape": 4.0, "fire": 3.0}
 PAIN_WEIGHTS = np.array([0.55, 0.25, 0.55, 0.20, 0.30])   # touch, thermal, chemical, DN alarm, body relay; cap 100
 PAIN_LEVELS = (  # name, share of a region's neurons a light touch recruits, how hard the rest of the body's sensors join
     ("normal", 0.3, 0.0), ("more", 0.6, 0.5), ("max", 1.0, 1.0),
@@ -258,6 +261,7 @@ class Brain:
         order = np.random.default_rng(11).permutation(np.unique(glom))
         for k, name in enumerate(TOOL_NAMES):        # each tool's scent: its own 5 of the 53 olfactory glomeruli
             self.sense[("scent", name)] = orn[np.isin(glom, order[k * 5:(k + 1) * 5])]
+        self.sense[("scent", "player")] = orn[np.isin(glom, order[len(TOOL_NAMES) * 5:])]   # you: the last 3 glomeruli
         self.types, self.superclass = types, sc
         self.instance = np.array([i or "" for i in g.instance])
         self.override = np.zeros(g.n, np.float32)    # brain surgery: per-neuron silencing / stimulating current
@@ -1268,6 +1272,10 @@ class Sound:
         fx["hum"] = self._snd(np.sin(2 * np.pi * 120 * tt) * 0.5 + np.sin(2 * np.pi * 240 * tt) * 0.2, 0.2)
         tt = t(0.25)
         fx["click"] = self._snd(np.sin(2 * np.pi * 1300 * tt) * np.exp(-tt * 40), 0.3)
+        tt = t(0.16)
+        fx["pew"] = self._snd(np.sign(sweep(1500, 260, 0.16)) * 0.5 * np.exp(-tt * 14) + noise(0.16) * np.exp(-tt * 60) * 0.3, 0.35)
+        tt = t(0.25)
+        fx["hurt"] = self._snd(low(noise(0.25), 20) * 3 * np.exp(-tt * 14) + np.sin(2 * np.pi * 70 * tt) * np.exp(-tt * 10), 0.7)
         return fx
 
     def play(self, name: str, vol: float = 1.0) -> None:
@@ -3048,7 +3056,7 @@ class Game:
 
         self._text(scr, "REACTIONS", (x, y), LABEL, self.f_small)
         y += 16
-        for t, msg in reversed(self.log[-(4 if H >= 740 else 3):]):
+        for t, msg in reversed(self.log[-max(1, min(4, (H - 36 - y) // 15)):]):
             age = now - t
             col = AMBER if age < 1.0 else TEXT if age < 5 else DIM
             self._text(scr, f"{age:4.1f}s  {msg}", (x, y), col, self.f_small)
