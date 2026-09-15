@@ -1966,17 +1966,24 @@ class App:
         return Wn, Hn, s, hud_w, hud_h, play_w, view_w
 
     def hud_texture(self, hud_w: int, hud_h: int, s: float) -> moderngl.Texture:
-        if self.hud_size != (hud_w, hud_h):
+        if self.hud_size != (hud_w, hud_h):              # only when the window or menu size changes
             self.hud_size = (hud_w, hud_h)
+            if self.hud_tex is not None:
+                self.hud_tex.release()                  # GL objects are not garbage collected: free them explicitly
             self.hud_tex = self.ctx.texture((hud_w, hud_h), 4)
-        crisp = abs(s - round(s)) < 1e-6
-        self.hud_tex.filter = (moderngl.NEAREST, moderngl.NEAREST) if crisp else (moderngl.LINEAR, moderngl.LINEAR)
+        self.hud_filter = (moderngl.NEAREST, moderngl.NEAREST) if abs(s - round(s)) < 1e-6 else (moderngl.LINEAR, moderngl.LINEAR)
+        self.hud_tex.filter = self.hud_filter
         return self.hud_tex
 
     def _ensure_scene(self, w: int, h: int):
         if self.scene_size == (w, h):
             return
         self.scene_size = (w, h)
+        for old in (getattr(self, "ms", None), getattr(self, "scene", None)):   # free the previous size's buffers
+            if old is not None:
+                for att in list(old.color_attachments) + ([old.depth_attachment] if old.depth_attachment else []):
+                    att.release()
+                old.release()
         samples = min(4, self.ctx.max_samples)
         try:
             self.ms = self.ctx.framebuffer(color_attachments=[self.ctx.renderbuffer((w, h), 4, samples=samples)],
@@ -2071,8 +2078,7 @@ class App:
         self.rd.blit_texture(self.scene_tex, (0, 0, w * getattr(self, "view_frac", 0.7), h), (w, h), flip=False, blend=False)
         self.rd.blit_texture(self.hud_tex, (0, 0, w, h), (w, h), flip=True, blend=True)
         self.scene_tex.filter = moderngl.LINEAR, moderngl.LINEAR
-        self.hud_tex.filter = moderngl.LINEAR, moderngl.LINEAR
-        self.hud_size = None                            # restore the right filter next frame
+        self.hud_tex.filter = getattr(self, "hud_filter", (moderngl.LINEAR, moderngl.LINEAR))
         data = self.small.read(components=3)
         rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
         game.frames.append(rows.tobytes())
