@@ -375,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     p_inspect.add_argument("tables", nargs="*", metavar="TABLE", help=f"subset of {', '.join(DATASETS)} (default: all)")
     p_build = sub.add_parser("build", help="filter, sign, and pickle the graph to data/graph.pkl")
     p_build.add_argument("--accept-out-of-range", action="store_true",
-                         help=f"write graph.pkl even if counts differ from expectations by more than {TOLERANCE:.0%}")
+                         help=f"write graph.pkl even if counts differ from expectations by more than {TOLERANCE:.0%}".replace("%", "%%"))
     args = parser.parse_args(argv)
 
     if args.cmd == "inspect":

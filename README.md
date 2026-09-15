@@ -76,6 +76,15 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **Fullscreen:** press **F11**, or start it with `KickTheFly.exe --fullscreen`. It scales to any screen size.
 - **If it crashes:** it writes `KickTheFly-crash.txt` next to the exe.
 
+## Download and play (Linux)
+
+**[Download KickTheFly-x86_64.AppImage](https://github.com/legendarylolo318-cloud/kick-the-fly/releases/latest/download/KickTheFly-x86_64.AppImage)** (about 90 MB), `chmod +x` it, and run it. No install needed, and the fly's whole brain is inside it.
+
+- **Startup:** the first launch takes a few seconds while it unpacks.
+- **GPU:** needs OpenGL 3.3 (X11 or EGL) for the 3D room; it falls back to the 2D game otherwise.
+- **If it won't run:** most distros need `libfuse2` for AppImages (`sudo apt install libfuse2` on Debian/Ubuntu); newer AppImages fall back to extracting themselves if FUSE is missing.
+- **If it crashes:** it writes `KickTheFly-crash.txt` next to the AppImage.
+
 ## Run from source
 
 Needs Python 3.11, a GPU with OpenGL 3.3 for 3D, and about 1.5 GB of disk for the connectome.
@@ -87,10 +96,25 @@ python -m venv .venv
 .venv\Scripts\python kick_the_fly.py                # the first run packs data/kick_brain.npz (~30 s)
 ```
 
+On Linux/macOS, use `python3` and forward slashes instead:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m connectome.loader build         # downloads the connectome (~1.1 GB) and builds data/graph.pkl
+.venv/bin/python kick_the_fly.py                    # the first run packs data/kick_brain.npz (~30 s)
+```
+
 To build the exe yourself (after one run from source, so the brain pack exists):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_exe.ps1
+```
+
+To build the AppImage yourself (same prerequisite):
+
+```bash
+./build_appimage.sh
 ```
 
 ## Controls
