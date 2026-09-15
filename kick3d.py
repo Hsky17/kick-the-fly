@@ -100,8 +100,7 @@ HELP3D = (
     ("V", "brain panel: solid, see-through, faint, hidden"),
     ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
-    ("N", "spawn another fly, up to 8, each with its own brain"),
-    ("F", "cycle which fly's brain panel/training/surgery is shown"),
+    ("N", "spawn another fly, up to 16, each with its own brain"),
     ("R", "reset to a single fresh fly"),
     ("Esc", "free the mouse, close menus, then quit"),
 )
@@ -545,6 +544,9 @@ class Game3D(k2.Game):
             v = np.array([random.uniform(-1, 1), random.uniform(0, 0.6), random.uniform(-1, 1)]) * spread * S
             self.parts.append(dict(p=pos.copy(), v=v, t=time.perf_counter(), life=random.uniform(0.35, 0.8),
                                    kind="dust", size=random.uniform(0.03, 0.06)))
+
+    def _you_pos(self) -> np.ndarray:
+        return self.player.eye
 
     def aim(self):
         f, _, _ = self.player.basis()
@@ -1383,6 +1385,7 @@ class Game3D(k2.Game):
         self._pellets3d(now)
         if self.duel and duel_free is not None:
             self._duel_motor(now, duel_free, duel_can_fly)
+        self._update_focus()
         self._training_tick(now)
         self._sound_update(now)
 

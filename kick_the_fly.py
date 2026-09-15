@@ -203,7 +203,7 @@ TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", 
 STIM_AMP = 0.5              # x ext_gain 4 = 2.0 per step: a driven neuron fires every refractory cycle
 HIST = 1500                  # history samples, one per 20 ms = 30 s
 CALM_STEPS = 400             # 2 s without a touch before the baseline learns again
-MAX_FLIES = 8                 # each is a full independent connectome sim thread; see docs/ for the perf budget
+MAX_FLIES = 16                # each is a full independent connectome sim thread; see docs/ for the perf budget
 FLY_TOUCH_RADIUS = 40.0       # how close two flies' thoraxes get before they bump (game rule, not a measurement)
 
 
@@ -1365,8 +1365,7 @@ HELP = (
     ("I", "immortal mode"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
-    ("N", "spawn another fly, up to 8, each with its own brain"),
-    ("F", "cycle which fly's brain panel/training/surgery is shown"),
+    ("N", "spawn another fly, up to 16, each with its own brain"),
     ("R", "reset to a single fresh fly"),
     ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
     ("T", "training: teach it to fear or like a smell (saved between sessions)"),
@@ -1547,9 +1546,20 @@ class Game:
         self.popup(slot.fly.p[HEAD] + (0, -60), "NEW FLY!", (170, 255, 200), force=True)
         self.note(f"SPAWNED  fly #{len(self.flies)} (seed {slot.seed})")
 
-    def cycle_focus(self, step: int = 1) -> None:
-        if len(self.flies) > 1:
-            self.focus = (self.focus + step) % len(self.flies)
+    def _you_pos(self) -> np.ndarray:
+        """Reference point for 'closest to you'; Game3D overrides this with the player's eye."""
+        return np.asarray(self.mouse, float)
+
+    def _update_focus(self) -> None:
+        """The brain panel (and whichever fly training/surgery act on) always follows the fly nearest to you,
+        except while a panel is open or mid-training/duel, where switching brains under the player would be
+        confusing or apply an action to the wrong fly."""
+        if len(self.flies) <= 1 or getattr(self, "duel", False) or self._overlay_open() or self.train is not None \
+                or all(s.fly.dead for s in self.flies):
+            return
+        you = self._you_pos()
+        self.focus = min(range(len(self.flies)),
+                          key=lambda i: float(np.linalg.norm(self.flies[i].fly.p[THX] - you)))
 
     def _view_loop(self) -> None:
         """Renders the brain view at ~20 Hz on its own thread (10-25 ms per render; the sparse math releases the GIL)."""
@@ -2858,6 +2868,7 @@ class Game:
                     fly.facing = new
                     self.note(f"TURN {'R' if new > 0 else 'L'}   DNa01/02 R-L {turn:+.1f}")
 
+        self._update_focus()
         self._training_tick(now)
         self._sound_update(now)
 
@@ -3122,7 +3133,7 @@ class Game:
         pygame.draw.rect(card, (10, 12, 18, 170), card.get_rect(), border_radius=10)
         surf.blit(card, (10, 8))
         self._text(surf, self._fly_state(now).upper(), (22, 12), AMBER, self.f_head)
-        flies_txt = f"   flies {len(self.flies)}/{MAX_FLIES} (N)  fly #{self.focus + 1} (F)" if len(self.flies) > 1 \
+        flies_txt = f"   flies {len(self.flies)}/{MAX_FLIES} (N)  fly #{self.focus + 1} (nearest)" if len(self.flies) > 1 \
             else f"   flies 1/{MAX_FLIES} (N)"
         self._text(surf, f"hits {self.hits}   kills {self.kills}{flies_txt}", (22, 42), TEXT, self.f_text)
         # health
@@ -3440,8 +3451,6 @@ class Game:
                 self.note(f"ARENA    {ARENAS[self.arena_i]}")
             elif ev.key == pygame.K_n:
                 self.spawn_fly()
-            elif ev.key == pygame.K_f:
-                self.cycle_focus()
             elif ev.key == pygame.K_m:
                 self.sound.muted = not self.sound.muted
                 for slot in list(self.sound.loops):
