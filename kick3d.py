@@ -1195,6 +1195,15 @@ class Game3D(k2.Game):
                             slot.brain.poke("legs", None, 0.3 * s)
                             fly.hurt = max(fly.hurt, 0.3)
 
+    def _poll_spawn(self) -> None:
+        if self._new_slot is None:
+            return
+        slot, self._new_slot, self._spawning = self._new_slot, None, False
+        self.flies.append(slot)
+        self.focus = len(self.flies) - 1
+        self.popup(slot.fly.p[HEAD] + (0, 0.45, 0), "NEW FLY!", (170, 255, 200), force=True)
+        self.note(f"SPAWNED  fly #{len(self.flies)} (seed {slot.seed})")
+
     def update3d(self, now: float, dt: float, keys, rel) -> None:
         self.frame += 1
         self._poll_spawn()
