@@ -227,6 +227,7 @@ class Brain:
         sides = np.array([(i or "")[-2:] for i in g.instance])
         is_dn = sc == "descending_neuron"
         self.rng = np.random.default_rng(seed)
+        self.seed = seed
 
         # detail groups (touch sites + reaction DNs) are disjoint; population groups cover the whole connectome
         self.det_id = np.full(g.n, -1, np.int32)
@@ -409,6 +410,15 @@ class Brain:
         if self.memory is not None and self.steps % MEMORY_STEPS == 0 and self.death_step is None:
             calm = self.sedation == 0 and not self.surgery and self.steps - self.last_poke > CALM_STEPS
             self.memory.step(self.sim.activity.rates(), calm, self.steps)
+
+    def reseed(self, seed: int) -> None:
+        """New random seed for this brain's noise and hit sampling (Settings > Brain > Random seed, applied on R)."""
+        sim = self.sim
+        with self._lock:
+            self.seed = seed
+            self.rng = np.random.default_rng(seed)
+            sim.rng = np.random.default_rng(seed)
+            sim._noise = sim.rng.standard_normal(sim.n * 16, dtype=np.float32) * np.float32(sim.p.noise_std)
 
     def request_steps(self, n: int) -> None:
         with self._lock:
@@ -1208,6 +1218,44 @@ TOOLS = (("hand", "HAND", "drag the fly and throw it"), ("flick", "FLICK", "clic
          ("zapper", "ZAP", "click: electric shock through its body"), ("freeze", "FREEZE", "hold: freezes it solid, then smash the ice"),
          ("spider", "SPIDER", "click: drop a spider that hunts it"), ("sugar", "SUGAR", "click: drop sugar to reward it"))
 assert tuple(t[0] for t in TOOLS) == TOOL_NAMES
+# Real vs rule (the on-screen tags, Settings > Brain): which reactions are triggered by the connectome sim's own neurons
+# and which by a rule the game adds. REAL means live descending-neuron firing crossed a threshold; how the body then
+# moves is always game physics. Everything not listed (your tools' effects, settings) is untagged.
+REACTION_SOURCE = {
+    "DODGE": "real", "FLY AWAY": "real", "TAKE OFF": "real", "RUN": "real", "KICK": "real", "BACK UP": "real",
+    "WALK": "real", "TURN": "real", "SHOOT": "real", "GROOM": "real", "PROBOSCIS": "real",
+    "EATING": "rule", "TO LIGHT": "rule", "AVOID": "rule", "APPROACH": "rule", "FLEE": "rule", "WRAPPED": "rule",
+    "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule",
+}
+POPUP_SOURCE = {"DODGE!": "real", "YIKES!": "real", "NOPE!": "rule", "RUN AWAY!": "rule", "YUM!": "rule",
+                "SWEET!": "rule", "NOM NOM": "rule", "K.O.!": "rule", "BROKE FREE!": "rule", "FLY WINS!": "rule",
+                "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule"}
+SOURCE_TIP = {"real": "REAL: triggered by the connectome sim's own neurons firing above a threshold.",
+              "rule": "RULE: a game rule, not something the connectome sim produced."}
+
+
+def reaction_source(text: str) -> str | None:
+    head = text.split("  ")[0].strip()
+    for key, src in REACTION_SOURCE.items():
+        if head == key or head.startswith(key + " ") or text.startswith(key + " "):
+            return src
+    return None
+
+
+def draw_source_chip(surf, pos, source: str, font, anchor: str = "midtop", alpha: int = 255) -> pygame.Rect:
+    col = (60, 170, 220) if source == "real" else (220, 150, 50)
+    alpha = int(min(255, max(0, alpha)))
+    img = font.render("REAL" if source == "real" else "RULE", True, (10, 12, 16))
+    r = pygame.Rect(0, 0, img.get_width() + 10, img.get_height() + 2)
+    setattr(r, anchor, (int(pos[0]), int(pos[1])))
+    chip = pygame.Surface(r.size, pygame.SRCALPHA)
+    pygame.draw.rect(chip, (*col, alpha), chip.get_rect(), border_radius=5)
+    img.set_alpha(alpha)
+    chip.blit(img, img.get_rect(center=chip.get_rect().center))
+    surf.blit(chip, r)
+    return r
+
+
 TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0)
 TORCH_KEYS = (("head", None), ("body", None), ("legs", "L"), ("legs", "R"), ("wing", "L"), ("wing", "R"), ("heat", None))
 OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
@@ -1441,6 +1489,9 @@ class Game:
         self.cfg = cfg if cfg is not None else config.Config(None)
         self.clock = SimClock()
         self.menu = menu_ui.Menu(self)
+        import lab
+        lab.install(self.menu)
+        self.lab_params: dict[str, float] = dict(lab.DEFAULTS)
         self.want_quit = False
         self.train_active_speed = 1.0
         self.graph, self.weights = graph, weights     # the loaded connectome, kept so spawn_fly() can build more brains
@@ -1568,11 +1619,39 @@ class Game:
             self.menu.show("confirm_quit")
         elif name == "quit_now":
             self.want_quit = True
+        elif name == "lab":
+            self.menu.show("lab")
         elif name == "toggle_mode":
             self.set_setting("brain.mode", "play" if self.cfg.lab else "lab")
             self.menu.flash(f"{'Lab' if self.cfg.lab else 'Play'} mode", menu_ui.GOOD)
         else:
             self.menu.flash("coming soon", menu_ui.AMBER)
+
+    def lab_pages(self) -> list[tuple[str, str, str]]:
+        """(label, menu page, tooltip) for the Lab hub; later features add their pages to the menu."""
+        return [("Validation", "lab_validation", "Which published fly behaviors this sim reproduces, with numbers."),
+                ("Assays", "lab_assays", "T-maze conditioning, looming escape and sugar response with standard metrics."),
+                ("Repeated trials", "lab_trials", "Run an assay over many seeds with mean, 95% CI and a control."),
+                ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
+                ("Record and export", "lab_export", "Spike times and firing rates to CSV and npz with metadata."),
+                ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
+
+    def set_lab_param(self, name: str, value: float) -> None:
+        import lab
+
+        p = lab.BY_NAME[name]
+        v = float(min(max(value, p[4]), p[5]))
+        self.lab_params[name] = v
+        if p[2] == "model":
+            for slot in self.flies:
+                br = slot.brain
+                lab.apply_to_sim(br.sim, {name: v})
+                if name == "gain_adapt":
+                    br._gain_adapt = v
+                    if br.dead:
+                        br.sim.p.gain_adapt = 0.0            # a dead brain's gain stays frozen until it revives
+        else:
+            lab.apply_rules(self.lab_params)
 
     def sync_time(self) -> None:
         """Brain threads follow game time: paused, slow motion, training speed-up; single steps are fed in."""
@@ -1651,13 +1730,19 @@ class Game:
         for slot in getattr(self, "flies", [])[1:]:
             slot.brain.stop()
         primary = self.flies[0].brain if getattr(self, "flies", None) else self._primary_brain
+        base_seed = int(self.cfg["brain.seed"])
+        if getattr(primary, "seed", base_seed) != base_seed:
+            primary.reseed(base_seed)
+        random.seed(base_seed)                        # the game's own randomness follows the seed too
+        np.random.seed(base_seed % 2**32)
+        crash.info["seed"] = str(base_seed)
         primary.sedation = 0.0
         primary.clear_overrides()
         if primary.dead:
             primary.revive()
-        self.flies: list[FlySlot] = [FlySlot(self._new_primary_fly(), primary, seed=0, primary=True)]
+        self.flies: list[FlySlot] = [FlySlot(self._new_primary_fly(), primary, seed=base_seed, primary=True)]
         self.focus = 0
-        self._next_seed = 1
+        self._next_seed = base_seed + 1
         self._spawning = False
         self._new_slot = None
         self._reset_gen += 1
@@ -1695,7 +1780,9 @@ class Game:
 
         def build() -> None:
             from connectome.sim import LIFParams, LIFSim
+            import lab
             sim = LIFSim(None, LIFParams(), W_in=self.weights, seed=seed)
+            lab.apply_to_sim(sim, self.lab_params)
             new_brain = Brain(self.graph, sim, seed=seed)
             if getattr(self.graph, "dan_mbon", None) is not None:
                 import memory
@@ -2541,15 +2628,15 @@ class Game:
             return
         x = float(np.clip(pos[0], 90, PLAY_W - 90))
         y = float(np.clip(pos[1], CEIL + 60, FLOOR - 20))
-        self.popups.append([x, y, text, now, color])
+        self.popups.append([x, y, text, now, color, POPUP_SOURCE.get(text)])
 
     def puff(self, pos, n: int, spread: float = 3.0) -> None:
         for _ in range(n):
             self.dust.append([pos[0], pos[1], random.uniform(-spread, spread), random.uniform(-spread, 0.3),
                               self.clock.now, random.uniform(0.35, 0.8), random.uniform(3, 7)])
 
-    def note(self, text: str) -> None:
-        self.log.append((self.clock.now, text))
+    def note(self, text: str, source: str | None = None) -> None:
+        self.log.append((self.clock.now, text, source or reaction_source(text)))
         self.log = self.log[-7:]
 
     # --- tools ---
@@ -3238,6 +3325,8 @@ class Game:
             x, y = pu[0] - txt.get_width() / 2, pu[1] - 50 * e
             arena.blit(shd, (x + 3, y + 3))
             arena.blit(txt, (x, y))
+            if pu[5] and self.cfg.tags_on():
+                draw_source_chip(arena, (pu[0], y + txt.get_height()), pu[5], self.f_small, alpha=a)
         self._draw_toolbar(arena)
         self._draw_hud(arena, now)
         if not self._overlay_open() and TOOLS[self.tool][0] != "hand" and mouse[0] < PLAY_W and mouse[1] < FLOOR:
@@ -3486,10 +3575,13 @@ class Game:
 
         self._text(scr, "REACTIONS", (x, y), LABEL, self.f_small)
         y += 16
-        for t, msg in reversed(self.log[-max(1, min(4, (H - 36 - y) // 15)):]):
+        tags = self.cfg.tags_on()
+        for t, msg, src in reversed(self.log[-max(1, min(4, (H - 36 - y) // 15)):]):
             age = now - t
             col = AMBER if age < 1.0 else TEXT if age < 5 else DIM
-            self._text(scr, f"{age:4.1f}s  {msg}", (x, y), col, self.f_small)
+            r = self._text(scr, f"{age:4.1f}s  {msg}", (x, y), col, self.f_small)
+            if tags and src:
+                draw_source_chip(scr, (W - 14, y), src, self.f_small, anchor="topright")
             y += 15
         self._text(scr, f"sim {br.steps_per_s:4.0f} steps/s  {br.sim.last_step_ms:4.1f} ms/step",
                    (x, H - 18), DIM, self.f_small)

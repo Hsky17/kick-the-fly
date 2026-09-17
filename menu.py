@@ -40,7 +40,8 @@ LABEL = (130, 142, 160)
 DIM = (80, 88, 102)
 GOOD = (90, 200, 120)
 BAD = (230, 90, 80)
-TAG_COLORS = {config.CONNECTOME: (60, 170, 220), config.GAME_RULE: (220, 150, 50), "RESTART": (110, 118, 136),
+TAG_COLORS = {config.CONNECTOME: (60, 170, 220), config.GAME_RULE: (220, 150, 50), "CONNECTOME": (60, 170, 220),
+              "GAME RULE": (220, 150, 50), "RESTART": (110, 118, 136),
               "3D ONLY": (110, 118, 136), "REAL": (60, 170, 220), "RULE": (220, 150, 50)}
 
 
@@ -134,7 +135,7 @@ class Menu:
                 self.drag = dict(data, rect=rect)
                 self._drag_to(pos[0])
             elif kind == "edit":
-                self.edit = dict(id=data["id"], text=data["text"], commit=data["commit"])
+                self.edit = dict(id=data["id"], text=data["text"], commit=data["commit"], fresh=True)
             else:
                 self.pressed = data["id"]
             return True
@@ -181,8 +182,10 @@ class Menu:
             elif ev.key == pygame.K_ESCAPE:
                 self.edit = None
             elif ev.key == pygame.K_BACKSPACE:
-                self.edit["text"] = self.edit["text"][:-1]
+                self.edit["text"] = "" if self.edit.pop("fresh", False) else self.edit["text"][:-1]
             elif ev.unicode and ev.unicode in "0123456789.-" and len(self.edit["text"]) < 12:
+                if self.edit.pop("fresh", False):        # typing replaces the old value
+                    self.edit["text"] = ""
                 self.edit["text"] += ev.unicode
             return True
         if ev.key == pygame.K_ESCAPE:

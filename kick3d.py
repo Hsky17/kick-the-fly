@@ -588,7 +588,7 @@ class Game3D(k2.Game):
         p = np.asarray(pos, float)
         if p.shape != (3,):
             return
-        self.popups3.append([p.copy(), text, now, color])
+        self.popups3.append([p.copy(), text, now, color, k2.POPUP_SOURCE.get(text)])
 
     def puff(self, pos, n: int, spread: float = 3.0) -> None:
         pos = np.asarray(pos, float)
@@ -1981,7 +1981,7 @@ class Game3D(k2.Game):
     def draw_hud3d(self, now: float, project) -> None:
         hud = self.screen
         hud.fill((0, 0, 0, 0))
-        for pos, text, t0, color in self.popups3:
+        for pos, text, t0, color, source in self.popups3:
             sp = project(pos)
             if sp is None:
                 continue
@@ -1994,6 +1994,8 @@ class Game3D(k2.Game):
             x, y = sp[0] - txt.get_width() / 2, sp[1] - 50 * e - 20
             hud.blit(shd, (x + 3, y + 3))
             hud.blit(txt, (x, y))
+            if source and self.cfg.tags_on():
+                k2.draw_source_chip(hud, (sp[0], y + txt.get_height()), source, self.f_small, alpha=a)
         if not self._overlay_open():
             cx, cy = k2.PLAY_W // 2, self.hud_h // 2
             eye, d = self.aim()
