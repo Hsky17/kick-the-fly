@@ -27,6 +27,7 @@ import moderngl
 import numpy as np
 import pygame
 
+import crash
 import kick_the_fly as k2
 from kick_the_fly import (ABD, FOOT, HEAD, KNEE, LINKS, MAX_HEALTH, N_P, PULL, RADIUS, REST, THRESH, THX, TOOLS,
                           TORCH_KEYS, TRIPOD, WING)
@@ -2061,6 +2062,10 @@ class Game3D(k2.Game):
 INK_ON = (240, 243, 248)
 
 
+class GLUnavailable(RuntimeError):
+    """No OpenGL 3.3 core context (old GPU/driver, remote session, software GL too old): the caller falls back to 2D."""
+
+
 class App:
     """Window, GL context, frame composition, fullscreen and scaling."""
 
@@ -2068,9 +2073,16 @@ class App:
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
-        pygame.display.set_mode((k2.W, k2.H), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
+        try:
+            pygame.display.set_mode((k2.W, k2.H), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
+            self.ctx = moderngl.create_context()
+        except Exception as e:
+            raise GLUnavailable(f"{type(e).__name__}: {e}") from e
+        crash.record_gl(self.ctx)
+        if self.ctx.version_code < 330:
+            raise GLUnavailable(f"OpenGL {self.ctx.version_code / 100:.1f} ({crash.info.get('gl_renderer', '?')})")
+        k2.log.info("OpenGL %s on %s", crash.info.get("gl_version"), crash.info.get("gl_renderer"))
         pygame.display.set_caption("Kick the Fly")
-        self.ctx = moderngl.create_context()
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.rd = Renderer(self.ctx)
         desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (k2.W, k2.H)
@@ -2212,11 +2224,11 @@ class App:
         pygame.image.save(img, str(path))
 
 
-def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False) -> int:
+def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0) -> int:
     app = App(fullscreen)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
-    state: dict = {"stage": "starting"}
+    state: dict = {"stage": "starting", "seed": seed}
     threading.Thread(target=k2.load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
     splash = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)

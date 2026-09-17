@@ -1,0 +1,163 @@
+"""Logging, system diagnostics and crash reports.
+
+A crash writes KickTheFly-crash.txt next to the exe or AppImage (when that folder is writable) and always into the
+per-user state folder (paths.py). The report starts with what helps reproduce it: app version, seed, OS and version,
+the Linux session type (Wayland/X11) and SDL video driver, the GPU's OpenGL vendor, renderer and version strings and
+the driver version.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import platform
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+
+from version import __version__
+
+log = logging.getLogger("kickthefly")
+CRASH_NAME = "KickTheFly-crash.txt"
+
+# filled in as the game starts up (seed, video driver, GL strings, 2D/3D)
+info: dict[str, str] = {}
+
+
+def setup_logging(state_dir: Path | None = None, verbose: bool = False) -> None:
+    if log.handlers:
+        return
+    log.setLevel(logging.DEBUG if verbose else logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+    if sys.stderr is not None:                        # a windowed exe has no stderr
+        h = logging.StreamHandler(sys.stderr)
+        h.setFormatter(fmt)
+        log.addHandler(h)
+    if state_dir is not None:
+        try:
+            state_dir.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(state_dir / "kickthefly.log", mode="w", encoding="utf-8")
+            fh.setFormatter(fmt)
+            log.addHandler(fh)
+        except OSError:
+            pass
+    log.propagate = False
+
+
+def os_description() -> str:
+    if sys.platform == "win32":
+        try:
+            v = sys.getwindowsversion()
+            rel, ver, _, _ = platform.win32_ver()
+            return f"Windows {rel} (version {ver}, build {v.build})"
+        except Exception:
+            return f"Windows {platform.version()}"
+    if sys.platform.startswith("linux"):
+        name = "Linux"
+        try:
+            for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+                if line.startswith("PRETTY_NAME="):
+                    name = line.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+        return f"{name}, kernel {platform.release()}"
+    return f"{platform.system()} {platform.release()}"
+
+
+def session_description() -> str:
+    if not sys.platform.startswith("linux"):
+        return ""
+    e = os.environ
+    return (f"XDG_SESSION_TYPE={e.get('XDG_SESSION_TYPE', '')} WAYLAND_DISPLAY={e.get('WAYLAND_DISPLAY', '')} "
+            f"DISPLAY={e.get('DISPLAY', '')} SDL_VIDEODRIVER={e.get('SDL_VIDEODRIVER', '')}")
+
+
+def record_gl(ctx) -> None:
+    """Remember the GL strings from a moderngl context (called once the 3D window is up)."""
+    try:
+        i = ctx.info
+        info["gl_vendor"] = str(i.get("GL_VENDOR", ""))
+        info["gl_renderer"] = str(i.get("GL_RENDERER", ""))
+        info["gl_version"] = str(i.get("GL_VERSION", ""))
+    except Exception as e:
+        info["gl_error"] = str(e)
+
+
+def driver_version() -> str:
+    """Best effort: the GL version string usually carries it (Mesa x.y, NVIDIA 5xx); plus what the OS reports."""
+    parts = []
+    if info.get("gl_version"):
+        parts.append(f"from GL_VERSION: {info['gl_version']}")
+    if sys.platform.startswith("linux"):
+        nv = Path("/sys/module/nvidia/version")
+        try:
+            if nv.exists():
+                parts.append(f"nvidia kernel module {nv.read_text().strip()}")
+        except OSError:
+            pass
+    elif sys.platform == "win32":
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + ' driver ' + $_.DriverVersion }"],
+                capture_output=True, text=True, timeout=8, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            parts += [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        except Exception:
+            pass
+    return "; ".join(parts) or "unknown"
+
+
+def report_text(exc_text: str) -> str:
+    lines = [
+        f"Kick the Fly {__version__} crash report, {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"seed: {info.get('seed', 'unknown')}",
+        f"mode: {info.get('mode', 'unknown')}",
+        f"OS: {os_description()}",
+        f"python: {sys.version.split()[0]}  frozen: {bool(getattr(sys, 'frozen', False))}",
+    ]
+    if sys.platform.startswith("linux"):
+        lines.append(f"session: {session_description()}")
+    lines += [
+        f"SDL video driver: {info.get('video_driver', 'unknown')}",
+        f"GPU (GL_RENDERER): {info.get('gl_renderer', 'not created (2D or failed before the window)')}",
+        f"GL_VENDOR: {info.get('gl_vendor', '')}",
+        f"GL_VERSION: {info.get('gl_version', '')}",
+        f"driver: {driver_version()}",
+    ]
+    lines += [f"{k}: {v}" for k, v in info.items()
+              if k not in ("seed", "mode", "video_driver", "gl_renderer", "gl_vendor", "gl_version")]
+    return "\n".join(lines) + "\n\n" + exc_text
+
+
+def beside_executable() -> Path | None:
+    """The folder of the exe or AppImage the player launched (not PyInstaller's temp dir or the AppImage mount)."""
+    if os.environ.get("APPIMAGE"):
+        return Path(os.environ["APPIMAGE"]).resolve().parent
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return None
+
+
+def write_crash_report(exc_text: str | None = None, state_dir: Path | None = None) -> list[Path]:
+    exc_text = exc_text or traceback.format_exc()
+    text = report_text(exc_text)
+    written = []
+    targets = [beside_executable()]
+    if state_dir is None:
+        try:
+            import paths
+            state_dir = paths.get().state_dir
+        except Exception:
+            state_dir = None
+    targets.append(state_dir)
+    for d in targets:
+        if d is None:
+            continue
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / CRASH_NAME).write_text(text, encoding="utf-8")
+            written.append(d / CRASH_NAME)
+        except OSError:
+            continue
+    return written

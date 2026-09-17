@@ -23,7 +23,8 @@ This module does exactly that on the simulator's synapse matrix:
   - Reversal: dopamine in one compartment also restores the same smell's weakened synapses in the opposite
     compartment (Felsenberg et al. 2018 describe opposing memories in separate compartments competing), so being
     hurt by something that used to be rewarding turns liking into fear. Its rate is a game choice.
-  - Everything learned is saved to Documents\\Kick the Fly\\memory and loaded next time, so training carries over
+  - Everything learned is saved to the memory folder (Documents\\Kick the Fly\\memory on Windows,
+    ~/.local/share/kickthefly/memory on Linux; see paths.py) and loaded next time, so training carries over
     between flies and sessions until you wipe it.
 
 What is a game rule: pain driving the PPL1 punishment neurons and sugar driving the PAM reward neurons (in real flies
@@ -55,16 +56,11 @@ VERSION = 1
 
 
 def memory_dir() -> Path:
-    override = os.environ.get("KICK_THE_FLY_MEMORY")            # tests and portable installs can point elsewhere
-    candidates = ([Path(override)] if override else []) + [Path.home() / "Documents" / "Kick the Fly" / "memory",
-                                                            Path.cwd() / "Kick the Fly memory"]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    return Path.cwd()
+    """Per-OS memory folder from paths.py (Documents\\Kick the Fly\\memory on Windows, XDG data on Linux).
+    KICK_THE_FLY_MEMORY still overrides it for tests and portable installs."""
+    import paths
+
+    return paths.ensure_dir(paths.get().memory_dir, Path.cwd() / "Kick the Fly memory")
 
 
 class Memory:

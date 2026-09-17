@@ -134,6 +134,12 @@ import pygame
 import scipy.sparse as sp
 from pygame import gfxdraw
 
+import crash
+import paths
+import platform_env
+from crash import log
+from version import __version__
+
 W, H = 1280, 760
 PLAY_W = 890                 # left part is the arena, right part the brain panel
 FLOOR = 640
@@ -2237,13 +2243,8 @@ class Game:
         self.frames.append(pygame.image.tobytes(small, "RGB"))
 
     def _save_dir(self) -> Path:
-        for d in (Path.home() / "Pictures" / "Kick the Fly", Path.cwd() / "Kick the Fly saves"):
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-                return d
-            except OSError:
-                continue
-        return Path.cwd()
+        """Pictures\\Kick the Fly on Windows, <XDG Pictures>/Kick the Fly on Linux (see paths.py)."""
+        return paths.ensure_dir(paths.get().pictures_dir, Path.cwd() / "Kick the Fly saves")
 
     def save_png(self) -> None:
         path = self._save_dir() / f"kick-the-fly-{time.strftime('%Y%m%d-%H%M%S')}.png"
@@ -3543,8 +3544,9 @@ def load_brain(out: dict) -> None:
         out["stage"] = "unpacking the fly's brain"
         g, weights, soma = brainpack.load(pack)
         out["stage"] = f"wiring {g.n:,} neurons"
-        sim = LIFSim(None, LIFParams(), W_in=weights)
-        brain = Brain(g, sim)
+        seed = int(out.get("seed", 0))
+        sim = LIFSim(None, LIFParams(), W_in=weights, seed=seed)
+        brain = Brain(g, sim, seed=seed)
         out["stage"] = "placing neurons"
         pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
         pain_mask = np.isin(brain.det_id, pain_groups) | (brain.pop_id == [n for n, _ in POPS].index("ascending"))
@@ -3561,22 +3563,64 @@ def load_brain(out: dict) -> None:
         out["error"] = f"{type(e).__name__}: {e}"
 
 
-def main() -> int:
-    smoke = float(sys.argv[sys.argv.index("--smoke") + 1]) if "--smoke" in sys.argv else 0.0  # build check: run N s, exit
-    pygame.mixer.pre_init(Sound.RATE, -16, 1, 512)
-    if "--2d" not in sys.argv:                           # first person 3D by default; 2D if OpenGL 3.3 isn't there
+def parse_args(argv: list[str] | None = None):
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="KickTheFly", description="Kick the Fly: a live MaleCNS v1.0 fly connectome.")
+    ap.add_argument("--2d", dest="two_d", action="store_true", help="the original 2D game")
+    ap.add_argument("--fullscreen", action="store_true")
+    ap.add_argument("--backend", choices=platform_env.BACKENDS, help="Linux display backend (default: auto)")
+    ap.add_argument("--seed", type=int, help="random seed for the brains and the game")
+    ap.add_argument("--smoke", nargs="+", metavar="ARG", help="build check: SECONDS [SCREENSHOT.png]")
+    ap.add_argument("--verbose", action="store_true")
+    args, unknown = ap.parse_known_args(argv)
+    if unknown:
+        log.warning("ignoring unknown arguments: %s", " ".join(unknown))
+    args.smoke_s = float(args.smoke[0]) if args.smoke else 0.0
+    args.shot = args.smoke[1] if args.smoke and len(args.smoke) > 1 else None
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    for name in ("stdout", "stderr"):                   # the windowed exe has neither
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w"))
+    args = parse_args(argv)
+    p = paths.get()
+    crash.setup_logging(p.state_dir, args.verbose)
+    log.info("Kick the Fly %s on %s", __version__, crash.os_description())
+    for n in p.notes:
+        log.info(n)
+    seed = args.seed if args.seed is not None else 0
+    crash.info["seed"] = str(seed)
+    smoke, shot = args.smoke_s, args.shot
+    platform_env.windows_dpi_aware()
+    try:
+        pygame.mixer.pre_init(Sound.RATE, -16, 1, 512)
+    except Exception as e:                               # pygame built without mixer: the game plays silently
+        log.warning("sound unavailable: %s", e)
+    if not args.two_d:                                   # first person 3D by default; 2D if OpenGL 3.3 isn't there
         try:
             import kick3d
         except Exception as e:                           # e.g. moderngl missing in a source checkout
-            print(f"3D unavailable ({e}); starting the 2D game")
+            log.warning("3D unavailable (%s); starting the 2D game", e)
         else:
+            platform_env.init_video(args.backend, None)
             pygame.init()
-            shot = sys.argv[sys.argv.index("--smoke") + 2] if smoke and len(sys.argv) > sys.argv.index("--smoke") + 2 else None
-            try:
-                return kick3d.run(smoke, shot, "--fullscreen" in sys.argv)
-            except (kick3d.moderngl.Error, pygame.error) as e:
-                print(f"3D failed ({e}); starting the 2D game")
-                pygame.display.quit()
+            for attempt in range(2):
+                try:
+                    crash.info["mode"] = "3d"
+                    return kick3d.run(smoke, shot, args.fullscreen, seed=seed)
+                except kick3d.GLUnavailable as e:
+                    if attempt == 0 and platform_env.reset_to_x11():
+                        continue
+                    log.warning("OpenGL 3.3 is not available on this PC (%s). Using the 2D game instead; "
+                                "start with --2d to skip this check.", e)
+                    pygame.display.quit()
+                    break
+    crash.info["mode"] = "2d"
+    if not pygame.display.get_init():
+        platform_env.init_video(args.backend, None)
     os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")   # smooth when scaled, not blocky
     pygame.init()
     pygame.display.set_caption("Kick the Fly")
@@ -3584,11 +3628,12 @@ def main() -> int:
     # aspect ratio (black bars if needed) and mapping the mouse back, so it can go fullscreen at any resolution.
     screen = pygame.display.set_mode((W, H), pygame.SCALED | pygame.RESIZABLE)
     desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (W, H)
-    if "--fullscreen" in sys.argv or desk[0] < W or desk[1] < H + 60:   # asked for, or the window wouldn't fit
+    if args.fullscreen or desk[0] < W or desk[1] < H + 60:   # asked for, or the window wouldn't fit
         pygame.display.toggle_fullscreen()
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
     state: dict = {"stage": "starting"}
+    state["seed"] = seed
     threading.Thread(target=load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
     while "brain" not in state:
@@ -3621,8 +3666,7 @@ def main() -> int:
                 gif = "no gif"
             status = f"smoke ok: {brain.n:,} neurons, {brain.steps_per_s:.0f} steps/s, sound {game.sound.ok}, {gif}"
             print(status)
-            if len(sys.argv) > sys.argv.index("--smoke") + 2:   # optional screenshot path; the exe has no console
-                shot = sys.argv[sys.argv.index("--smoke") + 2]
+            if shot:                                      # optional screenshot path; the exe has no console
                 pygame.image.save(screen, shot)
                 with open(shot + ".txt", "w") as f:
                     f.write(status)
@@ -3651,10 +3695,9 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except SystemExit:
+        raise
     except Exception:
-        if getattr(sys, "frozen", False):            # no console in the exe: leave the traceback next to it
-            import traceback
-            from pathlib import Path
-
-            (Path(sys.executable).resolve().parent / "KickTheFly-crash.txt").write_text(traceback.format_exc())
+        written = crash.write_crash_report()
+        log.error("crashed; report written to %s", ", ".join(map(str, written)) or "nowhere (no writable folder)")
         raise
