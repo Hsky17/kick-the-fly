@@ -171,12 +171,10 @@ ASSUMPTIONS = (
 
     ("Alcohol inebriation as scripted motor degradation",
      "GAME RULE",
-     "Drinking the alcohol drop drives the real sweet taste pathway and the PAM dopaminergic reward neurons, but the "
-     "drunkenness itself is scripted: an 'inebriation' number rises 0 to 1 while sipping and decays over ~45 s, and "
-     "the game adds tremors, wobbly flight, a stumbling gait and slower escape reflexes in proportion to it.",
-     "Ethanol in real flies acts pharmacologically on membranes and receptors across the whole nervous system "
-     "(altered channel gating, dopaminergic and octopaminergic signalling), which this connectome sim does not model. "
-     "No neuron here is made drunk: the motor degradation is applied to the body, not to the simulated brain.",
+     "Sipping drives the real sweet taste pathway and PAM reward neurons, but the drunkenness is scripted: an "
+     "inebriation level rises 0 to 1 and decays over ~45 s, scaling tremors, wobbly flight and slower escape reflexes.",
+     "Ethanol acts pharmacologically across the whole nervous system (channel gating, dopaminergic and octopaminergic "
+     "signalling), none of which is modelled. No simulated neuron is drunk: only the body's movement is degraded.",
      "README.md § Connectome vs Game Rule · kick_the_fly.py:Game._alcohol · kick3d.py:Game3D._alcohol3d"),
 
     ("Left/Right asymmetry as EM reconstruction artifact risk",
