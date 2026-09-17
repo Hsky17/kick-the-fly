@@ -64,7 +64,7 @@ def memory_dir() -> Path:
 
 
 class Memory:
-    def __init__(self, g, sim):
+    def __init__(self, g, sim, load: bool = True):
         self.sim = sim
         types = np.asarray(g.type).astype(str)
         self.kc = np.flatnonzero(np.char.startswith(types, "KC"))
@@ -117,7 +117,8 @@ class Memory:
         self.log_path = self.path.with_name("training-log.json")
         self.signature = np.array([len(self.w0), float(self.w0.sum())])
         self.n_neurons = n_all
-        self.load()
+        if load:                                  # False: an untrained fly (assays, validation, tests)
+            self.load()
 
     # --- the plasticity rule (brain thread) -------------------------------------------------------------------------
     def step(self, rates: np.ndarray, calm: bool, steps: int) -> None:

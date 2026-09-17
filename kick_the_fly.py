@@ -314,6 +314,8 @@ class Brain:
         self.steps = 0
         self.speed = 1.0                             # x real time: >1 training, <1 slow motion, 0 paused
         self.step_requests = 0                       # brain steps owed while paused (single-step)
+        self.step_lock = threading.Lock()            # held for each step, so save states never see half a step
+        self.meter_reset = False
         self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
 
     @property
@@ -448,7 +450,8 @@ class Brain:
                 with self._lock:
                     n, self.step_requests = self.step_requests, 0
                 for _ in range(n):
-                    self._step()
+                    with self.step_lock:
+                        self._step()
                 t0, done = time.perf_counter(), 0
                 continue
             if self._revive:
@@ -456,17 +459,22 @@ class Brain:
                 self.death_step = None
                 self.sim.p.gain_adapt = self._gain_adapt
                 self.sim.gain = self._gain
-                for _ in range(300):
-                    self._step()
+                with self.step_lock:
+                    for _ in range(300):
+                        self._step()
                 t0, done = time.perf_counter(), 0
             now = time.perf_counter()
+            if self.meter_reset:                     # a save state replaced the step count
+                self.meter_reset = False
+                last_t, last_steps = now, self.steps
             due = int((now - t0) / self.dt * speed)
             if due - done > 40:                      # fell behind: drop the backlog instead of racing
                 done = due - 40
             if done >= due:
                 time.sleep(0.001)
                 continue
-            self._step()
+            with self.step_lock:
+                self._step()
             done += 1
             if now - last_t > 1.0:
                 self.steps_per_s = (self.steps - last_steps) / (now - last_t)
@@ -1491,6 +1499,7 @@ class Game:
         self.menu = menu_ui.Menu(self)
         import lab
         lab.install(self.menu)
+        self.menu.pages["load_state"] = page_load_state
         self.lab_params: dict[str, float] = dict(lab.DEFAULTS)
         self.want_quit = False
         self.train_active_speed = 1.0
@@ -1621,6 +1630,11 @@ class Game:
             self.want_quit = True
         elif name == "lab":
             self.menu.show("lab")
+        elif name == "save_state":
+            self.save_state()
+        elif name == "load_state":
+            self.menu._saves_cache = None
+            self.menu.show("load_state")
         elif name == "toggle_mode":
             self.set_setting("brain.mode", "play" if self.cfg.lab else "lab")
             self.menu.flash(f"{'Lab' if self.cfg.lab else 'Play'} mode", menu_ui.GOOD)
@@ -1655,6 +1669,7 @@ class Game:
 
     def sync_time(self) -> None:
         """Brain threads follow game time: paused, slow motion, training speed-up; single steps are fed in."""
+        self.poll_load()
         base = self.clock.brain_speed()
         steps = self.clock.take_brain_steps()
         training = self.flies[self.focus] if self.train is not None else None
@@ -1678,7 +1693,8 @@ class Game:
             if not c.user_paused:
                 c.user_paused = True
             c.step()
-        self.saved_msg = (c.label() or "time: normal speed", time.perf_counter())
+        if not c.label():                            # the badge under the health bar shows pause and slow motion
+            self.saved_msg = ("time: normal speed", time.perf_counter())
 
     # --- fly properties: proxy to whichever FlySlot is currently focused --------------------------------------------
     @property
@@ -1746,6 +1762,16 @@ class Game:
         self._spawning = False
         self._new_slot = None
         self._reset_gen += 1
+        self.log: list[tuple[float, str, str | None]] = []
+        self.report: dict | None = None
+        self.death_frames: list = []
+        self.clear_transients()
+        self.sugars: list[dict] = []
+        self.surgery_modes = [0] * len(SURGERY)
+        self.type_ops = {}
+
+    def clear_transients(self) -> None:
+        """Things in flight and effects, which save states don't keep."""
         self.popups: list[list] = []
         self.bombs: list[dict] = []
         self.flashes: list[list] = []
@@ -1753,20 +1779,14 @@ class Game:
         self.dust: list[list] = []
         self.shake_until = 0.0
         self.killed_by = ""
-        self.log: list[tuple[float, str]] = []
-        self.report: dict | None = None
         self.torching = False
         self.flames: list[list] = []
         self.mist: list[list] = []
         self.shards: list[list] = []
         self.bolts: list[list] = []
         self.spider: dict | None = None
-        self.sugars: list[dict] = []
         self.zap_ready = 0.0
         self.streaks: list[list] = []
-        self.death_frames: list = []
-        self.surgery_modes = [0] * len(SURGERY)
-        self.type_ops = {}
 
     def spawn_fly(self) -> None:
         """N: add another fly, each with its own fully independent connectome brain thread, up to MAX_FLIES. The
@@ -1779,18 +1799,7 @@ class Game:
         gen = self._reset_gen
 
         def build() -> None:
-            from connectome.sim import LIFParams, LIFSim
-            import lab
-            sim = LIFSim(None, LIFParams(), W_in=self.weights, seed=seed)
-            lab.apply_to_sim(sim, self.lab_params)
-            new_brain = Brain(self.graph, sim, seed=seed)
-            if getattr(self.graph, "dan_mbon", None) is not None:
-                import memory
-                new_brain.memory = memory.Memory(self.graph, sim)
-                # it still loads the primary's saved weights as a starting point and learns live from there, but
-                # never writes back to that shared file (no matter which code path calls .save(), now or later)
-                new_brain.memory.save = lambda: None
-            new_brain.warmup()
+            new_brain = self.build_brain(seed)
             if gen != self._reset_gen:          # R was pressed while this build was in flight: discard it
                 new_brain.stop()
                 return
@@ -1798,6 +1807,130 @@ class Game:
             self._new_slot = FlySlot(self._new_spawn_fly(), new_brain, seed=seed, primary=False)
 
         threading.Thread(target=build, name=f"brain-{seed}", daemon=True).start()
+
+    def build_brain(self, seed: int) -> "Brain":
+        """A fresh, warmed-up, not-yet-started brain for another fly (its own LIFSim and mushroom body)."""
+        import lab
+        from connectome.sim import LIFParams, LIFSim
+
+        sim = LIFSim(None, LIFParams(), W_in=self.weights, seed=seed)
+        lab.apply_to_sim(sim, self.lab_params)
+        new_brain = Brain(self.graph, sim, seed=seed)
+        new_brain.set_pain_level(self.pain_level)
+        if getattr(self.graph, "dan_mbon", None) is not None:
+            import memory
+            new_brain.memory = memory.Memory(self.graph, sim)
+            # it still loads the primary's saved weights as a starting point and learns live from there, but
+            # never writes back to that shared file (no matter which code path calls .save(), now or later)
+            new_brain.memory.save = lambda: None
+        new_brain.warmup()
+        return new_brain
+
+    # --- save states -------------------------------------------------------------------------------------------------
+    def save_extra(self, arrays: dict, now: float) -> dict:
+        return dict(sugars=[dict(p=[float(x) for x in sg["p"]], v=float(sg.get("v", 0.0)), left=float(sg["left"]))
+                            for sg in self.sugars])
+
+    def load_extra(self, extra: dict, z, now: float) -> None:
+        self.sugars = [dict(p=np.array(sg["p"]), v=sg["v"], left=sg["left"]) for sg in extra.get("sugars", [])]
+
+    def prepare_load(self, n: int, seeds: list[int]) -> None:
+        """Match the number of flies to a save (using brains built for it in the background) and clear effects."""
+        if self.train is not None:
+            self.stop_training()
+        self._reset_gen += 1                       # a spawn still building is discarded
+        self._spawning, self._new_slot = False, None
+        while len(self.flies) > n:
+            self.flies.pop().brain.stop()
+        built = list(getattr(self, "_load_brains", []))
+        for seed in seeds[len(self.flies):]:
+            br = built.pop(0) if built else self.build_brain(seed)
+            br.speed = 0.0
+            br.start()
+            self.flies.append(FlySlot(self._new_spawn_fly(), br, seed=seed, primary=False))
+        for br in built:
+            br.stop()
+        self._load_brains = []
+        self.report = None
+        self.death_frames = []
+        self.clear_transients()
+
+    def save_state(self) -> Path | None:
+        import savestate
+        d = paths.ensure_dir(paths.get().saves_dir)
+        stem = f"save-{time.strftime('%Y%m%d-%H%M%S')}"
+        path, n = d / f"{stem}{savestate.SUFFIX}", 2
+        while path.exists():
+            path, n = d / f"{stem}-{n}{savestate.SUFFIX}", n + 1
+        try:
+            savestate.save_game(self, path)
+        except Exception as e:
+            log.exception("save state failed")
+            self.menu.flash(f"Couldn't save: {e}", menu_ui.BAD)
+            return None
+        self.menu.flash(f"Saved {path.name}", menu_ui.GOOD)
+        log.info("saved state %s", path)
+        return path
+
+    def load_state(self, path: Path, wait: bool = False) -> bool:
+        """Load a save. Brains for extra flies are built on a background thread first (a few seconds each), with
+        the menu showing progress; wait=True does it all now (tests, headless)."""
+        import savestate
+        try:
+            meta = savestate.read_meta(path)
+            why = savestate.compatible(meta, self)
+            if why:
+                raise savestate.SaveError(f"can't load this save: {why}")
+        except savestate.SaveError as e:
+            self.menu.flash(str(e), menu_ui.BAD, 6)
+            return False
+        need = [f["seed"] for f in meta["flies"]][len(self.flies):]
+        if need and not wait:
+            job = dict(path=path, brains=[], total=len(need), error=None)
+            self._load_job = job
+            self.menu.flash(f"Loading: building {len(need)} brain{'s' if len(need) > 1 else ''}...", menu_ui.AMBER, 60)
+
+            def build():
+                try:
+                    for seed in need:
+                        job["brains"].append(self.build_brain(seed))
+                except Exception as e:
+                    job["error"] = e
+                job["done"] = True
+
+            threading.Thread(target=build, name="load-brains", daemon=True).start()
+            return True
+        return self._finish_load(path)
+
+    def poll_load(self) -> None:
+        job = getattr(self, "_load_job", None)
+        if job is None or not job.get("done"):
+            return
+        self._load_job = None
+        if job["error"] is not None:
+            self.menu.flash(f"Couldn't load: {job['error']}", menu_ui.BAD, 6)
+            return
+        self._load_brains = job["brains"]
+        self._finish_load(job["path"])
+
+    def _finish_load(self, path: Path) -> bool:
+        import savestate
+        try:
+            savestate.load_game(self, path)
+        except savestate.SaveError as e:
+            self.menu.flash(str(e), menu_ui.BAD, 6)
+            return False
+        except Exception as e:
+            log.exception("load state failed")
+            self.menu.flash(f"Couldn't load: {type(e).__name__}: {e}", menu_ui.BAD, 6)
+            return False
+        self.note(f"LOADED   {path.name}")
+        for slot in self.flies:
+            slot.brain.meter_reset = True
+        self.menu.message = None
+        if self.menu.open:
+            self.menu.close()
+        return True
 
     def _poll_spawn(self) -> None:
         if self._new_slot is None:
@@ -2979,6 +3112,8 @@ class Game:
 
     # --- per frame ---
     def update(self, now: float, mouse) -> None:
+        for slot in self.flies:
+            slot.fly.p_tick = slot.fly.p.copy()
         self.frame += 1
         self.mouse = mouse
         self._poll_spawn()
@@ -3246,7 +3381,14 @@ class Game:
             sh = pygame.transform.smoothscale(self.shadow, (int(200 * (1 - 0.5 * lift)), int(26 * (1 - 0.5 * lift))))
             sh.set_alpha(int(255 * (1 - 0.7 * lift)))
             arena.blit(sh, sh.get_rect(center=(int(fly.p[THX, 0]), FLOOR + 2)))
-            draw_fly(arena, fly, now)
+            prev = getattr(fly, "p_tick", None)
+            if self.clock.alpha < 1.0 and prev is not None:        # slow motion: draw between the last two ticks
+                real_p = fly.p
+                fly.p = prev + (real_p - prev) * self.clock.alpha
+                draw_fly(arena, fly, now)
+                fly.p = real_p
+            else:
+                draw_fly(arena, fly, now)
             if now < fly.burn_until:                         # small flames licking off the body
                 for i in (HEAD, THX, ABD):
                     fx, fy = fly.p[i] + (random.uniform(-14, 14), random.uniform(-18, -4))
@@ -3841,6 +3983,57 @@ class Game:
                 self.fly.grabbed = None
             self.torching = False
         return True
+
+
+def page_load_state(m, surf, rect, mouse) -> None:
+    """Pause menu > Load State: saves in the saves folder, newest first; ones that can't load say why."""
+    import savestate
+
+    game = m.host
+    m.text(surf, "LOAD STATE", (rect.x + 24, rect.y + 16), menu_ui.INK, m.f_head)
+    folder = paths.get().saves_dir
+    m.text(surf, str(folder), (rect.x + 24, rect.y + 50), menu_ui.LABEL, m.f_small)
+    now = time.perf_counter()
+    cache = getattr(m, "_saves_cache", None)
+    if cache is None or now - cache[0] > 2.0:
+        entries = []
+        files = sorted(folder.glob("*" + savestate.SUFFIX), key=lambda f: f.stat().st_mtime, reverse=True) \
+            if folder.is_dir() else []
+        for f in files[:40]:
+            try:
+                meta = savestate.read_meta(f)
+                entries.append((f, meta, savestate.compatible(meta, game)))
+            except savestate.SaveError as e:
+                entries.append((f, None, str(e)))
+        m._saves_cache = cache = (now, entries)
+    entries = cache[1]
+    body = pygame.Rect(rect.x + 16, rect.y + 80, rect.w - 32, rect.h - 150)
+    off = int(m.scroll.get("load_state", 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
+    y = body.y - off
+    if not entries:
+        m.text(surf, "No saves yet. Use Save State in the pause menu.", body.center, menu_ui.LABEL, m.f_text, "center")
+    for f, meta, why in entries:
+        row = pygame.Rect(body.x, y, body.w - 12, 56)
+        if meta is not None:
+            nfl = len(meta["flies"])
+            label = (f"{meta['created']}   {meta['mode'].upper()}   {nfl} {'fly' if nfl == 1 else 'flies'}   "
+                     f"{ARENAS[meta['arena_i']]}   seed {meta['seed']}")
+            sub = f"{f.name}   v{meta['app_version']} on {meta['platform']}"
+        else:
+            label, sub = f.name, ""
+        m.button(surf, row, "", (lambda f=f: game.load_state(f)), id=("load", f.name), enabled=why is None,
+                 tip=why and f"Can't load: {why}")
+        m.text(surf, label, (row.x + 14, row.y + 8), menu_ui.INK if why is None else menu_ui.DIM, m.f_bold)
+        m.text(surf, f"can't load: {why}" if why else sub, (row.x + 14, row.y + 32),
+               menu_ui.BAD if why else menu_ui.LABEL, m.f_small)
+        y += 62
+    m.content_h["load_state"] = max(0, y + off - body.bottom)
+    surf.set_clip(prev)
+    m.clip = None
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("load", "back"))
 
 
 def now_wipe_armed(game) -> bool:

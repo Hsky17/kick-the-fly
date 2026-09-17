@@ -504,6 +504,28 @@ class Game3D(k2.Game):
         self.duel_stats = dict(shots=0, hits=0, deaths=0)
 
     # --- settings -------------------------------------------------------------------------------------------------
+    def save_extra(self, arrays: dict, now: float) -> dict:
+        pl = self.player
+        return dict(
+            sugars3=[dict(p=[float(x) for x in sg["p"]], v=[float(x) for x in sg["v"]], left=float(sg["left"]),
+                          landed=bool(sg["landed"])) for sg in self.sugars3],
+            player=dict(pos=[float(x) for x in pl.pos], yaw=pl.yaw, pitch=pl.pitch, eye_h=pl.eye_h,
+                        vel=[float(x) for x in pl.vel]),
+            duel=bool(self.duel), player_hp=float(self.player_hp), duel_stats=dict(self.duel_stats),
+            valence=float(self.valence))
+
+    def load_extra(self, extra: dict, z, now: float) -> None:
+        self.sugars3 = [dict(p=np.array(sg["p"]), v=np.array(sg["v"]), left=sg["left"], landed=sg["landed"])
+                        for sg in extra.get("sugars3", [])]
+        pl, sp = self.player, extra.get("player")
+        if sp:
+            pl.pos, pl.yaw, pl.pitch, pl.eye_h = np.array(sp["pos"]), sp["yaw"], sp["pitch"], sp["eye_h"]
+            pl.vel = np.array(sp["vel"])
+        self.duel = bool(extra.get("duel", False))
+        self.player_hp, self.player_dead_at = float(extra.get("player_hp", PLAYER_HP)), None
+        self.duel_stats = dict(extra.get("duel_stats", self.duel_stats))
+        self.valence = float(extra.get("valence", 0.0))
+
     def apply_setting(self, key: str) -> None:
         super().apply_setting(key)
         c = self.cfg
@@ -568,8 +590,11 @@ class Game3D(k2.Game):
 
     def new_fly(self) -> None:
         super().new_fly()
-        self.bombs3: list = []
         self.sugars3: list = []
+
+    def clear_transients(self) -> None:
+        super().clear_transients()
+        self.bombs3: list = []
         self.parts: list = []                     # particles: dict(p, v, t, life, kind, size, color)
         self.bolts3: list = []
         self.shards3: list = []
@@ -582,7 +607,7 @@ class Game3D(k2.Game):
 
     # --- helpers ---------------------------------------------------------------------------------------------------
     def popup(self, pos, text: str, color=(255, 245, 235), force=False) -> None:
-        now = time.perf_counter()
+        now = self.clock.now
         if self.popups3 and now - self.popups3[-1][2] < 0.3 and not force:
             return
         p = np.asarray(pos, float)
@@ -596,7 +621,7 @@ class Game3D(k2.Game):
             return
         for _ in range(n):
             v = np.array([random.uniform(-1, 1), random.uniform(0, 0.6), random.uniform(-1, 1)]) * spread * S
-            self.parts.append(dict(p=pos.copy(), v=v, t=time.perf_counter(), life=random.uniform(0.35, 0.8),
+            self.parts.append(dict(p=pos.copy(), v=v, t=self.clock.now, life=random.uniform(0.35, 0.8),
                                    kind="dust", size=random.uniform(0.03, 0.06)))
 
     def _you_pos(self) -> np.ndarray:
