@@ -220,7 +220,20 @@ def run(p: dict, out: Path | None = None, workers: int | None = None, progress=N
     return folder
 
 
+def find(path: Path) -> Path:
+    """A protocol file by path, or by name from your protocols folder or the bundled examples."""
+    if Path(path).exists():
+        return Path(path)
+    import lab
+
+    for f in lab.protocol_files():
+        if f.name == Path(path).name or f.stem == Path(path).name:
+            return f
+    raise FileNotFoundError(f"protocol file {path} not found (bundled: {', '.join(f.name for f in lab.protocol_files())})")
+
+
 def run_file(path: Path, out: Path | None = None, workers: int | None = None) -> int:
+    path = find(path)
     try:
         p = load(path)
     except ProtocolError as e:

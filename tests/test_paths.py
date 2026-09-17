@@ -125,3 +125,25 @@ def test_backend_choice():
     assert pe.choose_backend(None, "x11", {"WAYLAND_DISPLAY": "w"}, "linux") == "x11"
     assert pe.choose_backend("wayland", None, {"SDL_VIDEODRIVER": "kmsdrm"}, "linux") == "kmsdrm"
     assert pe.choose_backend("wayland", None, {}, "win32") is None
+
+
+import sys
+
+import pytest
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Known Folders API")
+def test_real_windows_known_folders():
+    """The ctypes SHGetKnownFolderPath call itself (runs on the Windows CI runner)."""
+    for name in ("Documents", "Pictures", "RoamingAppData", "LocalAppData"):
+        got = paths.windows_known_folder(name)
+        assert got is not None and got.is_absolute() and got.exists(), name
+    p = paths.resolve(platform="win32", env={})
+    assert p.memory_dir.parts[-2:] == ("Kick the Fly", "memory")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPI awareness")
+def test_real_windows_dpi_awareness():
+    import platform_env
+    scale = platform_env.windows_dpi_aware()
+    assert scale >= 1.0

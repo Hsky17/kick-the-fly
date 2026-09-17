@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream IDs can't contain hyphens in the user segment, so legendarylolo318-cloud becomes legendarylolo318_cloud -->
+<component type="desktop-application">
+  <id>io.github.legendarylolo318_cloud.KickTheFly</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Kick the Fly</name>
+  <summary>Kick a live simulation of a real fruit fly brain</summary>
+  <description>
+    <p>
+      A kick-the-buddy game whose buddy runs on the MaleCNS v1.0 fruit fly connectome: all 166,700 neurons are
+      simulated live while you poke, swat and feed the fly in a first-person 3D room.
+    </p>
+    <p>
+      Play mode has challenges built on real experiments. Lab mode adds a validation dashboard that shows which
+      published fly behaviors this simulation reproduces (and which it doesn't), repeated trials with statistics,
+      data export and YAML protocol files that also run headless.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.legendarylolo318_cloud.KickTheFly.desktop</launchable>
+  <url type="homepage">https://github.com/legendarylolo318-cloud/kick-the-fly</url>
+  <url type="bugtracker">https://github.com/legendarylolo318-cloud/kick-the-fly/issues</url>
+  <developer id="io.github.legendarylolo318_cloud">
+    <name>legendarylolo318-cloud</name>
+  </developer>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">moderate</content_attribute>
+  </content_rating>
+  <categories>
+    <category>Game</category>
+    <category>Simulation</category>
+  </categories>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/legendarylolo318-cloud/kick-the-fly/main/docs/room3d.png</image>
+      <caption>The 3D room with the live brain panel</caption>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="2.6.0" date="2026-09-17">
+      <description>
+        <p>Settings menu, Play and Lab modes, challenges, slow motion and save states, native Wayland, a validation
+        suite, repeated trials with statistics, data export and headless protocol runs.</p>
+      </description>
+    </release>
+  </releases>
+</component>

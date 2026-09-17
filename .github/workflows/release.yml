@@ -1,0 +1,167 @@
+# Tag push (v*): build the brain pack, test on Linux and Windows, build the AppImage and the exe, then publish a
+# release with both files and SHA256SUMS. The release job only runs if every test and both builds passed.
+# Run it by hand (workflow_dispatch) to test and build without publishing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  brainpack:
+    # data/ isn't in git: the pack is built from the public MaleCNS v1.0 connectome (~1.1 GB download) and cached
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: data/kick_brain.npz
+          key: brainpack-v2-${{ hashFiles('connectome/loader.py', 'brainpack.py') }}
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build the brain pack
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install numpy scipy pyarrow
+          python -m connectome.loader build
+          python brainpack.py build
+          rm -f data/*.feather data/graph.pkl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brainpack
+          path: data/kick_brain.npz
+          retention-days: 3
+
+  test-linux:
+    needs: brainpack
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: brainpack, path: data}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Tests, including the validation suite
+        env:
+          KTF_VALIDATION_WORKERS: "4"
+          KTF_VALIDATION_OUT: data/validation_results.json
+        run: python -m pytest -v -rs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation-results
+          path: data/validation_results.json
+          retention-days: 7
+
+  test-windows:
+    needs: brainpack
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: brainpack, path: data}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Tests, including the validation suite
+        env:
+          KTF_VALIDATION_WORKERS: "4"
+        run: python -m pytest -v -rs
+
+  build-appimage:
+    needs: [brainpack, test-linux]
+    runs-on: ubuntu-22.04          # old glibc, so the AppImage runs on most distros
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: brainpack, path: data}
+      - uses: actions/download-artifact@v4
+        with: {name: validation-results, path: data}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build
+        run: PYTHON=python ./build_appimage.sh
+      - name: Headless run of the AppImage without FUSE
+        run: |
+          chmod +x dist/KickTheFly-x86_64.AppImage
+          env -u DISPLAY -u WAYLAND_DISPLAY dist/KickTheFly-x86_64.AppImage --appimage-extract-and-run \
+            --headless --protocol protocols/smoke.yaml --out build/smoke-appimage
+          ls build/smoke-appimage/*/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/KickTheFly-x86_64.AppImage
+          retention-days: 7
+
+  build-exe:
+    needs: [brainpack, test-linux]
+    runs-on: windows-latest        # a real Windows build, never cross-built
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: brainpack, path: data}
+      - uses: actions/download-artifact@v4
+        with: {name: validation-results, path: data}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build (the script also runs the exe headless on the smoke protocol and checks exit code 0)
+        shell: pwsh
+        run: ./build_exe.ps1 -Python python
+      - name: Version in the exe's file properties
+        shell: pwsh
+        run: (Get-Item dist\KickTheFly.exe).VersionInfo | Format-List ProductName, ProductVersion, FileVersion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: dist/KickTheFly.exe
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-linux, test-windows, build-appimage, build-exe]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: appimage, path: release}
+      - uses: actions/download-artifact@v4
+        with: {name: exe, path: release}
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum KickTheFly-x86_64.AppImage KickTheFly.exe > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Kick the Fly ${GITHUB_REF_NAME}: settings menu, Play and Lab modes, validation"
+          files="release/KickTheFly-x86_64.AppImage release/KickTheFly.exe release/SHA256SUMS"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" $files --title "$title" --notes-file RELEASE_NOTES.md
+          fi

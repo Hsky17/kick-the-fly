@@ -116,7 +116,42 @@ with its calm baseline.
 Also game rules, not the connectome: the ragdoll physics, standing back up,
 the direction of jumps and runs (away from the last hit), being stunned, damage.
 
+Antennal grooming (GROOM): the fan's wind drives the antennal JO-C/E neurons, which
+in the connectome excite aDN1/aDN2 (DNg62, DNge078; "Hampel 2015: aDN1/aDN2" in the
+dataset). While JO-C/E fire, aDN above 4x calm (never above 3.6x over 60 s calm) logs
+GROOM. Validated (x4.9 vs x0.85). The fly doesn't move to groom: aDN activation barely
+reaches its front-leg motor neurons in this sim (x1.13), which fails validation.
+
+Proboscis (PROBOSCIS): eating sugar also drives the 30 sugar-pathway taste neurons,
+chosen from their wiring to the sugar SEL projection neurons (assays.py). When MN9,
+a proboscis motor neuron, fires 1.5x its pre-meal rate one second into eating, the
+proboscis comes out (drawn by the game). Sugar-pathway neurons -> MN9 is validated
+(x2.1 vs x1.25 for bitter-pathway neurons).
+
+Real vs rule (REACTION_SOURCE): reactions triggered by live descending-neuron firing
+are tagged REAL; ones the game decides (eating, the lamp, memory-driven avoidance,
+silk, death, duel hits) are tagged RULE. The movement itself is always game physics.
+
+Validation (validation.py): which published results this sim reproduces, on held-out
+seeds with pass criteria fixed beforehand. Pass: looming -> giant fiber, sugar -> MN9,
+antennal touch -> aDN, T-maze conditioning. Fail: MDN -> backward walking (MDN doesn't
+reach the leg motor neurons), aDN -> front-leg motor neurons. Real-science cards in
+Play mode come only from passing tests; the BACK UP reaction (MDN) is a game rule.
+
+Assays and challenges (assays.py, challenges.py): T-maze conditioning (the choice at
+the fork and each odor's glomeruli are game rules), looming escape (uses the game's
+looming transduction, so part of its speed dependence is a rule) and sugar response
+(dose = share of sugar-pathway neurons driven). Lab mode runs them over many seeds
+with statistics and same-seed controls for surgery (labjobs.py, labstats.py).
+
+Settings, time and saves: settings live in config.toml (config.py, menu.py). The game
+runs on a virtual clock (simclock.py): pause, 0.1-1x slow motion and single steps
+slow the room and every brain together. Save states (savestate.py) hold every
+neuron's state, the learned synapses, surgery, bodies and the seed.
+
     .venv\\Scripts\\python.exe kick_the_fly.py
+    python kick_the_fly.py --headless --validate          (no window)
+    python kick_the_fly.py --headless --protocol smoke.yaml
 """
 from __future__ import annotations
 
