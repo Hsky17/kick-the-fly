@@ -1,0 +1,314 @@
+"""Settings: the schema behind the Settings menu, stored as config.toml in the per-OS config folder (paths.py).
+
+Every setting has a tab, a default, a type with its allowed values, a plain-language tooltip and, for Brain settings,
+a tag saying whether it changes the connectome simulation ("Connectome") or a rule the game adds on top ("Game rule").
+A missing, unreadable or corrupt config.toml falls back to defaults with a warning (the bad file is kept as
+config.toml.bad), never a crash. Unknown keys are ignored and out-of-range values are clamped, so an older or newer
+config still loads.
+"""
+from __future__ import annotations
+
+import math
+import os
+import sys
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from crash import log
+
+TABS = ("Graphics", "Audio", "Brain", "Controls", "Accessibility")
+CONNECTOME, GAME_RULE = "Connectome", "Game rule"
+
+
+@dataclass(frozen=True)
+class Setting:
+    key: str                     # "section.name" in config.toml
+    tab: str
+    label: str
+    kind: str                    # bool | choice | float | int
+    default: object
+    tip: str
+    options: tuple = ()          # choice: allowed values
+    labels: tuple = ()           # choice: display names
+    lo: float = 0.0
+    hi: float = 1.0
+    step: float = 0.0
+    tag: str = ""                # Connectome | Game rule (Brain tab)
+    restart: bool = False        # applies on the next launch
+    only: str = ""               # "linux" | "3d": hidden or disabled elsewhere
+    fmt: str = "{:g}"
+
+
+S = Setting
+SETTINGS: tuple[Setting, ...] = (
+    # --- Graphics
+    S("graphics.fullscreen", "Graphics", "Fullscreen", "bool", False,
+      "Fill the whole screen. F11 or Alt+Enter also toggles it."),
+    S("graphics.resolution_scale", "Graphics", "Resolution scale", "float", 1.0,
+      "Draw the 3D room at a fraction of the window's resolution and stretch it. Lower is faster on weak GPUs. "
+      "Menus and text stay sharp.", lo=0.5, hi=1.0, step=0.05, only="3d", fmt="{:.0%}"),
+    S("graphics.fps_cap", "Graphics", "FPS cap", "choice", 60,
+      "The most frames per second the game draws. The fly's brain always runs at its own real-time pace.",
+      options=(30, 60, 90, 120, 144, 165, 240, 0), labels=("30", "60", "90", "120", "144", "165", "240", "unlimited")),
+    S("graphics.vsync", "Graphics", "VSync", "bool", False,
+      "Sync frames to the monitor to stop tearing. Applies on restart.", restart=True, only="3d"),
+    S("graphics.backend", "Graphics", "Display backend", "choice", "auto",
+      "Linux only. Auto uses native Wayland when available and falls back to X11 (XWayland). Try X11 if the window "
+      "or mouse misbehaves. Applies on restart.", options=("auto", "wayland", "x11"), labels=("Auto", "Wayland", "X11"),
+      restart=True, only="linux"),
+    S("graphics.panel_mode", "Graphics", "Brain panel", "choice", "solid",
+      "How the live brain panel on the right is drawn: solid, see-through, faint, or hidden to give the room the "
+      "whole screen. Hotkey V.", options=("solid", "see-through", "faint", "hidden"),
+      labels=("Solid", "See-through", "Faint", "Hidden"), only="3d"),
+    S("graphics.menu_size", "Graphics", "Menu size", "choice", "crisp",
+      "Crisp scales menus by whole pixels so text stays sharp. Large keeps them the same size on every screen. "
+      "Hotkey U.", options=("crisp", "large"), labels=("Crisp", "Large"), only="3d"),
+    S("graphics.ui_scale", "Graphics", "UI scale", "float", 1.0,
+      "Makes every menu, meter and label bigger or smaller.", lo=0.75, hi=1.5, step=0.05, only="3d", fmt="{:.0%}"),
+    # --- Audio
+    S("audio.master", "Audio", "Master volume", "float", 1.0, "Volume of everything.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
+    S("audio.buzz", "Audio", "Wing buzz volume", "float", 1.0,
+      "The buzz while it flies. Its pitch follows the fly's wing-power neurons.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
+    S("audio.sfx", "Audio", "Sound effects volume", "float", 1.0,
+      "Hits, tools, splashes, menus and every other sound.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
+    S("audio.mute", "Audio", "Mute", "bool", False, "Silence everything. Hotkey M."),
+    # --- Brain
+    S("brain.mode", "Brain", "Mode", "choice", "play",
+      "Play is the game with challenges and scores. Lab adds the research tools: validation results, repeated "
+      "trials with statistics, data export and protocol files.", options=("play", "lab"), labels=("Play", "Lab")),
+    S("brain.pain_level", "Brain", "Pain neurons", "choice", 0,
+      "How many of the fly's real sensory neurons the pain meter listens to, and how many each hit fires. Normal: "
+      "touch, heat, cold, smell and taste. More: plus the rest of the body's sensors. Max: plus the neurons that relay "
+      "body signals to the brain. The pain score itself is an estimate, not a measurement. Hotkey P.",
+      options=(0, 1, 2), labels=("Normal", "More", "Max"), tag=GAME_RULE),
+    S("brain.immortal", "Brain", "Immortal", "bool", False,
+      "It feels everything but can't die, and heals when you stop. Hotkey I.", tag=GAME_RULE),
+    S("brain.sim_speed", "Brain", "Sim speed", "choice", 1.0,
+      "Slow motion for the whole simulation: the brain and the room slow down together, so every spike still lines "
+      "up with what happens. Hotkeys [ and ].", options=(0.1, 0.25, 0.5, 1.0),
+      labels=("0.1x", "0.25x", "0.5x", "1x"), tag=CONNECTOME),
+    S("brain.seed", "Brain", "Random seed", "int", 0,
+      "Seeds the brain's noise and the game's randomness. The same seed and the same inputs give the same run in "
+      "headless and protocol runs. Applies when you reset the fly (R).", lo=0, hi=2**31 - 1, tag=CONNECTOME),
+    S("brain.real_vs_rule", "Brain", "Real vs rule tags", "choice", "auto",
+      "Tags reactions on screen as coming from the connectome (REAL) or from a game rule (RULE). Auto: on in Lab, off "
+      "in Play.", options=("auto", "on", "off"), labels=("Auto", "On", "Off")),
+    S("brain.science_popups", "Brain", "Real-science popups", "bool", True,
+      "Show a short note the first time the fly does something real flies do too. Only behaviors that pass this "
+      "game's validation tests get one."),
+    # --- Controls
+    S("controls.mouse_sensitivity", "Controls", "Mouse sensitivity", "float", 1.0,
+      "How far the view turns when you move the mouse.", lo=0.1, hi=5.0, step=0.1, only="3d", fmt="{:.1f}"),
+    S("controls.invert_y", "Controls", "Invert Y", "bool", False, "Moving the mouse up looks down.", only="3d"),
+    S("controls.fov", "Controls", "Field of view", "float", 70.0,
+      "How wide your view of the room is, in degrees.", lo=50, hi=110, step=1, only="3d", fmt="{:.0f}°"),
+    # --- Accessibility
+    S("access.palette", "Accessibility", "Brain view colors", "choice", "default",
+      "Colors for firing neurons in the brain view. Blue/yellow is safe for red-green color blindness. High contrast "
+      "uses magenta and white.", options=("default", "blue-yellow", "high-contrast"),
+      labels=("Orange/cyan", "Blue/yellow", "High contrast")),
+    S("access.reduced_flashing", "Accessibility", "Reduced flashing", "bool", False,
+      "Turns off screen shake, explosion and hit flashes, sparkles, the scanning band and blinking lights."),
+    S("access.larger_text", "Accessibility", "Larger text", "bool", False,
+      "Bigger text in menus, popups and the HUD."),
+)
+BY_KEY = {s.key: s for s in SETTINGS}
+
+# rebindable actions: (action, label, default key name as pygame.key.name() spells it)
+ACTIONS: tuple[tuple[str, str, str], ...] = (
+    ("forward", "Walk forward", "w"), ("back", "Walk back", "s"), ("left", "Walk left", "a"), ("right", "Walk right", "d"),
+    ("sprint", "Sprint", "left shift"), ("crouch", "Crouch", "left ctrl"),
+    ("free_mouse", "Free the mouse", "tab"), ("big_view", "Big brain view", "b"), ("surgery", "Brain surgery", "o"),
+    ("training", "Training", "t"), ("duel", "1v1 duel", "x"), ("arena", "Next arena", "e"),
+    ("pain", "Pain neurons", "p"), ("immortal", "Immortal", "i"), ("mute", "Mute", "m"),
+    ("screenshot", "Screenshot", "f12"), ("gif", "Save GIF", "g"), ("panel", "Brain panel style", "v"),
+    ("menu_size", "Menu size", "u"), ("fullscreen", "Fullscreen", "f11"), ("spawn", "Spawn a fly", "n"),
+    ("reset", "Reset / respawn", "r"), ("help", "Controls help", "h"),
+    ("time_pause", "Pause / resume time", "z"), ("time_slower", "Slower", "["), ("time_faster", "Faster", "]"),
+    ("time_step", "Single step (paused)", "."),
+)
+ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
+RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound
+MOVEMENT_3D_ONLY = {"forward", "back", "left", "right", "sprint", "crouch", "free_mouse", "duel", "panel", "menu_size"}
+
+
+def _coerce(s: Setting, v):
+    """A valid value for this setting, or raise ValueError."""
+    if s.kind == "bool":
+        if isinstance(v, bool):
+            return v
+        raise ValueError(f"{s.key}: expected true/false")
+    if s.kind == "choice":
+        for o in s.options:
+            if v == o or (isinstance(o, float) and isinstance(v, (int, float)) and not isinstance(v, bool)
+                          and math.isclose(float(v), o)):
+                return o
+        raise ValueError(f"{s.key}: {v!r} is not one of {s.options}")
+    if s.kind in ("float", "int"):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise ValueError(f"{s.key}: expected a number")
+        v = min(max(v, s.lo), s.hi)
+        return int(round(v)) if s.kind == "int" else float(v)
+    raise ValueError(s.kind)
+
+
+class Config:
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        self.values: dict[str, object] = {s.key: s.default for s in SETTINGS}
+        self.keys: dict[str, str] = {a: k for a, _, k in ACTIONS}
+        self.warnings: list[str] = []
+        self.dirty = False
+
+    # --- values -----------------------------------------------------------------------------------------------------
+    def __getitem__(self, key: str):
+        return self.values[key]
+
+    def set(self, key: str, value) -> bool:
+        """Validate and store. Returns True if the stored value changed."""
+        v = _coerce(BY_KEY[key], value)
+        if self.values.get(key) == v:
+            return False
+        self.values[key] = v
+        self.dirty = True
+        return True
+
+    def reset_tab(self, tab: str) -> list[str]:
+        changed = []
+        for s in SETTINGS:
+            if s.tab == tab and self.values[s.key] != s.default:
+                self.values[s.key] = s.default
+                changed.append(s.key)
+        if tab == "Controls":
+            default = {a: k for a, _, k in ACTIONS}
+            if self.keys != default:
+                self.keys = default
+                changed.append("keys")
+        self.dirty = self.dirty or bool(changed)
+        return changed
+
+    @property
+    def lab(self) -> bool:
+        return self.values["brain.mode"] == "lab"
+
+    def tags_on(self) -> bool:
+        v = self.values["brain.real_vs_rule"]
+        return v == "on" or (v == "auto" and self.lab)
+
+    # --- keys -------------------------------------------------------------------------------------------------------
+    def action_for(self, key_name: str) -> str | None:
+        for a, k in self.keys.items():
+            if k == key_name:
+                return a
+        return None
+
+    def bind(self, action: str, key_name: str) -> tuple[bool, str]:
+        """Rebind an action. A key another action already uses swaps the two bindings. Returns (ok, message)."""
+        key_name = key_name.lower()
+        if key_name in RESERVED_KEYS:
+            return False, f"'{key_name}' is reserved (Esc opens the menu, 0-9 pick tools)"
+        other = self.action_for(key_name)
+        old = self.keys[action]
+        self.keys[action] = key_name
+        self.dirty = True
+        if other and other != action:
+            self.keys[other] = old
+            return True, f"'{key_name}' was used by {ACTION_LABEL[other]}; swapped, that is now '{old}'"
+        return True, ""
+
+    def conflicts(self) -> dict[str, list[str]]:
+        seen: dict[str, list[str]] = {}
+        for a, k in self.keys.items():
+            seen.setdefault(k, []).append(a)
+        return {k: v for k, v in seen.items() if len(v) > 1}
+
+    # --- files ------------------------------------------------------------------------------------------------------
+    @classmethod
+    def load(cls, path: Path) -> "Config":
+        cfg = cls(path)
+        if not path.exists():
+            return cfg
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+            cfg.warnings.append(f"config.toml could not be read ({e}); using default settings")
+            try:
+                path.replace(path.with_name(path.name + ".bad"))
+                cfg.warnings.append(f"the unreadable file was kept as {path.name}.bad")
+            except OSError:
+                pass
+            for w in cfg.warnings:
+                log.warning(w)
+            return cfg
+        for s in SETTINGS:
+            section, name = s.key.split(".")
+            sec = data.get(section)
+            if isinstance(sec, dict) and name in sec:
+                try:
+                    cfg.values[s.key] = _coerce(s, sec[name])
+                except ValueError as e:
+                    cfg.warnings.append(f"{e}; using the default")
+        keys = data.get("keys")
+        if isinstance(keys, dict):
+            for a, _, _ in ACTIONS:
+                k = keys.get(a)
+                if isinstance(k, str) and k and k.lower() not in RESERVED_KEYS:
+                    cfg.keys[a] = k.lower()
+            for k, acts in cfg.conflicts().items():          # a hand-edited file bound one key twice: keep the first
+                for a in acts[1:]:
+                    cfg.keys[a] = next(d for x, _, d in ACTIONS if x == a)
+                    cfg.warnings.append(f"key '{k}' was bound twice; {a} reset to its default")
+        for w in cfg.warnings:
+            log.warning(w)
+        return cfg
+
+    def to_toml(self) -> str:
+        from version import __version__
+
+        out = [f"# Kick the Fly {__version__} settings. Edit in the game (Esc > Settings) or by hand.", ""]
+        sections: dict[str, list[str]] = {}
+        for s in SETTINGS:
+            section, name = s.key.split(".")
+            sections.setdefault(section, []).append(f"{name} = {_toml_value(self.values[s.key])}")
+        for section, lines in sections.items():
+            out += [f"[{section}]", *lines, ""]
+        out.append("[keys]")
+        out += [f"{a} = {_toml_value(k)}" for a, k in self.keys.items()]
+        return "\n".join(out) + "\n"
+
+    def save(self) -> bool:
+        if self.path is None:
+            return False
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(self.to_toml(), encoding="utf-8")
+            os.replace(tmp, self.path)
+            self.dirty = False
+            return True
+        except OSError as e:
+            log.warning("could not save settings to %s: %s", self.path, e)
+            return False
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return repr(v)
+    s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{s}"'
+
+
+def visible(s: Setting, three_d: bool, platform: str | None = None) -> bool:
+    """Linux-only settings are hidden elsewhere (the display backend on Windows)."""
+    if s.only == "linux":
+        return (platform or sys.platform).startswith("linux")
+    return True
+
+
+def enabled(s: Setting, three_d: bool) -> bool:
+    return not (s.only == "3d" and not three_d)

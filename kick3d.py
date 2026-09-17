@@ -49,12 +49,16 @@ PANEL_MODES = (("solid", 255), ("see-through", 150), ("faint", 70), ("hidden", 0
 UI_MODES = ("crisp", "large")
 
 
-def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int):
+def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int, ui_scale: float = 1.0):
     """HUD units -> window pixels. The HUD always fills the window (no black bars). In "crisp" mode the scale is a
     whole number whenever the window is at least 700 px tall per step (1440p -> 2x), so text maps to whole pixels;
     "large" keeps the original 760-unit-tall HUD, smoothly scaled. Returns (scale, hud_w, hud_h, play_w, view_w):
     play_w is the HUD area left of the brain panel, view_w how wide the 3D view is."""
     s = max(1, Hn // 700) if ui_mode == "crisp" and Hn >= 700 else Hn / 760
+    if ui_scale != 1.0:                             # Settings > UI scale (crisp mode snaps back to whole pixels)
+        s = s * ui_scale
+        if ui_mode == "crisp" and s >= 1:
+            s = max(1, round(s))
     need = 1280 if PANEL_MODES[panel_mode][0] != "hidden" else 900
     if Wn / s < need:                               # too narrow for the HUD: scale down to fit the width
         s = Wn / need
@@ -103,7 +107,8 @@ HELP3D = (
     ("F11", "fullscreen"),
     ("N", "spawn another fly, up to 16, each with its own brain"),
     ("R", "reset to a single fresh fly"),
-    ("Esc", "free the mouse, close menus, then quit"),
+    ("Z  [  ]  .", "pause time, slower, faster, single step"),
+    ("Esc", "close a panel, or open the menu (settings, save, quit)"),
 )
 
 
@@ -475,10 +480,16 @@ def _c(col, alpha: float | None = None):
 
 
 class Game3D(k2.Game):
-    def __init__(self, hud: pygame.Surface, brain, view, graph=None, weights=None):
+    three_d = True
+
+    def __init__(self, hud: pygame.Surface, brain, view, graph=None, weights=None, cfg=None):
         self.player = Player()
-        super().__init__(hud, brain, view, graph, weights)
+        self.panel_mode, self.ui_mode = 0, "crisp"
+        self.panel_alpha = 255
         self.look = False
+        self.key_codes: dict[str, int] = {}
+        self.mouse_logical = (0, 0)
+        super().__init__(hud, brain, view, graph, weights, cfg=cfg)
         self.swing_t = -9.0
         self.flick_t = -9.0
         self.throw_t = -9.0
@@ -486,13 +497,55 @@ class Game3D(k2.Game):
         self.popups3: list = []
         self._room = self._build_room()
         self.quit_armed = False
-        self.panel_mode, self.ui_mode = 0, "crisp"
-        self.panel_alpha = 255
         self.view_w, self.hud_h = k2.PLAY_W, k2.H
         self.hint_extra = "V panel   X 1v1   F11 fullscreen   H help"
         self.duel = False
         self.player_hp, self.player_dead_at = PLAYER_HP, None
         self.duel_stats = dict(shots=0, hits=0, deaths=0)
+
+    # --- settings -------------------------------------------------------------------------------------------------
+    def apply_setting(self, key: str) -> None:
+        super().apply_setting(key)
+        c = self.cfg
+        if key == "graphics.panel_mode":
+            self.panel_mode = [m for m, _ in PANEL_MODES].index(c[key])
+            self.panel_alpha = PANEL_MODES[self.panel_mode][1]
+        elif key == "graphics.menu_size":
+            self.ui_mode = c[key]
+        elif key == "access.palette" or key == "brain.seed":
+            pass
+        self.key_codes = {a: pygame.key.key_code(k) for a, k in c.keys.items()}
+
+    def set_setting(self, key, value, save: bool = True, force: bool = False) -> None:
+        super().set_setting(key, value, save, force)
+        if key == "keys":
+            self.key_codes = {a: pygame.key.key_code(k) for a, k in self.cfg.keys.items()}
+
+    def open_menu(self, screen: str = "pause") -> None:
+        self.set_look(False)
+        super().open_menu(screen)
+
+    def held(self, kp) -> dict:
+        """Movement keys held this frame, from the rebindable bindings (plus C as a second crouch key)."""
+        kc = self.key_codes
+
+        def down(action):
+            code = kc.get(action)
+            try:
+                return bool(code is not None and kp[code])
+            except IndexError:
+                return False
+
+        return dict(w=down("forward"), s=down("back"), a=down("left"), d=down("right"),
+                    sprint=down("sprint") or kp[pygame.K_RSHIFT], crouch=down("crouch") or kp[pygame.K_c])
+
+    def update_player(self, dt: float, keys, rel) -> None:
+        """You move and look in real time, even in slow motion or while time is paused."""
+        if self.player_dead_at is None and self.look and not self.menu.open:
+            c = self.cfg
+            sens = c["controls.mouse_sensitivity"]
+            rel = (rel[0] * sens, rel[1] * sens * (-1 if c["controls.invert_y"] else 1))
+            self.player.update(dt, keys, rel)
 
     # --- lifecycle -------------------------------------------------------------------------------------------------
     def _spawn_point(self) -> tuple[np.ndarray, float]:
@@ -1212,8 +1265,8 @@ class Game3D(k2.Game):
         self._poll_spawn()
         if self.player_dead_at is not None:
             self.player.eye_h += (0.3 - self.player.eye_h) * 0.05       # you slump to the floor
-        elif self.look:
-            self.player.update(dt, keys, rel)
+        for slot in self.flies:                                         # for drawing between ticks in slow motion
+            slot.fly.p_tick = slot.fly.p.copy()
         self._environment(now)
         self._kick(now)
         for slot in list(self.flies):
@@ -1464,8 +1517,17 @@ class Game3D(k2.Game):
             rd.add("sphere", trs(LAMP3, None, (0.11, 0.13, 0.11)), (1.0, 0.95, 0.8), P_NONE, 3.0)
             for k in range(3):
                 rd.particle(LAMP3, 0.35 + 0.25 * k + 0.03 * math.sin(now * 3 + k), (1.0, 0.85, 0.5, 0.12), additive=True)
+        alpha = self.clock.alpha
         for slot in self.flies:
-            self._draw_fly(rd, now, slot.fly)
+            fly = slot.fly
+            prev = getattr(fly, "p_tick", None)
+            if alpha < 1.0 and prev is not None and prev.shape == fly.p.shape:
+                real_p = fly.p
+                fly.p = prev + (real_p - prev) * alpha
+                self._draw_fly(rd, now, fly)
+                fly.p = real_p
+            else:
+                self._draw_fly(rd, now, fly)
         self._draw_extras(rd, now)
 
     def _draw_fan(self, rd: Renderer, now: float) -> None:
@@ -1890,7 +1952,7 @@ class Game3D(k2.Game):
         self._text(hud, f"trigger DNp35 x{self.trigger:.1f}", (x + 12, y + 110), tc, self.f_small)
         st = self.duel_stats
         self._text(hud, f"shots {st['shots']}  hits {st['hits']}  you died {st['deaths']}x", (x + 12, y + 128), k2.LABEL, self.f_small)
-        if self.hurt_flash > 0:                                          # red edges when you get hit, blended over the HUD
+        if self.hurt_flash > 0 and not self.calm_fx:                     # red edges when you get hit, blended over the HUD
             size = (self.view_w, self.hud_h)
             if getattr(self, "_vignette_size", None) != size:
                 self._vignette_size = size
@@ -1944,9 +2006,9 @@ class Game3D(k2.Game):
         self._draw_hud(hud, now)
         if self.duel:
             self._draw_duel(hud, now)
-        if not self.look and not self._overlay_open() and self.player_dead_at is None:
-            msg = self.f_bold.render("click the room (or press Tab) to look around" if not self.quit_armed else
-                                     "press Esc again to quit, or click the room to keep playing", True, INK_ON)
+        if not self.look and not self._overlay_open() and self.player_dead_at is None and not self.menu.open:
+            msg = self.f_bold.render(f"click the room (or press {self.cfg.keys['free_mouse'].title()}) to look around   "
+                                     "·   Esc: menu", True, INK_ON)
             box = msg.get_rect(center=(k2.PLAY_W // 2, self.hud_h // 2 + 60)).inflate(24, 12)
             pygame.draw.rect(hud, (8, 10, 16, 200), box, border_radius=8)
             hud.blit(msg, msg.get_rect(center=box.center))
@@ -1964,6 +2026,9 @@ class Game3D(k2.Game):
             self._draw_brain(now)
         else:
             self.view_rect = pygame.Rect(0, 0, 0, 0)
+        self.draw_time_indicator(hud, k2.PLAY_W // 2, 92)
+        if self.menu.open:
+            self.menu.draw(hud, self.mouse_logical, now)
 
     def _draw_help(self, surf) -> None:
         panel = pygame.Rect(135, 80, 620, 64 + 30 * len(HELP3D))
@@ -1984,47 +2049,34 @@ class Game3D(k2.Game):
         pygame.mouse.get_rel()
 
     def handle3d(self, ev, now: float, to_logical) -> bool:
-        if ev.type == pygame.QUIT:
-            return False
+        """3D input. Returns False to quit. Keys go through the rebindable actions in config.py."""
+        if hasattr(ev, "pos"):
+            ev = pygame.event.Event(ev.type, {**ev.dict, "pos": to_logical(ev.pos)})
+        if self.menu_first(ev, self.mouse_logical):
+            return not self.want_quit
         if ev.type == pygame.KEYDOWN:
-            if ev.key == pygame.K_ESCAPE:
-                if self.look:
-                    self.set_look(False)
-                    return True
-                if self._overlay_open():
-                    self.help_open = self.surgery_open = self.big_view = self.training_open = False
-                    return True
-                if self.quit_armed:
-                    return False
-                self.quit_armed = True
+            if ev.key in k2.TOOL_KEYS:
+                self.tool = k2.TOOL_KEYS.index(ev.key)
                 return True
-            if ev.key == pygame.K_TAB:
+            action = self.cfg.action_for(pygame.key.name(ev.key))
+            if action == "free_mouse":
                 self.set_look(not self.look)
-                return True
-            if ev.key == pygame.K_F12:
-                self.save_png()
-                return True
-            if ev.key == pygame.K_v:
-                self.panel_mode = (self.panel_mode + 1) % len(PANEL_MODES)
-                self.panel_alpha = PANEL_MODES[self.panel_mode][1]
+            elif action in ("forward", "back", "left", "right", "sprint", "crouch") or ev.key in (pygame.K_c, pygame.K_SPACE):
+                pass
+            elif action == "panel":
+                names = [m for m, _ in PANEL_MODES]
+                self.set_setting("graphics.panel_mode", names[(self.panel_mode + 1) % len(names)])
                 self.saved_msg = (f"brain panel: {PANEL_MODES[self.panel_mode][0]}", time.perf_counter())
-                return True
-            if ev.key == pygame.K_u:
-                self.ui_mode = UI_MODES[(UI_MODES.index(self.ui_mode) + 1) % len(UI_MODES)]
+            elif action == "menu_size":
+                self.set_setting("graphics.menu_size", UI_MODES[(UI_MODES.index(self.ui_mode) + 1) % len(UI_MODES)])
                 self.saved_msg = (f"menu size: {self.ui_mode}", time.perf_counter())
-                return True
-            if ev.key in (pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_LSHIFT, pygame.K_LCTRL, pygame.K_c, pygame.K_SPACE):
-                return True
-            if ev.key == pygame.K_r and self.player_dead_at is not None:
+            elif action == "reset" and self.player_dead_at is not None:
                 self.respawn_player()
-                return True
-            if ev.key == pygame.K_r and self.report is not None:
-                self.new_fly()
-                return True
-            if ev.key == pygame.K_x:
+            elif action == "duel":
                 self.toggle_duel()
-                return True
-            return k2.Game.handle(self, ev, now)
+            elif action is not None:
+                self.do_action(action, now)
+            return True
         if ev.type == pygame.MOUSEWHEEL and self.look:
             self.tool = (self.tool - ev.y) % len(TOOLS)
             return True
@@ -2032,7 +2084,7 @@ class Game3D(k2.Game):
             if self.look:
                 self.use_tool3d(now)
                 return True
-            pos = to_logical(ev.pos)
+            pos = ev.pos
             if self.player_dead_at is None and not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
                 self.set_look(True)
                 return True
@@ -2069,12 +2121,16 @@ class GLUnavailable(RuntimeError):
 class App:
     """Window, GL context, frame composition, fullscreen and scaling."""
 
-    def __init__(self, fullscreen: bool):
+    def __init__(self, fullscreen: bool, vsync: bool = False):
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
         try:
-            pygame.display.set_mode((k2.W, k2.H), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
+            flags = pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE
+            try:
+                pygame.display.set_mode((k2.W, k2.H), flags, vsync=1 if vsync else 0)
+            except pygame.error:                         # the driver refused vsync: run without it
+                pygame.display.set_mode((k2.W, k2.H), flags)
             self.ctx = moderngl.create_context()
         except Exception as e:
             raise GLUnavailable(f"{type(e).__name__}: {e}") from e
@@ -2096,7 +2152,8 @@ class App:
     def layout(self, game=None, size=None):
         Wn, Hn = size or pygame.display.get_window_size()
         ui, panel = (game.ui_mode, game.panel_mode) if game is not None else ("crisp", 0)
-        s, hud_w, hud_h, play_w, view_w = compute_layout(Wn, Hn, ui, panel)
+        ui_scale = game.cfg["graphics.ui_scale"] if game is not None else 1.0
+        s, hud_w, hud_h, play_w, view_w = compute_layout(Wn, Hn, ui, panel, ui_scale)
         return Wn, Hn, s, hud_w, hud_h, play_w, view_w
 
     def hud_texture(self, hud_w: int, hud_h: int, s: float) -> moderngl.Texture:
@@ -2135,7 +2192,8 @@ class App:
         game.view_w, game.hud_h = view_w, hud_h
         if game.screen.get_size() != (hud_w, hud_h):
             game.screen = pygame.Surface((hud_w, hud_h), pygame.SRCALPHA)
-        vw, vh = max(1, int(round(view_w * s))), Hn
+        rs = game.cfg["graphics.resolution_scale"]              # Settings > resolution scale: 3D drawn smaller, stretched
+        vw, vh = max(1, int(round(view_w * s * rs))), max(1, int(round(Hn * rs)))
         self._ensure_scene(vw, vh)
         fb = self.ms or self.scene
         fb.use()
@@ -2144,10 +2202,10 @@ class App:
         ctx.enable(moderngl.DEPTH_TEST)
         pl = game.player
         eye = pl.eye
-        shake = np.random.uniform(-0.01, 0.01, 3) if now < game.shake_until else 0
+        shake = np.random.uniform(-0.01, 0.01, 3) if now < game.shake_until and not game.calm_fx else 0
         f, r, u = pl.basis()
         view = look_at(eye + shake, eye + shake + f)
-        proj = perspective(math.radians(70), vw / vh, 0.03, 40.0)
+        proj = perspective(math.radians(game.cfg["controls.fov"]), vw / vh, 0.03, 40.0)
         # when the 3D view runs under a see-through panel, shift the lens so the crosshair and your hand stay centered
         # on the open part of the screen
         lens = np.eye(4)
@@ -2194,7 +2252,7 @@ class App:
         out.use()
         ctx.viewport = (0, 0, Wn, Hn)
         out.clear(0, 0, 0, 1)
-        rd.blit_texture(self.scene_tex, (0, 0, vw, vh), (Wn, Hn), flip=False, blend=False)
+        rd.blit_texture(self.scene_tex, (0, 0, round(view_w * s), Hn), (Wn, Hn), flip=False, blend=False)
         rd.blit_texture(tex, (0, 0, hud_w * s, hud_h * s), (Wn, Hn), flip=True, blend=True)
         self.view_frac = view_w / hud_w
         return (Wn, Hn, s, hud_w, hud_h, play_w, view_w)
@@ -2224,8 +2282,10 @@ class App:
         pygame.image.save(img, str(path))
 
 
-def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0) -> int:
-    app = App(fullscreen)
+def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None) -> int:
+    import config
+    cfg = cfg if cfg is not None else config.Config(None)
+    app = App(fullscreen, vsync=cfg["graphics.vsync"])
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
     state: dict = {"stage": "starting", "seed": seed}
@@ -2256,7 +2316,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     brain = state["brain"]
     brain.start()
     hud = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
-    game = Game3D(hud, brain, state["view"], state.get("graph"), state.get("weights"))
+    game = Game3D(hud, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()
@@ -2266,32 +2326,37 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
         return (int(pos[0] / lay[2]), int(pos[1] / lay[2]))
 
     while running:
-        now = time.perf_counter()
-        dt = min(0.05, now - last)
-        last = now
+        real = time.perf_counter()
+        dt = min(0.05, real - last)
+        last = real
+        ticks = game.clock.frame(real)
+        game.mouse_logical = to_logical(pygame.mouse.get_pos())
         for ev in pygame.event.get():
-            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
-                pygame.display.toggle_fullscreen()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT:
+                game.toggle_fullscreen()
                 continue
-            running = game.handle3d(ev, now, to_logical) and running
-        if game.look and game._overlay_open():
+            running = game.handle3d(ev, game.clock.now, to_logical) and running
+        if game.look and (game._overlay_open() or game.menu.open):
             game.set_look(False)
         rel = pygame.mouse.get_rel() if game.look else (0, 0)
-        kp = pygame.key.get_pressed()
-        keys = dict(w=kp[pygame.K_w], s=kp[pygame.K_s], a=kp[pygame.K_a], d=kp[pygame.K_d],
-                    sprint=kp[pygame.K_LSHIFT] or kp[pygame.K_RSHIFT], crouch=kp[pygame.K_LCTRL] or kp[pygame.K_c])
-        game.update3d(now, dt, keys, rel)
+        keys = game.held(pygame.key.get_pressed())
+        game.sync_time()
+        game.update_player(dt, keys, rel)
+        for tick_dt in ticks:
+            game.clock.now += tick_dt
+            game.update3d(game.clock.now, tick_dt, keys, rel)
+        now = game.clock.now
         lay = app.render(game, now)
-        if game.frame % 4 == 0:
+        if ticks and game.frame % 4 == 0:
             app.capture(game)
         if game.want_png:
             game.want_png = False
-            path = game._save_dir() / f"kick-the-fly-{time.strftime('%Y%m%d-%H%M%S')}.png"
+            path = game.media_path("png")
             app.ctx.screen.use()
             app.screenshot(path, lay)
-            game.saved_msg = (f"saved {path}", time.perf_counter())
+            game.saved_note(path)
         pygame.display.flip()
-        if smoke and now - t_game > smoke:
+        if smoke and real - t_game > smoke:
             try:
                 from PIL import Image  # noqa: F401
                 gif = "gif ok"
@@ -2305,10 +2370,6 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
                 with open(shot + ".txt", "w") as fh:
                     fh.write(status)
             break
-        clock.tick(60)
-    for slot in game.flies:
-        slot.brain.stop()
-        if slot.persist_memory and slot.brain.memory is not None:
-            slot.brain.memory.save()
-    pygame.quit()
+        clock.tick(cfg["graphics.fps_cap"])
+    k2.shutdown(game)
     return 0

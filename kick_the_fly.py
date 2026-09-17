@@ -134,9 +134,12 @@ import pygame
 import scipy.sparse as sp
 from pygame import gfxdraw
 
+import config
 import crash
+import menu as menu_ui
 import paths
 import platform_env
+from simclock import SimClock
 from crash import log
 from version import __version__
 
@@ -308,7 +311,8 @@ class Brain:
         self._gain = sim.gain
         self.steps_per_s = 0.0
         self.steps = 0
-        self.speed = 1.0                             # >1 runs the brain faster than real time (training)
+        self.speed = 1.0                             # x real time: >1 training, <1 slow motion, 0 paused
+        self.step_requests = 0                       # brain steps owed while paused (single-step)
         self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
 
     @property
@@ -406,6 +410,10 @@ class Brain:
             calm = self.sedation == 0 and not self.surgery and self.steps - self.last_poke > CALM_STEPS
             self.memory.step(self.sim.activity.rates(), calm, self.steps)
 
+    def request_steps(self, n: int) -> None:
+        with self._lock:
+            self.step_requests += n
+
     def warmup(self, steps: int = 600) -> None:
         k = self.k_base
         self.k_base = 1 - math.exp(-1 / 60)          # let the baseline settle quickly
@@ -424,8 +432,15 @@ class Brain:
         done, last_t, last_steps = 0, t0, self.steps
         speed = self.speed
         while not self._stop:
-            if self.speed != speed:                  # re-anchor the clock when the training speed changes
+            if self.speed != speed:                  # re-anchor the clock when the speed changes (training, slow-mo, pause)
                 speed, t0, done = self.speed, time.perf_counter(), 0
+            if self.step_requests > 0:               # single steps while time is paused
+                with self._lock:
+                    n, self.step_requests = self.step_requests, 0
+                for _ in range(n):
+                    self._step()
+                t0, done = time.perf_counter(), 0
+                continue
             if self._revive:
                 self._revive = False
                 self.death_step = None
@@ -512,6 +527,11 @@ class BrainView:
 
     FIBER, ARBOR = 18, 3
     HOT = np.array([1.0, 0.34, 0.07], np.float32)
+    # Accessibility palettes: (pain-sensing neurons, everything else). Blue/yellow stays distinct with red-green color
+    # blindness; high contrast is magenta on white.
+    PALETTES = {"default": ((1.0, 0.34, 0.07), (0.3, 0.75, 1.0)),
+                "blue-yellow": ((1.0, 0.8, 0.08), (0.18, 0.42, 1.0)),
+                "high-contrast": ((1.0, 0.12, 0.85), (0.92, 0.92, 0.92))}
 
     def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1):
         rng = np.random.default_rng(seed)
@@ -532,8 +552,8 @@ class BrainView:
         col = col / col.max(axis=1, keepdims=True)                   # saturated direction color
         self.col = (0.06 + 0.94 * col).astype(np.float32)
         self.hot_mask = np.asarray(pain_mask, bool)
-        cool = (0.35 * self.col + 0.65 * np.array([0.3, 0.75, 1.0], np.float32)) * 0.55   # everything else: dim cyan
-        self.tint = np.where(self.hot_mask[:, None], self.HOT * 2.2, cool).astype(np.float32)
+        self.sparkle = True
+        self.set_palette("default")
 
         t = np.linspace(0, 1, self.FIBER, dtype=np.float32)[None, :, None]
         bend = rng.normal(size=(n, 3)).astype(np.float32) * (0.12 * length)[:, None]
@@ -562,6 +582,13 @@ class BrainView:
         self.calm = np.full(n, 0.025, np.float32)                   # per-neuron calm rate, spikes per step
         self.firing = self.hot_firing = 0
 
+    def set_palette(self, name: str) -> None:
+        hot, cool_base = self.PALETTES.get(name, self.PALETTES["default"])
+        self.hot = np.array(hot, np.float32)
+        cool = (0.35 * self.col + 0.65 * np.array(cool_base, np.float32)) * 0.55   # everything else: dim tint
+        self.tint = np.where(self.hot_mask[:, None], self.hot * 2.2, cool).astype(np.float32)
+        self.legend = (tuple(int(255 * c) for c in hot), tuple(int(min(255, 255 * c * 1.1)) for c in cool_base))
+
     def render(self, key: str, rates: np.ndarray, spiked: np.ndarray, t: float, learn: bool) -> pygame.Surface:
         if learn:
             self.calm += (rates - self.calm) * 0.01
@@ -570,11 +597,11 @@ class BrainView:
         firing = act > 0.05
         self.firing, self.hot_firing = int(firing.sum()), int((firing & self.hot_mask).sum())
         light = (self.M[key] @ (act[:, None] * self.tint)) * self.gain[key]
-        if len(spiked):                               # sparkles: firing neurons that spiked on the latest step
+        if len(spiked) and self.sparkle:              # sparkles: firing neurons that spiked on the latest step
             s = spiked[act[spiked] > 2.0]
             pix = self.spark_pix[key][s]
             s, pix = s[pix >= 0], pix[pix >= 0]
-            np.add.at(light, pix, np.where(self.hot_mask[s, None], self.HOT * 3.0, np.float32(0.7)))
+            np.add.at(light, pix, np.where(self.hot_mask[s, None], self.hot * 3.0, np.float32(0.7)))
         w, h = VIEW_SIZES[key]
         img = (255 * (1 - np.exp(-(self.base[key] + light)))).astype(np.uint8)
         surf = pygame.image.frombuffer(img.tobytes(), (w, h), "RGB").copy()
@@ -1232,10 +1259,23 @@ class Sound:
 
     def __init__(self):
         self.ok, self.muted = False, False
+        self.master = self.sfx = self.buzz = 1.0      # Settings > Audio
         self.loops: dict[str, tuple[str, object]] = {}
         try:
             if not pygame.mixer.get_init():
-                pygame.mixer.init(self.RATE, -16, 1, 512)
+                try:
+                    pygame.mixer.init(self.RATE, -16, 1, 512)
+                except pygame.error as e:            # e.g. SDL_AUDIODRIVER=pipewire, which pygame's SDL lacks
+                    for drv in ("pulseaudio", "alsa", "wasapi", "directsound"):
+                        os.environ["SDL_AUDIODRIVER"] = drv
+                        try:
+                            pygame.mixer.init(self.RATE, -16, 1, 512)
+                            log.info("audio: %s failed (%s), using %s", "default driver", e, drv)
+                            break
+                        except pygame.error:
+                            continue
+                    else:
+                        raise
             self.channels = pygame.mixer.get_init()[2]
             pygame.mixer.set_num_channels(20)
             self.fx = self._make()
@@ -1317,11 +1357,23 @@ class Sound:
         fx["hurt"] = self._snd(low(noise(0.25), 20) * 3 * np.exp(-tt * 14) + np.sin(2 * np.pi * 70 * tt) * np.exp(-tt * 10), 0.7)
         return fx
 
+    def configure(self, cfg) -> None:
+        self.master, self.sfx, self.buzz = cfg["audio.master"], cfg["audio.sfx"], cfg["audio.buzz"]
+        if cfg["audio.mute"] != self.muted:
+            self.muted = cfg["audio.mute"]
+            for slot in list(self.loops):
+                self.loop(slot, None)
+        for slot, (name, ch) in list(self.loops.items()):
+            ch.set_volume(self._vol(slot, 1.0))
+
+    def _vol(self, slot: str | None, vol: float) -> float:
+        return float(min(1.0, vol * self.master * (self.buzz if slot == "wings" else self.sfx)))
+
     def play(self, name: str, vol: float = 1.0) -> None:
         if self.ok and not self.muted and name in self.fx:
             ch = self.fx[name].play()
             if ch:
-                ch.set_volume(vol)
+                ch.set_volume(self._vol(None, vol))
 
     def loop(self, slot: str, name: str | None, vol: float = 1.0) -> None:
         """Keep one looping sound per slot; None (or muted) stops it."""
@@ -1334,13 +1386,13 @@ class Sound:
                 del self.loops[slot]
             return
         if cur and cur[0] == name:
-            cur[1].set_volume(vol)
+            cur[1].set_volume(self._vol(slot, vol))
             return
         if cur:
             cur[1].stop()
         ch = self.fx[name].play(loops=-1)
         if ch:
-            ch.set_volume(vol)
+            ch.set_volume(self._vol(slot, vol))
             self.loops[slot] = (name, ch)
 
 
@@ -1375,14 +1427,22 @@ HELP = (
     ("R", "reset to a single fresh fly"),
     ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
     ("T", "training: teach it to fear or like a smell (saved between sessions)"),
+    ("Z [ ] .", "pause time, slower, faster, single step"),
     ("H", "this help"),
-    ("Esc", "quit"),
+    ("Esc", "close a panel, or open the menu (settings, save, quit)"),
 )
 
 
 class Game:
-    def __init__(self, screen, brain: Brain, view: BrainView, graph=None, weights=None):
+    three_d = False
+
+    def __init__(self, screen, brain: Brain, view: BrainView, graph=None, weights=None, cfg: "config.Config | None" = None):
         self.screen = screen
+        self.cfg = cfg if cfg is not None else config.Config(None)
+        self.clock = SimClock()
+        self.menu = menu_ui.Menu(self)
+        self.want_quit = False
+        self.train_active_speed = 1.0
         self.graph, self.weights = graph, weights     # the loaded connectome, kept so spawn_fly() can build more brains
         self._next_seed = 1
         self._spawning = False
@@ -1390,12 +1450,7 @@ class Game:
         self._reset_gen = 0    # bumped by new_fly(), so a spawn_fly() build in flight during an R can't reappear after
         self.tool = 0
         self.kills = 0
-        self.f_small = pygame.font.SysFont("consolas", 13)
-        self.f_text = pygame.font.SysFont("segoeui,consolas", 15)
-        self.f_bold = pygame.font.SysFont("segoeuisemibold,segoeui,consolas", 16, bold=True)
-        self.f_head = pygame.font.SysFont("segoeuiblack,segoeui,consolas", 20, bold=True)
-        self.f_title = pygame.font.SysFont("segoeuiblack,segoeui,consolas", 34, bold=True)
-        self.f_big = pygame.font.Font(pygame.font.match_font("impact,arialblack,arial"), 40)
+        self.make_fonts()
         self.bg = make_background()
         self.shadow = make_shadow()
         self.view = view
@@ -1430,7 +1485,121 @@ class Game:
         self.mouse = (0, 0)
         self.new_fly()                              # self.fly/self.brain (below) proxy to self.flies; build it first
         self.surgery_rows = {label: self._surgery_rows(spec) for label, spec in SURGERY}
+        for s in config.SETTINGS:                   # settings from config.toml take effect before the first frame
+            if s.key != "graphics.fullscreen":
+                self.apply_setting(s.key)
         threading.Thread(target=self._view_loop, name="brain-view", daemon=True).start()
+
+    # --- settings, menu and time ----------------------------------------------------------------------------------
+    def make_fonts(self) -> None:
+        k = 1.2 if self.cfg["access.larger_text"] else 1.0
+        self.f_small = pygame.font.SysFont("consolas", 13)       # dense panels keep their size so rows still fit
+        self.f_text = pygame.font.SysFont("segoeui,consolas", round(15 * k))
+        self.f_bold = pygame.font.SysFont("segoeuisemibold,segoeui,consolas", round(16 * k), bold=True)
+        self.f_head = pygame.font.SysFont("segoeuiblack,segoeui,consolas", round(20 * k), bold=True)
+        self.f_title = pygame.font.SysFont("segoeuiblack,segoeui,consolas", round(34 * k), bold=True)
+        self.f_big = pygame.font.Font(pygame.font.match_font("impact,arialblack,arial"), round(40 * k))
+
+    @property
+    def calm_fx(self) -> bool:
+        """Reduced flashing (Accessibility)."""
+        return bool(self.cfg["access.reduced_flashing"])
+
+    def set_setting(self, key: str | None, value, save: bool = True, force: bool = False) -> None:
+        """The one way settings change, from the menu or a hotkey: validate, apply live, save config.toml."""
+        if key == "keys":
+            pass
+        elif key is not None:
+            if self.cfg.set(key, value) or force:
+                self.apply_setting(key)
+        if save:
+            self.cfg.save()
+
+    def apply_setting(self, key: str) -> None:
+        c = self.cfg
+        if key.startswith("audio."):
+            self.sound.configure(c)
+        elif key == "brain.pain_level":
+            self.pain_level = c[key]
+            for slot in self.flies:
+                slot.brain.set_pain_level(self.pain_level)
+        elif key == "brain.immortal":
+            self.immortal = c[key]
+        elif key == "brain.sim_speed":
+            self.clock.scale = c[key]
+        elif key == "graphics.fps_cap":
+            self.clock.fixed_per_frame = c[key] == 60
+        elif key == "graphics.fullscreen":
+            if bool(c[key]) != self.is_fullscreen():
+                pygame.display.toggle_fullscreen()
+        elif key == "access.palette":
+            self.view.set_palette(c[key])
+        elif key == "access.larger_text":
+            self.make_fonts()
+
+    @staticmethod
+    def is_fullscreen() -> bool:
+        try:
+            return bool(pygame.display.get_surface() and pygame.display.get_surface().get_flags() & pygame.FULLSCREEN) \
+                or bool(pygame.display.is_fullscreen())
+        except (AttributeError, pygame.error):
+            return False
+
+    def toggle_fullscreen(self) -> None:
+        pygame.display.toggle_fullscreen()
+        self.cfg.set("graphics.fullscreen", self.is_fullscreen())
+        self.cfg.save()
+
+    def open_menu(self, screen: str = "pause") -> None:
+        self.torching = False
+        self.menu.show(screen)
+        self.clock.menu_paused = True
+
+    def menu_action(self, name: str) -> None:
+        if name == "resume":
+            self.menu.close()
+        elif name == "closed":
+            self.clock.menu_paused = False
+        elif name == "click_sound":
+            self.sound.play("click")
+        elif name == "settings":
+            self.menu.show("settings")
+        elif name == "quit":
+            self.menu.show("confirm_quit")
+        elif name == "quit_now":
+            self.want_quit = True
+        elif name == "toggle_mode":
+            self.set_setting("brain.mode", "play" if self.cfg.lab else "lab")
+            self.menu.flash(f"{'Lab' if self.cfg.lab else 'Play'} mode", menu_ui.GOOD)
+        else:
+            self.menu.flash("coming soon", menu_ui.AMBER)
+
+    def sync_time(self) -> None:
+        """Brain threads follow game time: paused, slow motion, training speed-up; single steps are fed in."""
+        base = self.clock.brain_speed()
+        steps = self.clock.take_brain_steps()
+        training = self.flies[self.focus] if self.train is not None else None
+        for slot in self.flies:
+            want = base * (self.train_active_speed if slot is training else 1.0)
+            if slot.brain.speed != want:
+                slot.brain.speed = want
+            if steps:
+                slot.brain.request_steps(steps)
+
+    def time_action(self, action: str) -> None:
+        c = self.clock
+        if action == "time_pause":
+            c.user_paused = not c.user_paused
+            self.note("TIME     paused" if c.user_paused else "TIME     running")
+        elif action == "time_slower":
+            self.set_setting("brain.sim_speed", c.slower())
+        elif action == "time_faster":
+            self.set_setting("brain.sim_speed", c.faster())
+        elif action == "time_step":
+            if not c.user_paused:
+                c.user_paused = True
+            c.step()
+        self.saved_msg = (c.label() or "time: normal speed", time.perf_counter())
 
     # --- fly properties: proxy to whichever FlySlot is currently focused --------------------------------------------
     @property
@@ -1588,6 +1757,7 @@ class Game:
 
     def _hud_overlay(self, surf, rect: pygame.Rect, now: float, small: bool) -> None:
         """Sci-fi dressing over a brain view: a sweeping scan band, corner brackets and live counters."""
+        self.view.sparkle = not self.calm_fx
         ph = (now * 0.22) % 1.0
         band_y = rect.y + int(ph * rect.h)
         band = pygame.Surface((rect.w, 34))
@@ -1596,8 +1766,9 @@ class Game:
             band.fill((int(80 * a), int(200 * a), int(255 * a)), (0, k, rect.w, 1))
         clip = surf.get_clip()
         surf.set_clip(rect)
-        surf.blit(band, (rect.x, band_y - 34), special_flags=pygame.BLEND_RGB_ADD)
-        pygame.draw.line(surf, (60, 120, 150), (rect.x, band_y), (rect.right, band_y), 1)
+        if not self.calm_fx:
+            surf.blit(band, (rect.x, band_y - 34), special_flags=pygame.BLEND_RGB_ADD)
+            pygame.draw.line(surf, (60, 120, 150), (rect.x, band_y), (rect.right, band_y), 1)
         surf.set_clip(clip)
         L = 10 if small else 22
         for cx, cy, sx, sy in ((rect.x, rect.y, 1, 1), (rect.right - 1, rect.y, -1, 1),
@@ -1627,14 +1798,15 @@ class Game:
             self._text(surf, label.upper(), (rect.x + int(fx * w), rect.y + int(fy * h)), (120, 170, 190), self.f_small, "center")
         self._text(surf, "LIVE CONNECTOME", (22, 16), INK, self.f_head)
         v = self.view
-        pulse = 0.5 + 0.5 * math.sin(now * 6)
+        pulse = 1.0 if self.calm_fx else 0.5 + 0.5 * math.sin(now * 6)
         self._text(surf, f"{v.firing:,} neurons firing above normal", (230, 20), (150, 215, 240), self.f_bold)
         self._text(surf, f"{v.hot_firing:,} pain neurons", (520, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
         self._text(surf, "click a neuron to inspect   |   B to close", (PLAY_W - 22, 42), LABEL, self.f_small, "topright")
         ly = rect.bottom + 12
-        aacircle(surf, (30, ly + 7), 5, (255, 130, 40))
+        hot_c, cool_c = self.view.legend
+        aacircle(surf, (30, ly + 7), 5, hot_c)
         r = self._text(surf, "pain-sensing neurons firing", (42, ly), TEXT, self.f_small)
-        aacircle(surf, (r.right + 22, ly + 7), 5, (110, 200, 255))
+        aacircle(surf, (r.right + 22, ly + 7), 5, cool_c)
         r = self._text(surf, "other neurons firing", (r.right + 34, ly), TEXT, self.f_small)
         self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
         self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
@@ -1744,14 +1916,14 @@ class Game:
         self.train = dict(scent=scent, kind=kind, trials=1 if kind == "test" else trials, done=0,
                           phase="naive" if kind_first else "odor", until=self.brain.steps + (400 if kind_first else 240),
                           hz=[], first=kind_first)
-        self.brain.speed = self.train_speed
+        self.train_active_speed = self.train_speed
         self.note(f"TRAINING {kind} on {scent}")
 
     def stop_training(self) -> None:
         if self.train is not None:
             self.note(f"TRAINING stopped ({self.train['done']}/{self.train['trials']})")
         self.train = None
-        self.brain.speed = 1.0
+        self.train_active_speed = 1.0
         if self.brain.memory is not None and self.flies[self.focus].persist_memory:
             threading.Thread(target=self.brain.memory.save, daemon=True).start()
 
@@ -1926,7 +2098,7 @@ class Game:
             elif what == "speed":
                 self.train_speed = {1.0: 2.0, 2.0: 3.0}.get(self.train_speed, 1.0)
                 if self.train is not None:
-                    self.brain.speed = self.train_speed
+                    self.train_active_speed = self.train_speed
             elif what == "stop":
                 self.stop_training()
             elif what == "wipe" and self.train is None and mem is not None:
@@ -2246,10 +2418,22 @@ class Game:
         """Pictures\\Kick the Fly on Windows, <XDG Pictures>/Kick the Fly on Linux (see paths.py)."""
         return paths.ensure_dir(paths.get().pictures_dir, Path.cwd() / "Kick the Fly saves")
 
+    def media_path(self, ext: str) -> Path:
+        """A new file in the pictures folder; two saves in the same second no longer overwrite each other."""
+        d = self._save_dir()
+        stem = f"kick-the-fly-{time.strftime('%Y%m%d-%H%M%S')}"
+        path, n = d / f"{stem}.{ext}", 2
+        while path.exists():
+            path, n = d / f"{stem}-{n}.{ext}", n + 1
+        return path
+
+    def saved_note(self, path: Path) -> None:
+        self.saved_msg = (f"saved {path.name} in {path.parent.name}", time.perf_counter())
+
     def save_png(self) -> None:
-        path = self._save_dir() / f"kick-the-fly-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        path = self.media_path("png")
         pygame.image.save(self.screen, str(path))
-        self.saved_msg = (f"saved {path}", time.perf_counter())
+        self.saved_note(path)
         self.sound.play("click")
 
     def save_gif(self, frames: list | None = None) -> None:
@@ -2257,7 +2441,7 @@ class Game:
         if len(frames) < 3:
             self.saved_msg = ("not enough footage yet", time.perf_counter())
             return
-        path = self._save_dir() / f"kick-the-fly-{time.strftime('%Y%m%d-%H%M%S')}.gif"
+        path = self.media_path("gif")
         self.saved_msg = ("saving GIF...", time.perf_counter())
 
         def work():
@@ -2266,7 +2450,7 @@ class Game:
 
                 imgs = [Image.frombytes("RGB", GIF_SIZE, f).convert("P", palette=Image.ADAPTIVE, colors=160) for f in frames]
                 imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=66, loop=0)
-                self.saved_msg = (f"saved {path}", time.perf_counter())
+                self.saved_note(path)
             except Exception as e:                   # e.g. Pillow missing in a source checkout
                 self.saved_msg = (f"GIF failed: {e}", time.perf_counter())
 
@@ -2352,7 +2536,7 @@ class Game:
         return out
 
     def popup(self, pos, text: str, color=(255, 245, 235), force=False) -> None:
-        now = time.perf_counter()
+        now = self.clock.now
         if self.popups and now - self.popups[-1][3] < 0.3 and not force:
             return
         x = float(np.clip(pos[0], 90, PLAY_W - 90))
@@ -2362,10 +2546,10 @@ class Game:
     def puff(self, pos, n: int, spread: float = 3.0) -> None:
         for _ in range(n):
             self.dust.append([pos[0], pos[1], random.uniform(-spread, spread), random.uniform(-spread, 0.3),
-                              time.perf_counter(), random.uniform(0.35, 0.8), random.uniform(3, 7)])
+                              self.clock.now, random.uniform(0.35, 0.8), random.uniform(3, 7)])
 
     def note(self, text: str) -> None:
-        self.log.append((time.perf_counter(), text))
+        self.log.append((self.clock.now, text))
         self.log = self.log[-7:]
 
     # --- tools ---
@@ -3037,7 +3221,7 @@ class Game:
             aacircle(arena, m, 5, (255, 250, 220))
         for fl in list(self.flashes):
             e = (now - fl[1]) / 0.35
-            if e >= 1:
+            if e >= 1 or self.calm_fx:
                 self.flashes.remove(fl)
                 continue
             aacircle(arena, fl[0], 40 + 260 * e, (255, 200, 90, int(170 * (1 - e))))
@@ -3074,8 +3258,22 @@ class Game:
         shake = (0, 0)
         if now < self.shake_until:
             shake = (random.randint(-7, 7), random.randint(-5, 5))
+        if self.calm_fx:
+            shake = (0, 0)
         scr.blit(arena, shake)
         self._draw_brain(now)
+        self.draw_time_indicator(scr, PLAY_W // 2, 92)
+        if self.menu.open:
+            self.menu.draw(scr, pygame.mouse.get_pos(), now)
+
+    def draw_time_indicator(self, surf, cx: int, y: int) -> None:
+        label = self.clock.label()
+        if not label:
+            return
+        img = self.f_bold.render(label, True, (20, 16, 8))
+        box = img.get_rect(midtop=(cx, y)).inflate(22, 10)
+        pygame.draw.rect(surf, AMBER if self.clock.user_paused else ACCENT, box, border_radius=8)
+        surf.blit(img, img.get_rect(center=box.center))
 
     def _draw_spider(self, surf, now: float) -> None:
         sp = self.spider
@@ -3243,7 +3441,7 @@ class Game:
         self._text(scr, "THE FLY'S BRAIN", (x, 8), ACCENT, self.f_head)
         status, scol = ("FLATLINE", S_CRIT) if br.dead else ("LIVE", S_GOOD)
         r = self._text(scr, status, (W - 14, 13), scol, self.f_bold, "topright")
-        aacircle(scr, (r.x - 10, r.centery), 4, scol if br.dead or int(now * 2) % 2 else DIM)
+        aacircle(scr, (r.x - 10, r.centery), 4, scol if br.dead or self.calm_fx or int(now * 2) % 2 else DIM)
         self._text(scr, f"MaleCNS v1.0 connectome, {br.n:,} neurons", (x, 34), LABEL, self.f_small)
 
         nw, nh = VIEW_SIZES["panel"]
@@ -3430,52 +3628,78 @@ class Game:
         pygame.draw.line(surf, S_CRIT, (dx, ty - 2), (dx, sy + 14), 2)
         self._text(surf, "died", (dx + 6, ty), S_CRIT, self.f_small)
 
-    def handle(self, ev, now: float) -> bool:
+    def menu_first(self, ev, mouse_pos) -> bool:
+        """The pause menu, quitting and Esc. Returns True if the event was used here."""
         if ev.type == pygame.QUIT:
-            return False
+            if self.menu.screen == "confirm_quit":
+                self.want_quit = True                    # a second close request quits
+            else:
+                self.open_menu("confirm_quit")
+            return True
+        if self.menu.open:
+            self.menu.handle(ev, getattr(ev, "pos", mouse_pos))
+            return True
         if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-            if self.help_open or self.surgery_open or self.big_view or self.training_open:   # Esc closes an overlay first
+            if self._overlay_open() and self.report is None:          # Esc closes an overlay first
                 self.help_open = self.surgery_open = self.big_view = self.training_open = False
-                return True
-            return False
+            else:
+                self.open_menu("pause")
+            return True
+        return False
+
+    def do_action(self, action: str, now: float) -> None:
+        """Hotkeys shared by the 2D and 3D games. Settings hotkeys go through set_setting so the menu stays in sync."""
+        if action == "help":
+            self.help_open = not self.help_open
+        elif action == "training":
+            self.training_open = not self.training_open
+        elif action == "surgery":
+            self.surgery_open = not self.surgery_open
+        elif action == "arena":
+            self.arena_i = (self.arena_i + 1) % len(ARENAS)
+            for slot in self.flies:
+                slot.fly.stuck.clear()
+            self.note(f"ARENA    {ARENAS[self.arena_i]}")
+        elif action == "spawn":
+            self.spawn_fly()
+        elif action == "mute":
+            self.set_setting("audio.mute", not self.cfg["audio.mute"])
+        elif action == "screenshot":
+            self.save_png()
+        elif action == "gif":
+            self.save_gif()
+        elif action == "reset":
+            self.new_fly()
+        elif action == "big_view":
+            self.big_view = not self.big_view
+        elif action == "immortal":
+            self.set_setting("brain.immortal", not self.immortal)
+            self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
+            self.popup(self._above_head(), "IMMORTAL!" if self.immortal else "MORTAL", (255, 225, 120), force=True)
+        elif action == "pain":
+            self.set_setting("brain.pain_level", (self.pain_level + 1) % len(PAIN_LEVELS))
+            self.note(f"PAIN     {PAIN_LEVELS[self.pain_level][0]}: {self.brain.pain_neurons():,} neurons")
+        elif action == "fullscreen":
+            self.toggle_fullscreen()
+        elif action.startswith("time_"):
+            self.time_action(action)
+
+    def handle(self, ev, now: float) -> bool:
+        """2D input. Returns False to quit. Keys go through the rebindable actions in config.py."""
+        if self.menu_first(ev, pygame.mouse.get_pos()):
+            return not self.want_quit
         if ev.type == pygame.KEYDOWN:
-            if ev.key == pygame.K_h:
-                self.help_open = not self.help_open
-            elif ev.key == pygame.K_t:
-                self.training_open = not self.training_open
-            elif ev.key == pygame.K_o:
-                self.surgery_open = not self.surgery_open
-            elif ev.key == pygame.K_e:
-                self.arena_i = (self.arena_i + 1) % len(ARENAS)
-                for slot in self.flies:
-                    slot.fly.stuck.clear()
-                self.note(f"ARENA    {ARENAS[self.arena_i]}")
-            elif ev.key == pygame.K_n:
-                self.spawn_fly()
-            elif ev.key == pygame.K_m:
-                self.sound.muted = not self.sound.muted
-                for slot in list(self.sound.loops):
-                    self.sound.loop(slot, None)
-            elif ev.key == pygame.K_s:
-                self.save_png()
-            elif ev.key == pygame.K_g:
-                self.save_gif()
-            elif ev.key in TOOL_KEYS:
+            if ev.key == pygame.K_s and self.cfg.action_for("s") in (None, *config.MOVEMENT_3D_ONLY):
+                self.save_png()                          # S has always saved a screenshot in the 2D game
+                return True
+            if ev.key in TOOL_KEYS:
                 self.tool = TOOL_KEYS.index(ev.key)
-            elif ev.key == pygame.K_r:
-                self.new_fly()
-            elif ev.key == pygame.K_b:
-                self.big_view = not self.big_view
-            elif ev.key == pygame.K_i:
-                self.immortal = not self.immortal
-                self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
-                self.popup(self._above_head(), "IMMORTAL!" if self.immortal else "MORTAL", (255, 225, 120), force=True)
-            elif ev.key == pygame.K_p:
-                self.pain_level = (self.pain_level + 1) % len(PAIN_LEVELS)
-                for slot in self.flies:
-                    slot.brain.set_pain_level(self.pain_level)
-                self.note(f"PAIN     {PAIN_LEVELS[self.pain_level][0]}: {self.brain.pain_neurons():,} neurons")
-        elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                return True
+            action = self.cfg.action_for(pygame.key.name(ev.key))
+            if action is not None:
+                self.do_action(action, now)
+            return True
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             if self.help_open:
                 self.help_open = False
                 return True
@@ -3591,7 +3815,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Kick the Fly %s on %s", __version__, crash.os_description())
     for n in p.notes:
         log.info(n)
-    seed = args.seed if args.seed is not None else 0
+    cfg = config.Config.load(p.config_file)
+    seed = args.seed if args.seed is not None else cfg["brain.seed"]
     crash.info["seed"] = str(seed)
     smoke, shot = args.smoke_s, args.shot
     platform_env.windows_dpi_aware()
@@ -3605,12 +3830,12 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:                           # e.g. moderngl missing in a source checkout
             log.warning("3D unavailable (%s); starting the 2D game", e)
         else:
-            platform_env.init_video(args.backend, None)
+            platform_env.init_video(args.backend, cfg["graphics.backend"])
             pygame.init()
             for attempt in range(2):
                 try:
                     crash.info["mode"] = "3d"
-                    return kick3d.run(smoke, shot, args.fullscreen, seed=seed)
+                    return kick3d.run(smoke, shot, args.fullscreen or cfg["graphics.fullscreen"], seed=seed, cfg=cfg)
                 except kick3d.GLUnavailable as e:
                     if attempt == 0 and platform_env.reset_to_x11():
                         continue
@@ -3620,7 +3845,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
     crash.info["mode"] = "2d"
     if not pygame.display.get_init():
-        platform_env.init_video(args.backend, None)
+        platform_env.init_video(args.backend, cfg["graphics.backend"])
     os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")   # smooth when scaled, not blocky
     pygame.init()
     pygame.display.set_caption("Kick the Fly")
@@ -3628,7 +3853,7 @@ def main(argv: list[str] | None = None) -> int:
     # aspect ratio (black bars if needed) and mapping the mouse back, so it can go fullscreen at any resolution.
     screen = pygame.display.set_mode((W, H), pygame.SCALED | pygame.RESIZABLE)
     desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (W, H)
-    if args.fullscreen or desk[0] < W or desk[1] < H + 60:   # asked for, or the window wouldn't fit
+    if args.fullscreen or cfg["graphics.fullscreen"] or desk[0] < W or desk[1] < H + 60:   # asked for, or it wouldn't fit
         pygame.display.toggle_fullscreen()
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
@@ -3653,12 +3878,12 @@ def main(argv: list[str] | None = None) -> int:
 
     brain = state["brain"]
     brain.start()
-    game = Game(screen, brain, state["view"], state.get("graph"), state.get("weights"))
+    game = Game(screen, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
     running = True
     t_game = time.perf_counter()
     while running:
-        now = time.perf_counter()
-        if smoke and now - t_game > smoke:
+        real = time.perf_counter()
+        if smoke and real - t_game > smoke:
             try:
                 from PIL import Image  # noqa: F401  (GIF saving works in this build)
                 gif = "gif ok"
@@ -3672,24 +3897,33 @@ def main(argv: list[str] | None = None) -> int:
                     f.write(status)
             break
         mouse = pygame.mouse.get_pos()
+        ticks = game.clock.frame(real)
         for ev in pygame.event.get():
-            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or
-                                              (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
-                pygame.display.toggle_fullscreen()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT:
+                game.toggle_fullscreen()
                 continue
-            running = game.handle(ev, now) and running
-        game.update(now, (min(mouse[0], PLAY_W - 5), mouse[1]))
-        game.draw(now, mouse)
-        if game.frame % 4 == 0:                      # rolling footage for G / the death GIF
+            running = game.handle(ev, game.clock.now) and running
+        game.sync_time()
+        for dt in ticks:
+            game.clock.now += dt
+            game.update(game.clock.now, (min(mouse[0], PLAY_W - 5), mouse[1]))
+        game.draw(game.clock.now, mouse)
+        if ticks and game.frame % 4 == 0:            # rolling footage for G / the death GIF
             game.capture()
         pygame.display.flip()
-        clock.tick(60)
+        clock.tick(cfg["graphics.fps_cap"])
+    shutdown(game)
+    return 0
+
+
+def shutdown(game) -> None:
     for slot in game.flies:
         slot.brain.stop()
         if slot.persist_memory and slot.brain.memory is not None:
             slot.brain.memory.save()
+    if game.cfg.dirty:
+        game.cfg.save()
     pygame.quit()
-    return 0
 
 
 if __name__ == "__main__":
