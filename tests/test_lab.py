@@ -114,3 +114,32 @@ def test_lab_job_with_surgery_pairs_controls():
     top_t = res["treated"]["rows"][-1]["mn9_ratio"]["mean"]
     top_c = res["control"]["rows"][-1]["mn9_ratio"]["mean"]
     assert top_c > top_t                                       # silencing the sugar-pathway GRNs removes the response
+
+
+def test_model_assumptions_disclosure():
+    import lab
+    import kick_the_fly as k2
+
+    titles = [a[0].lower() for a in lab.ASSUMPTIONS]
+    contents = " ".join(f"{a[0]} {a[2]} {a[3]} {a[4]}".lower() for a in lab.ASSUMPTIONS)
+
+    assert any("raw synapse count" in t for t in titles)
+    assert any("uniform synaptic efficacy" in t for t in titles)
+    assert any("leaky integrate-and-fire" in t or "point neuron" in t for t in titles)
+    assert any("no neurotransmitter" in t or "receptor kinetics" in t for t in titles)
+    assert any("nmda" in t for t in titles)
+    assert any("tonic" in t and "bias" in t for t in titles)
+    assert "0.20" in contents
+    assert any("gaussian" in t and "noise" in t for t in titles)
+    assert "0.05" in contents
+    assert any("asymmetry" in t for t in titles)
+    assert "reconstruction" in contents or "artifact" in contents
+
+    # Every assumption must cite a doc or code location
+    for a in lab.ASSUMPTIONS:
+        assert len(a[4]) > 5, f"Missing doc reference for assumption {a[0]}"
+
+    # lab_assumptions page is registered and in lab_pages
+    pages = [p[1] for p in k2.Game.lab_pages(None)]
+    assert "lab_assumptions" in pages
+

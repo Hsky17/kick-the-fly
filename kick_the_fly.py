@@ -1938,6 +1938,7 @@ class Game:
         return [("Validation", "lab_validation", "Which published fly behaviors this sim reproduces, with numbers."),
                 ("Assays and repeated trials", "lab_assays", "T-maze conditioning, looming escape and sugar response over "
                  "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
+                ("Model assumptions", "lab_assumptions", "Transparent disclosure of biophysical simplifications and EM reconstruction caveats."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
                  "metadata."),

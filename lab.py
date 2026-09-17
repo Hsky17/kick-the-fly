@@ -126,6 +126,115 @@ def page_params(m: ui.Menu, surf, rect, mouse) -> None:
     m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("params", "back"))
 
 
+ASSUMPTIONS = (
+    ("Raw synapse counts as functional strength proxy",
+     "SYNAPSE",
+     "The sim treats raw EM synapse counts between neuron pairs as directly proportional to synaptic conductance.",
+     "Biological synapses vary widely in vesicle pool size, neurotransmitter release probability, post-synaptic receptor density, and phosphorylation state. Real connection efficacy does not linearly track anatomical contact count.",
+     "README.md § Connectome vs Game Rule · connectome/sim.py:LIFParams"),
+
+    ("Uniform synaptic efficacy per connection type",
+     "SYNAPSE",
+     "All excitatory and inhibitory synapses share fixed base efficacy constants across the whole connectome.",
+     "Drosophila synapses exhibit diverse quantal sizes and kinetics across cell types (cholinergic, GABAergic, glutamatergic). Here, sign is assigned from neurotransmitter annotations with uniform base weights.",
+     "connectome/sim.py:LIFSim · validation.py"),
+
+    ("Leaky integrate-and-fire (LIF) point neurons",
+     "BIOPHYSICS",
+     "Each cell body and its entire arbor is condensed into a single isopotential point compartment with tau = 20 ms.",
+     "Drosophila neurons have complex non-spiking local computations, passive cable filtering along fine neurites, and compartmentalized local dendritic processing (e.g. in mushroom body lobes and optic lobes) that point-LIF collapses.",
+     "connectome/sim.py:LIFParams (tau_m=20ms, dt=5ms)"),
+
+    ("No neurotransmitter or receptor kinetics",
+     "DYNAMICS",
+     "Synaptic current transfers instantaneously within the discrete 5 ms simulation time-step.",
+     "Real ligand-gated and metabotropic receptors have finite activation, desensitization, and clearance timescales (AMPA/nAChR vs slow GABA_B / metabotropic receptors). Slow receptor dynamics are absent.",
+     "connectome/sim.py:step()"),
+
+    ("No slow NMDA-like or neuromodulatory states",
+     "DYNAMICS",
+     "No voltage-dependent ion channel gating, NMDA slow kinetics, or broad volumetric neuromodulator wash.",
+     "Neuropeptides and biogenic amines (octopamine, serotonin, dopamine) set global arousal, hunger, and sleep states. Except for modeled reward-driven plasticity, broad state transitions are simplified.",
+     "connectome/sim.py · README.md § Limitations"),
+
+    ("Tonic depolarizing bias (0.20 threshold)",
+     "TUNING",
+     "A constant current bias of 0.20 (80% of threshold) is injected into every neuron to sustain basal activity.",
+     "Without background excitation or unmodeled inputs, resting connectome simulations fall completely silent. The tonic bias maintains the biological ~5 Hz spontaneous brain-wide firing rate.",
+     "lab.py:PARAMS (bias=0.20) · connectome/sim.py"),
+
+    ("Gaussian membrane noise (sigma = 0.05)",
+     "TUNING",
+     "Zero-mean Gaussian current noise is added to every neuron at each 5 ms simulation step.",
+     "Stochasticity mimics thermal channel noise, spontaneous miniature EPSPs, and unmodeled inputs from sensory organs, preventing artificial deterministic synchronization across identical network paths.",
+     "lab.py:PARAMS (noise_std=0.05) · connectome/sim.py"),
+
+    ("Left/Right asymmetry as EM reconstruction artifact risk",
+     "DATASET",
+     "Asymmetries in synaptic weights or firing between left and right hemibrains reflect both biology and reconstruction noise.",
+     "MaleCNS v1.0 EM tracing has variable proofreading depth, staining artifacts, and truncation near slice boundaries. L/R differences may stem from incomplete reconstruction rather than true lateralization.",
+     "README.md § Connectome Data · headless.py"),
+)
+
+
+def page_assumptions(m: ui.Menu, surf, rect, mouse) -> None:
+    m.text(surf, "MODEL ASSUMPTIONS & SIMPLIFICATIONS", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
+    m.text(surf, "Scientific caveats and approximations distinguishing the simulation from living biology.",
+           (rect.x + 24, rect.y + 50), ui.LABEL, m.f_small)
+    body = pygame.Rect(rect.x + 16, rect.y + 80, rect.w - 32, rect.h - 80 - 70)
+    key = "lab_assumptions"
+    off = int(m.scroll.get(key, 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
+    y = body.y + 4 - off
+
+    category_colors = {
+        "SYNAPSE": (100, 180, 240),
+        "BIOPHYSICS": (150, 120, 220),
+        "DYNAMICS": (240, 160, 60),
+        "TUNING": (80, 200, 140),
+        "DATASET": (240, 100, 100),
+    }
+
+    card_h = 136
+    max_w = body.w - 74
+    for title, cat, sim_rule, bio_reality, docs in ASSUMPTIONS:
+        card = pygame.Rect(body.x, y, body.w - 12, card_h)
+        pygame.draw.rect(surf, (24, 28, 38), card, border_radius=8)
+        pygame.draw.rect(surf, (45, 52, 68), card, 1, border_radius=8)
+
+        # Category chip
+        col = category_colors.get(cat, ui.LABEL)
+        chip = pygame.Rect(card.x + 12, card.y + 10, 84, 20)
+        pygame.draw.rect(surf, (15, 18, 26), chip, border_radius=4)
+        pygame.draw.rect(surf, col, chip, 1, border_radius=4)
+        m.text(surf, cat, chip.center, col, m.f_small, "center")
+
+        # Title
+        m.text(surf, title, (card.x + 106, card.y + 10), ui.INK, m.f_bold)
+
+        # Sim rule
+        m.text(surf, "Sim:", (card.x + 14, card.y + 36), (140, 180, 220), m.f_small)
+        m.wrapped(surf, sim_rule, (card.x + 50, card.y + 36), max_w, ui.TEXT, m.f_small, max_lines=2)
+
+        # Biology reality
+        m.text(surf, "Bio:", (card.x + 14, card.y + 68), (220, 150, 100), m.f_small)
+        m.wrapped(surf, bio_reality, (card.x + 50, card.y + 68), max_w, (185, 190, 200), m.f_small, max_lines=2)
+
+        # Documentation reference
+        m.text(surf, "Doc:", (card.x + 14, card.y + 104), ui.LABEL, m.f_small)
+        m.text(surf, docs, (card.x + 50, card.y + 104), (130, 160, 210), m.f_small)
+
+        y += card_h + 12
+
+    m.content_h[key] = max(0, y + off - body.bottom + 8)
+    surf.set_clip(prev)
+    m.clip = None
+
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("assumptions", "back"))
+
+
 def install(menu: ui.Menu) -> None:
     menu.pages["lab"] = page_hub
     menu.pages["lab_params"] = page_params
@@ -133,6 +242,7 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_validation"] = lambda *a: page_validation(*a)
     menu.pages["lab_export"] = lambda *a: page_export(*a)
     menu.pages["lab_protocols"] = lambda *a: page_protocols(*a)
+    menu.pages["lab_assumptions"] = page_assumptions
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 
