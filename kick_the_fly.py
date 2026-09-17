@@ -649,8 +649,96 @@ class BrainView:
             self.base[key] = struct * (0.5 / p99)
             self.gain[key] = 3.4 / p99
             self.spark_pix[key] = np.where(m[:, 0], py[:, 0] * w + px[:, 0], -1)   # cell body (or arbor) pixel
+        self.pts, self.wts, self.nid, self.ok, self.n = pts, wts, nid, ok, n
+        self.center = np.array([48000.0, 28000.0, 30000.0], np.float32)
+        self.yaw, self.pitch = 0.0, 0.0
+        self.pan_x, self.pan_y = 0.0, 0.0
+        self.zoom = 1.0
+        self.preset = "front"
         self.calm = np.full(n, 0.025, np.float32)                   # per-neuron calm rate, spikes per step
         self.firing = self.hot_firing = 0
+        self._cache_front = (self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"])
+        self._preset_cache = {"front": self._cache_front}
+
+    def set_camera(self, yaw: float, pitch: float, pan_x: float = 0.0, pan_y: float = 0.0, zoom: float = 1.0, preset: str | None = None) -> None:
+        self.yaw = float(yaw)
+        self.pitch = float(np.clip(pitch, -90.0, 90.0))
+        self.pan_x = float(pan_x)
+        self.pan_y = float(pan_y)
+        self.zoom = float(np.clip(zoom, 0.2, 5.0))
+        self.preset = preset or ("front" if self.is_default_view() else "custom")
+        self._recompute_big()
+
+    def orbit(self, dyaw: float, dpitch: float) -> None:
+        self.set_camera(self.yaw + dyaw, self.pitch + dpitch, self.pan_x, self.pan_y, self.zoom, preset=None)
+
+    def pan(self, dpan_x: float, dpan_y: float) -> None:
+        self.set_camera(self.yaw, self.pitch, self.pan_x + dpan_x, self.pan_y + dpan_y, self.zoom, preset=None)
+
+    def zoom_by(self, factor: float) -> None:
+        self.set_camera(self.yaw, self.pitch, self.pan_x, self.pan_y, self.zoom * factor, preset=None)
+
+    def set_preset(self, name: str) -> None:
+        if name in ("front", "reset"):
+            self.yaw, self.pitch, self.pan_x, self.pan_y, self.zoom = 0.0, 0.0, 0.0, 0.0, 1.0
+            self.preset = "front"
+            M, b, g, spx = self._preset_cache["front"]
+            self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
+        elif name == "side":
+            if "side" in self._preset_cache:
+                self.yaw, self.pitch, self.pan_x, self.pan_y, self.zoom = 90.0, 0.0, 0.0, 0.0, 1.0
+                self.preset = "side"
+                M, b, g, spx = self._preset_cache["side"]
+                self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
+            else:
+                self.set_camera(90.0, 0.0, 0.0, 0.0, 1.0, preset="side")
+                self._preset_cache["side"] = (self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"])
+        elif name == "top":
+            if "top" in self._preset_cache:
+                self.yaw, self.pitch, self.pan_x, self.pan_y, self.zoom = 0.0, -90.0, 0.0, 0.0, 1.0
+                self.preset = "top"
+                M, b, g, spx = self._preset_cache["top"]
+                self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
+            else:
+                self.set_camera(0.0, -90.0, 0.0, 0.0, 1.0, preset="top")
+                self._preset_cache["top"] = (self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"])
+
+    def is_default_view(self) -> bool:
+        return abs(self.yaw) < 1e-4 and abs(self.pitch) < 1e-4 and abs(self.pan_x) < 1e-4 and abs(self.pan_y) < 1e-4 and abs(self.zoom - 1.0) < 1e-4
+
+    def _recompute_big(self) -> None:
+        if self.is_default_view():
+            M, b, g, spx = self._cache_front
+            self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
+            return
+        rad_y = math.radians(self.yaw)
+        rad_p = math.radians(self.pitch)
+        cy, sy = math.cos(rad_y), math.sin(rad_y)
+        cp, sp_ = math.cos(rad_p), math.sin(rad_p)
+        R = np.array([[cy, 0.0, sy], [sp_ * sy, cp, -sp_ * cy], [-cp * sy, sp_, cp * cy]], dtype=np.float32)
+
+        rot = (self.pts - self.center) @ R.T
+        w, h = VIEW_SIZES["big"]
+        span_x = VIEW_X[1] - VIEW_X[0]
+        span_y = VIEW_Y[1] - VIEW_Y[0]
+
+        rx = rot[..., 0] * self.zoom + self.pan_x + span_x * 0.5
+        ry = rot[..., 1] * self.zoom + self.pan_y + span_y * 0.5
+        rz = rot[..., 2] * self.zoom + self.center[2]
+
+        px = (rx / span_x * w).astype(np.int32)
+        py = (ry / span_y * h).astype(np.int32)
+
+        depth = np.clip(1.2 - (rz - 5000.0) / 50000.0, 0.35, 1.0)
+        m = self.ok[:, None] & (px >= 0) & (px < w) & (py >= 0) & (py < h)
+
+        P = sp.coo_array(((self.wts * depth)[m], ((py * w + px)[m], self.nid[m])), shape=(w * h, self.n)).tocsr()
+        self.M["big"] = P
+        struct = P @ self.col
+        p99 = float(np.percentile(struct.max(1), 99.0)) or 1.0
+        self.base["big"] = struct * (0.5 / p99)
+        self.gain["big"] = 3.4 / p99
+        self.spark_pix["big"] = np.where(m[:, 0], py[:, 0] * w + px[:, 0], -1)
 
     def set_palette(self, name: str) -> None:
         hot, cool_base = self.PALETTES.get(name, self.PALETTES["default"])
@@ -2237,14 +2325,32 @@ class Game:
             self._draw_inspect(surf, rect, now)
         labels = (("optic lobe", 0.10, 0.18), ("optic lobe", 0.90, 0.18), ("mushroom bodies", 0.50, 0.06),
                   ("central brain", 0.50, 0.42), ("to nerve cord", 0.50, 0.93))
-        for label, fx, fy in labels if self.inspect is None else ():
+        for label, fx, fy in labels if (self.inspect is None and self.view.is_default_view()) else ():
             self._text(surf, label.upper(), (rect.x + int(fx * w), rect.y + int(fy * h)), (120, 170, 190), self.f_small, "center")
         self._text(surf, "LIVE CONNECTOME", (22, 16), INK, self.f_head)
         v = self.view
         pulse = 1.0 if self.calm_fx else 0.5 + 0.5 * math.sin(now * 6)
         self._text(surf, f"{v.firing:,} neurons firing above normal", (230, 20), (150, 215, 240), self.f_bold)
         self._text(surf, f"{v.hot_firing:,} pain neurons", (520, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
-        self._text(surf, "click a neuron to inspect   |   B to close", (PLAY_W - 22, 42), LABEL, self.f_small, "topright")
+
+        # Camera presets & status:
+        self.big_preset_buttons = []
+        bx = rect.right - 260
+        for name, key_label in (("front", "1:Front"), ("side", "2:Side"), ("top", "3:Top"), ("reset", "0:Reset")):
+            btn_rect = pygame.Rect(bx, 15, 58, 22)
+            active = (v.preset == name) if name != "reset" else False
+            bg = (45, 65, 95) if active else (24, 28, 38)
+            border_c = ACCENT if active else BORDER
+            pygame.draw.rect(surf, bg, btn_rect, border_radius=4)
+            pygame.draw.rect(surf, border_c, btn_rect, 1, border_radius=4)
+            self._text(surf, key_label, btn_rect.center, INK if active else TEXT, self.f_small, "center")
+            self.big_preset_buttons.append((btn_rect, name))
+            bx += 64
+        cam_info = f"View: {v.preset.upper()} (yaw {v.yaw:+.0f}° pitch {v.pitch:+.0f}° zoom {v.zoom:.1f}x)"
+        self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
+
+        self._text(surf, "click neuron to inspect  |  drag orbit  |  Shift+drag pan  |  wheel zoom  |  B to close",
+                   (PLAY_W - 22, 40), LABEL, self.f_small, "topright")
         ly = rect.bottom + 12
         hot_c, cool_c = self.view.legend
         aacircle(surf, (30, ly + 7), 5, hot_c)
@@ -4187,6 +4293,19 @@ class Game:
         if self.menu_first(ev, pygame.mouse.get_pos()):
             return not self.want_quit
         if ev.type == pygame.KEYDOWN:
+            if self.big_view:
+                if ev.key in (pygame.K_1, pygame.K_KP1):
+                    self.view.set_preset("front")
+                    return True
+                if ev.key in (pygame.K_2, pygame.K_KP2):
+                    self.view.set_preset("side")
+                    return True
+                if ev.key in (pygame.K_3, pygame.K_KP3):
+                    self.view.set_preset("top")
+                    return True
+                if ev.key in (pygame.K_0, pygame.K_KP0):
+                    self.view.set_preset("reset")
+                    return True
             if ev.key == pygame.K_s and self.cfg.action_for("s") in (None, *config.MOVEMENT_3D_ONLY):
                 self.save_png()                          # S has always saved a screenshot in the 2D game
                 return True
@@ -4197,7 +4316,21 @@ class Game:
             if action is not None:
                 self.do_action(action, now)
             return True
-        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+        if ev.type == pygame.MOUSEWHEEL and self.big_view:
+            mpos = getattr(ev, "pos", pygame.mouse.get_pos())
+            if getattr(self, "big_rect", None) and self.big_rect.collidepoint(mpos):
+                self.view.zoom_by(1.15 if ev.y > 0 else 0.87)
+                return True
+        if ev.type == pygame.MOUSEMOTION and self.big_view and getattr(self, "big_drag", None):
+            start_pos, btn, y0, p0, px0, py0 = self.big_drag
+            dx = ev.pos[0] - start_pos[0]
+            dy = ev.pos[1] - start_pos[1]
+            if (pygame.key.get_mods() & pygame.KMOD_SHIFT) or btn == 2:
+                self.view.set_camera(y0, p0, px0 + dx * 120.0, py0 + dy * 120.0, self.view.zoom)
+            else:
+                self.view.set_camera(y0 + dx * 0.4, p0 - dy * 0.4, px0, py0, self.view.zoom)
+            return True
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
             if self.science_card is not None and self.science_rect().collidepoint(ev.pos):
                 self.science_card = None
                 return True
@@ -4231,15 +4364,13 @@ class Game:
                 self.big_view = not self.big_view
                 return True
             if self.big_view:
-                if self.inspect is not None:
-                    for r, mode in self.inspect_buttons:
-                        if r.collidepoint(ev.pos):
-                            self.type_ops[self.inspect["type"]] = mode
-                            self._apply_surgery()
-                            self.note(f"SURGERY  {self.inspect['type']}: {'off' if mode < 0 else 'on' if mode > 0 else 'normal'}")
-                            return True
-                if self.big_rect.collidepoint(ev.pos):
-                    self._inspect_at(ev.pos)
+                for r, preset_name in getattr(self, "big_preset_buttons", []):
+                    if r.collidepoint(ev.pos):
+                        self.view.set_preset(preset_name)
+                        return True
+                if getattr(self, "big_rect", None) and self.big_rect.collidepoint(ev.pos):
+                    self.big_drag = (ev.pos, ev.button, self.view.yaw, self.view.pitch, self.view.pan_x, self.view.pan_y)
+                    return True
                 return True
             for k, r in enumerate(getattr(self, "tool_rects", [])):
                 if r.collidepoint(ev.pos):
@@ -4247,10 +4378,25 @@ class Game:
                     return True
             if ev.pos[0] < PLAY_W:
                 self.use_tool(ev.pos, now)
-        elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
-            if not self.fly.wrapped:
-                self.fly.grabbed = None
-            self.torching = False
+        elif ev.type == pygame.MOUSEBUTTONUP:
+            if self.big_view and getattr(self, "big_drag", None):
+                start_pos, btn, _, _, _, _ = self.big_drag
+                self.big_drag = None
+                if btn == 1 and math.hypot(ev.pos[0] - start_pos[0], ev.pos[1] - start_pos[1]) < 6:
+                    if self.inspect is not None:
+                        for r, mode in getattr(self, "inspect_buttons", []):
+                            if r.collidepoint(ev.pos):
+                                self.type_ops[self.inspect["type"]] = mode
+                                self._apply_surgery()
+                                self.note(f"SURGERY  {self.inspect['type']}: {'off' if mode < 0 else 'on' if mode > 0 else 'normal'}")
+                                return True
+                    if self.big_rect.collidepoint(ev.pos):
+                        self._inspect_at(ev.pos)
+                return True
+            if ev.button == 1:
+                if not self.fly.wrapped:
+                    self.fly.grabbed = None
+                self.torching = False
         return True
 
 

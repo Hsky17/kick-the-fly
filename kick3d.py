@@ -2105,6 +2105,8 @@ class Game3D(k2.Game):
         if self.menu_first(ev, self.mouse_logical):
             return not self.want_quit
         if ev.type == pygame.KEYDOWN:
+            if self.big_view and ev.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_0, pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP0):
+                return k2.Game.handle(self, ev, now)
             if ev.key in k2.TOOL_KEYS:
                 self.tool = k2.TOOL_KEYS.index(ev.key)
                 return True
@@ -2127,10 +2129,18 @@ class Game3D(k2.Game):
             elif action is not None:
                 self.do_action(action, now)
             return True
-        if ev.type == pygame.MOUSEWHEEL and self.look:
-            self.tool = (self.tool - ev.y) % len(TOOLS)
-            return True
-        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+        if ev.type == pygame.MOUSEWHEEL:
+            if not self.look and self.big_view:
+                mpos = self.mouse_logical
+                if getattr(self, "big_rect", None) and self.big_rect.collidepoint(mpos):
+                    self.view.zoom_by(1.15 if ev.y > 0 else 0.87)
+                    return True
+            if self.look:
+                self.tool = (self.tool - ev.y) % len(TOOLS)
+                return True
+        if ev.type == pygame.MOUSEMOTION and not self.look and self.big_view and getattr(self, "big_drag", None):
+            return k2.Game.handle(self, pygame.event.Event(ev.type, {**ev.dict, "pos": self.mouse_logical}), now)
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
             if self.look:
                 self.use_tool3d(now)
                 return True
@@ -2146,7 +2156,7 @@ class Game3D(k2.Game):
                 self.set_look(True)
                 return True
             if self.surgery_open or self.help_open or self.report is not None or self.big_view or self.training_open:
-                return k2.Game.handle(self, pygame.event.Event(ev.type, button=1, pos=pos), now)
+                return k2.Game.handle(self, pygame.event.Event(ev.type, {**ev.dict, "pos": pos}), now)
             for kk, r in enumerate(getattr(self, "tool_rects", [])):
                 if r.collidepoint(pos):
                     self.tool = kk
@@ -2154,7 +2164,9 @@ class Game3D(k2.Game):
             if self.view_rect.collidepoint(pos):
                 self.big_view = True
             return True
-        if ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+        if ev.type == pygame.MOUSEBUTTONUP:
+            if not self.look and self.big_view and getattr(self, "big_drag", None):
+                return k2.Game.handle(self, pygame.event.Event(ev.type, {**ev.dict, "pos": self.mouse_logical}), now)
             if not self.fly.wrapped:
                 self.fly.grabbed = None
             self.torching = False
