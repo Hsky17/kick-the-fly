@@ -45,7 +45,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - **pool:** it floats, gets wet wings, and can drown
   - **lamp:** it's drawn to the light and singes itself on the bulb
 - **Sound:** every sound is generated in code. The wing buzz follows its flight neurons. **M** mutes.
-- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. The autopsy can save a GIF of the death.
+- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
 - **Slow motion and save states:** pause time, slow everything to 0.1x, step it 1/60 s at a time, and save or load the whole simulation (see Time controls).
 - **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
 
@@ -168,6 +168,10 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | X | 1v1 duel: the fly gets a blaster and can kill you (R respawns you) |
 | E | arena: room, fan, flypaper, pool, lamp |
 | P / I | pain neurons / immortal mode |
+| K | brain stethoscope (spike sonification clicks in big brain view / body parts) |
+| L | time-lapse record (2x-20x speedup to MP4/GIF; toggle on/off) |
+| Y | autopilot / spectator mode (hands-off orbit camera) |
+| F10 | photo mode / free camera with depth of field |
 | M | mute |
 | F12 (S in 2D) / G | save a screenshot / a GIF of the last 6 seconds |
 | V | brain panel: solid, see-through, faint, hidden (hidden gives the room the whole screen) |

@@ -75,6 +75,15 @@ SETTINGS: tuple[Setting, ...] = (
       "Camera depth of field blur amount in photo mode.", lo=0.0, hi=1.0, step=0.05, only="3d", fmt="{:.2f}"),
     S("graphics.photo_focus", "Graphics", "Photo focus distance", "float", 1.8,
       "Focus distance in meters for depth of field.", lo=0.1, hi=15.0, step=0.1, only="3d", fmt="{:.1f}m"),
+    S("graphics.timelapse_speedup", "Graphics", "Time-lapse speed-up", "choice", 5,
+      "Playback speed-up factor for time-lapse recordings (2x, 5x, 10x, 20x). Hotkey L.",
+      options=(2, 5, 10, 20), labels=("2x", "5x", "10x", "20x"), tag=GAME_RULE),
+    S("graphics.timelapse_format", "Graphics", "Time-lapse format", "choice", "mp4",
+      "File format for exported time-lapse recordings (MP4 with ffmpeg, or GIF with Pillow).",
+      options=("mp4", "gif"), labels=("MP4 (Video)", "GIF (Animated)")),
+    S("graphics.timelapse_target", "Graphics", "Time-lapse target", "choice", "brain",
+      "Camera subject for time-lapse recording: the big brain view or the full room.",
+      options=("brain", "room"), labels=("Brain view", "Room view")),
     # --- Audio
     S("audio.master", "Audio", "Master volume", "float", 1.0, "Volume of everything.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
     S("audio.buzz", "Audio", "Wing buzz volume", "float", 1.0,
@@ -158,6 +167,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("autopilot", "Autopilot / spectator", "y"),
     ("photo_mode", "Photo mode / free camera", "f10"),
     ("stethoscope", "Brain stethoscope", "k"),
+    ("timelapse", "Time-lapse record", "l"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound

@@ -1745,6 +1745,7 @@ HELP = (
     ("P", "pain neurons: normal, more, max"),
     ("I", "immortal mode"),
     ("K", "brain stethoscope (spike sonification clicks)"),
+    ("L", "time-lapse record (2x-20x to GIF/MP4)"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
     ("N", "spawn another fly, up to 16, each with its own brain"),
@@ -1820,6 +1821,10 @@ class Game:
         self.big_rect = pygame.Rect(0, 0, 0, 0)
         self.frames: deque = deque(maxlen=GIF_FRAMES)
         self.frame = 0
+        self.timelapse_recording = False
+        self.timelapse_frames: list[bytes] = []
+        self.timelapse_start_t = 0.0
+        self.timelapse_size = (600, 340)
         self.saved_msg: tuple[str, float] | None = None
         self.mouse = (0, 0)
         self.new_fly()                              # self.fly/self.brain (below) proxy to self.flies; build it first
@@ -2481,6 +2486,16 @@ class Game:
         pulse = 1.0 if self.calm_fx else 0.5 + 0.5 * math.sin(now * 6)
         self._text(surf, f"{v.firing:,} firing", (195, 20), (150, 215, 240), self.f_bold)
         self._text(surf, f"{v.hot_firing:,} pain", (325, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
+
+        # Time-lapse recording button:
+        tl_btn = pygame.Rect(rect.right - 805, 15, 105, 22)
+        rec_active = getattr(self, "timelapse_recording", False)
+        sp = int(self.cfg.get("graphics.timelapse_speedup", 5))
+        pygame.draw.rect(surf, (65, 25, 25) if rec_active else (24, 28, 38), tl_btn, border_radius=4)
+        pygame.draw.rect(surf, (255, 90, 90) if rec_active else BORDER, tl_btn, 1, border_radius=4)
+        tl_txt = "■ STOP (L)" if rec_active else f"● REC {sp}x"
+        self._text(surf, tl_txt, tl_btn.center, (255, 120, 120) if rec_active else (230, 180, 180), self.f_small, "center")
+        self.big_timelapse_button = tl_btn
 
         # Stethoscope buttons:
         steth_target_btn = pygame.Rect(rect.right - 690, 15, 145, 22)
@@ -3420,6 +3435,82 @@ class Game:
         threading.Thread(target=work, daemon=True).start()
         self.sound.play("click")
 
+    def toggle_timelapse(self) -> None:
+        if not getattr(self, "timelapse_recording", False):
+            self.timelapse_recording = True
+            self.timelapse_frames = []
+            self.timelapse_start_t = time.perf_counter()
+            sp = int(self.cfg.get("graphics.timelapse_speedup", 5))
+            fmt = str(self.cfg.get("graphics.timelapse_format", "mp4")).upper()
+            tgt = str(self.cfg.get("graphics.timelapse_target", "brain")).title()
+            self.note(f"TIME-LAPSE RECORDING ({tgt}, {sp}x, {fmt}) - L to stop", source="rule")
+            self.sound.play("click")
+        else:
+            self.timelapse_recording = False
+            self.save_timelapse()
+
+    def capture_timelapse_frame(self) -> None:
+        if not getattr(self, "timelapse_recording", False):
+            return
+        target = self.cfg.get("graphics.timelapse_target", "brain")
+        w, h = getattr(self, "timelapse_size", (600, 340))
+        if target == "brain" and hasattr(self, "_view_surface"):
+            surf = self._view_surface("big")
+            scaled = pygame.transform.smoothscale(surf, (w, h))
+        else:
+            surf = self.screen
+            scaled = pygame.transform.smoothscale(surf, (w, h))
+        self.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
+
+    def save_timelapse(self) -> None:
+        frames = list(getattr(self, "timelapse_frames", []))
+        if len(frames) < 3:
+            self.saved_msg = ("not enough time-lapse footage", time.perf_counter())
+            return
+        speedup = int(self.cfg.get("graphics.timelapse_speedup", 5))
+        fmt = str(self.cfg.get("graphics.timelapse_format", "mp4")).lower()
+        size = getattr(self, "timelapse_size", (600, 340))
+        path = self.media_path(fmt)
+        self.saved_msg = (f"exporting {speedup}x time-lapse ({fmt.upper()})...", time.perf_counter())
+
+        def work():
+            try:
+                import shutil
+                import subprocess
+                stride = max(1, speedup // 2) if speedup >= 5 else 1
+                sub_frames = frames[::stride]
+                actual_fps = min(60, max(15, int(15 * (speedup / stride))))
+                exported_path = path
+
+                if fmt == "mp4" and shutil.which("ffmpeg"):
+                    cmd = [
+                        "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+                        "-s", f"{size[0]}x{size[1]}", "-pix_fmt", "rgb24", "-r", str(actual_fps),
+                        "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        str(path)
+                    ]
+                    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    for f in sub_frames:
+                        proc.stdin.write(f)
+                    proc.stdin.close()
+                    proc.wait()
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"ffmpeg returned {proc.returncode}")
+                else:
+                    from PIL import Image
+                    gif_path = path.with_suffix(".gif")
+                    exported_path = gif_path
+                    duration = max(20, int(66 / (speedup / stride)))
+                    imgs = [Image.frombytes("RGB", size, f).convert("P", palette=Image.ADAPTIVE, colors=160) for f in sub_frames]
+                    imgs[0].save(gif_path, save_all=True, append_images=imgs[1:], duration=duration, loop=0)
+
+                self.saved_note(exported_path)
+            except Exception as e:
+                self.saved_msg = (f"Time-lapse export failed: {e}", time.perf_counter())
+
+        threading.Thread(target=work, daemon=True).start()
+        self.sound.play("shutter")
+
     def _draw_help(self, surf) -> None:
         panel = pygame.Rect(165, 110, 560, 64 + 30 * len(HELP))
         pygame.draw.rect(surf, (18, 21, 28), panel, border_radius=16)
@@ -4358,6 +4449,18 @@ class Game:
         surf.blit(hint, hint.get_rect(center=box.center))
         if self.saved_msg and now - self.saved_msg[1] < 4:
             self._text(surf, self.saved_msg[0], (PLAY_W // 2, 66), (170, 230, 190), self.f_small, "midtop")
+        if getattr(self, "timelapse_recording", False):
+            elapsed = int(now - getattr(self, "timelapse_start_t", now))
+            m_s, s_s = divmod(elapsed, 60)
+            sp = int(self.cfg.get("graphics.timelapse_speedup", 5))
+            fmt = str(self.cfg.get("graphics.timelapse_format", "mp4")).upper()
+            pulse = 0.5 + 0.5 * math.sin(now * 8)
+            col = (int(255 * (0.6 + 0.4 * pulse)), 40, 40)
+            rec_str = f"● REC {m_s:02d}:{s_s:02d} ({sp}x {fmt}) [L: stop]"
+            rbox = pygame.Rect(PLAY_W // 2 - 110, 36, 220, 24)
+            pygame.draw.rect(surf, (15, 18, 26, 220), rbox, border_radius=6)
+            pygame.draw.rect(surf, col, rbox, 1, border_radius=6)
+            self._text(surf, rec_str, rbox.center, col, self.f_small, "center")
         self._draw_pain(surf)
         self._draw_reward(surf)
         self._draw_memory(surf)
@@ -4688,6 +4791,8 @@ class Game:
             self.note(f"PHOTO MODE {'on (clean preview)' if self.photo_mode else 'off'}", source="rule")
         elif action == "stethoscope":
             self.toggle_stethoscope()
+        elif action == "timelapse":
+            self.toggle_timelapse()
         elif action == "immortal":
             self.set_setting("brain.immortal", not self.immortal)
             self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
@@ -4798,6 +4903,11 @@ class Game:
                         self.selected_region = None
                         self.update_stethoscope_target()
                         return True
+                    return True
+
+                # Time-lapse recording button:
+                if getattr(self, "big_timelapse_button", None) and self.big_timelapse_button.collidepoint(ev.pos):
+                    self.toggle_timelapse()
                     return True
 
                 # Stethoscope buttons:
@@ -5100,6 +5210,8 @@ def main(argv: list[str] | None = None) -> int:
         game.draw(game.clock.now, mouse)
         if ticks and game.frame % 4 == 0:            # rolling footage for G / the death GIF
             game.capture()
+        if ticks and getattr(game, "timelapse_recording", False) and game.frame % 2 == 0:
+            game.capture_timelapse_frame()
         pygame.display.flip()
         clock.tick(cfg["graphics.fps_cap"])
     shutdown(game)
@@ -5107,6 +5219,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def shutdown(game) -> None:
+    if getattr(game, "timelapse_recording", False):
+        game.timelapse_recording = False
+        game.save_timelapse()
     if getattr(game, "recording", None) is not None:
         game.stop_recording(wait=True)
     if game.challenge is not None:                   # puts back any memory a challenge borrowed before saving

@@ -2558,6 +2558,35 @@ class App:
         rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
         game.frames.append(rows.tobytes())
 
+    def capture_timelapse(self, game: Game3D) -> None:
+        """Capture frame for time-lapse export."""
+        if not getattr(game, "timelapse_recording", False):
+            return
+        target = game.cfg.get("graphics.timelapse_target", "brain")
+        w, h = getattr(game, "timelapse_size", (600, 340))
+        if target == "brain" and hasattr(game, "_view_surface"):
+            surf = game._view_surface("big")
+            scaled = pygame.transform.smoothscale(surf, (w, h))
+            game.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
+        else:
+            gw, gh = k2.GIF_SIZE
+            self.small.use()
+            self.ctx.viewport = (0, 0, gw, gh)
+            self.small.clear(0, 0, 0, 1)
+            self.scene_tex.build_mipmaps()
+            self.scene_tex.filter = moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR
+            self.hud_tex.build_mipmaps()
+            self.hud_tex.filter = moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR
+            self.rd.blit_texture(self.scene_tex, (0, 0, gw * getattr(self, "view_frac", 0.7), gh), (gw, gh), flip=False, blend=False)
+            self.rd.blit_texture(self.hud_tex, (0, 0, gw, gh), (gw, gh), flip=True, blend=True)
+            self.scene_tex.filter = moderngl.LINEAR, moderngl.LINEAR
+            self.hud_tex.filter = getattr(self, "hud_filter", (moderngl.LINEAR, moderngl.LINEAR))
+            data = self.small.read(components=3)
+            rows = np.frombuffer(data, np.uint8).reshape(gh, gw, 3)[::-1]
+            surf = pygame.image.frombuffer(rows.tobytes(), (gw, gh), "RGB")
+            scaled = pygame.transform.smoothscale(surf, (w, h))
+            game.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
+
     def screenshot(self, path: Path, lay, game: Game3D | None = None, now: float = 0.0,
                    scale: int | None = None, clean: bool | None = None) -> None:
         Wn, Hn = lay[0], lay[1]
@@ -2703,6 +2732,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
         lay = app.render(game, now)
         if ticks and game.frame % 4 == 0:
             app.capture(game)
+        if ticks and getattr(game, "timelapse_recording", False) and game.frame % 2 == 0:
+            app.capture_timelapse(game)
         if game.want_png:
             game.want_png = False
             path = game.media_path("png")
