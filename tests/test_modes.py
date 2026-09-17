@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import config
-import kick_the_fly as k
-import lab
+from kickthefly.core import config
+from kickthefly.game import kick_the_fly as k
+from kickthefly.lab import lab
 
 
 def test_mode_defaults_to_play_and_tags_follow_mode():
@@ -33,7 +33,7 @@ def test_reaction_sources():
 
 
 def test_lab_params_apply_to_a_sim():
-    from connectome.sim import LIFParams
+    from kickthefly.sim.connectome.sim import LIFParams
     p = LIFParams()
     rng = np.random.default_rng(0)
     sim = SimpleNamespace(p=p, _noise=rng.standard_normal(1000).astype(np.float32) * p.noise_std, rng=rng,

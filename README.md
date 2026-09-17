@@ -111,6 +111,26 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 
 Documents and Pictures on Windows come from the Known Folders API, so redirected and OneDrive folders work. On Linux, versions before 2.6 used `~/Documents/Kick the Fly/memory` and `~/Pictures/Kick the Fly`; on first launch the memory and any screenshots are copied to the new locations and the originals are left alone. A broken or missing `config.toml` falls back to default settings with a warning (a broken one is kept as `config.toml.bad`). `KICK_THE_FLY_HOME=/some/folder` keeps everything in one folder (portable use, tests).
 
+## Repo layout
+
+```
+kick_the_fly.py            launcher shim: `python kick_the_fly.py ...` works exactly as before
+kickthefly/                the package everything lives in (`python -m kickthefly` runs the same game)
+  core/                    clock, save states, settings, user folders, crash reports, version
+  sim/                     the connectome: loader, brain pack, the LIF simulator
+  game/                    the 2D game, the 3D room, physics, tools, arenas
+  ui/                      menu framework and settings screens
+  lab/                     validation, assays, challenges, statistics, protocols, recording and export, Lab tools
+  data/                    non-code assets bundled inside the package
+tests/  protocols/  docs/  packaging/  tools/
+data/                      not in git: the connectome download, graph.pkl and the brain pack
+```
+
+The canonical map of what comes from the connectome and what is a game rule is the module docstring at the top of
+`kickthefly/game/kick_the_fly.py`; the shim in the repo root points at it. `CONTRIBUTING.md` says where new code
+goes. This layout arrived in 2.7; nothing user-facing moved, so existing saves, training memory, settings, protocol
+files and command lines are unchanged.
+
 ## Run from source
 
 Needs Python 3.11, a GPU with OpenGL 3.3 for 3D, and about 1.5 GB of disk for the connectome.
@@ -118,7 +138,7 @@ Needs Python 3.11, a GPU with OpenGL 3.3 for 3D, and about 1.5 GB of disk for th
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m connectome.loader build     # downloads the connectome (~1.1 GB) and builds data/graph.pkl
+.venv\Scripts\python -m kickthefly.sim.connectome.loader build   # downloads the connectome (~1.1 GB) and builds data/graph.pkl
 .venv\Scripts\python kick_the_fly.py                # the first run packs data/kick_brain.npz (~30 s)
 ```
 
@@ -127,7 +147,7 @@ On Linux/macOS, use `python3` and forward slashes instead:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m connectome.loader build         # downloads the connectome (~1.1 GB) and builds data/graph.pkl
+.venv/bin/python -m kickthefly.sim.connectome.loader build   # downloads the connectome (~1.1 GB) and builds data/graph.pkl
 .venv/bin/python kick_the_fly.py                    # the first run packs data/kick_brain.npz (~30 s)
 ```
 
@@ -244,7 +264,7 @@ flies: 6
 surgery: {"prefix:KC": -1}
 ```
 
-Neurons are named by a group (`loom`, `escape`, `head`, `reward`, `sweet`, `dnp01`, `mn9`, `adn`, `jo_ce`, `mn_front`...), `type:A,B`, `prefix:KC`, `superclass:descending_neuron` or `rows:1,2,3`. The full format is in `protocol.py`, and examples are in `protocols/` (bundled in the exe and AppImage: `--protocol smoke.yaml`, `looming-giant-fiber.yaml`, `kc-silencing-tmaze.yaml`, `sugar-dose-response.yaml`).
+Neurons are named by a group (`loom`, `escape`, `head`, `reward`, `sweet`, `dnp01`, `mn9`, `adn`, `jo_ce`, `mn_front`...), `type:A,B`, `prefix:KC`, `superclass:descending_neuron` or `rows:1,2,3`. The full format is in `kickthefly/lab/protocol.py`, and examples are in `protocols/` (bundled in the exe and AppImage: `--protocol smoke.yaml`, `looming-giant-fiber.yaml`, `kc-silencing-tmaze.yaml`, `sugar-dose-response.yaml`).
 
 Run one without a window, from the exe, the AppImage or source:
 
@@ -264,7 +284,7 @@ Headless runs need no display (SSH, CI), never open a window or audio device, wr
 
 ## Validation
 
-`validation.py` asks whether this simulation reproduces published results, and reports pass or fail with numbers. Every cell type was checked against the MaleCNS v1.0 annotations, whose synonyms record the published names (DNg62 and DNge078 are "Hampel 2015: aDN1/aDN2", GNG540/GNG550 are "Yao & Scott 2022: Sugar SEL PN", DNg28 is "Yao & Scott 2022: Bitter-SEL").
+`kickthefly/lab/validation.py` asks whether this simulation reproduces published results, and reports pass or fail with numbers. Every cell type was checked against the MaleCNS v1.0 annotations, whose synonyms record the published names (DNg62 and DNge078 are "Hampel 2015: aDN1/aDN2", GNG540/GNG550 are "Yao & Scott 2022: Sugar SEL PN", DNg28 is "Yao & Scott 2022: Bitter-SEL").
 
 Method: seeds 1000-1009, never used while developing (exploratory probing used seeds 0-299). A set of neurons is driven for 2 s after 2 s of calm, from the same brain snapshot as a matched control set of the same size. **Pass: the readout's driven/baseline ratio averages at least 1.5x and beats the control's in a one-sided Wilcoxon signed-rank test, p < 0.01.** For conditioning: PI at least 0.5, the unpaired control's |PI| at most 0.25, and paired above unpaired (p < 0.01). These thresholds were chosen for this release after exploratory probing, not taken from the papers: a pass means the sim shows the effect in the stated direction and strength, not that its numbers match the papers'.
 
@@ -351,7 +371,7 @@ With several flies in the game, the brain threads, the renderer and the brain vi
 - Bilateral symmetry and mirror-averaging. In the raw connectome, bilateral asymmetries arise from both true biology and uneven EM reconstruction/proofreading depth between hemispheres, producing a small spontaneous turning bias in quiet walking (~+0.10 Hz DNa steering bias). The headless audit command (`--audit-asymmetry`) and the Lab Asymmetry page measure L vs R synapse counts and firing rates for key cell types (DNa01, DNa02, LC10, LPLC2, LC4, DNp01). An optional setting (`brain.mirror_weights` or `--mirror-weights`) averages synaptic weights across 77,507 paired bilateral neurons ($W_{sym} = 0.5(W + P W P^T)$). Because this modifies the raw connectome dataset, it is tagged strictly as a Game Rule.
 - Brain stethoscope (spike sonification). Synthetic audio clicks triggered when neurons spike in a user-probed neuropil region (mushroom body, antennal lobe, central complex, optic lobes, motor neurons) or inspected neuron group. Hotkey K or button in the big brain view. Tagged strictly as a Game Rule: this is synthetic audio sonification for intuitive listening, not a biophysical local field potential (LFP) or extracellular microelectrode recording.
 
-The full mapping is in the docstring at the top of `kick_the_fly.py`, and per assay in `assays.py`.
+The full mapping is in the docstring at the top of `kickthefly/game/kick_the_fly.py` (the `kick_the_fly.py` shim in the repo root points at it), and per assay in `kickthefly/lab/assays.py`.
 
 ## Credits
 

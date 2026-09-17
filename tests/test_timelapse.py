@@ -6,9 +6,9 @@ from types import SimpleNamespace
 from pathlib import Path
 import numpy as np
 import pygame
-import config
-import kick_the_fly as k2
-import simcore
+from kickthefly.core import config
+from kickthefly.game import kick_the_fly as k2
+from kickthefly.core import simcore
 
 
 def test_timelapse_config():

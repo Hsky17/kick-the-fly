@@ -17,9 +17,9 @@ import time
 
 import pygame
 
-import config
-from config import ACTIONS, SETTINGS, TABS
-from version import __version__
+from kickthefly.core import config
+from kickthefly.core.config import ACTIONS, SETTINGS, TABS
+from kickthefly.core.version import __version__
 
 BG = (14, 17, 23)
 PANEL = (20, 24, 32)
@@ -369,7 +369,7 @@ class Menu:
             else:
                 page(surf, rect)
         except Exception as e:                      # a broken page shows an error instead of crashing the game
-            from crash import log
+            from kickthefly.core.crash import log
             if getattr(self, "_page_error", None) != (self.screen, str(e)):
                 self._page_error = (self.screen, str(e))
                 log.exception("menu page %s failed", self.screen)

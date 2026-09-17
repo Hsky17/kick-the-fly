@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pygame
 
-import kick_the_fly as k
+from kickthefly.game import kick_the_fly as k
 
 out = Path(sys.argv[1] if len(sys.argv) > 1 else "build/icon.png")
 out.parent.mkdir(parents=True, exist_ok=True)

@@ -99,9 +99,9 @@ def _ratio(base: float, driven: float) -> float:
 
 def _pathway_seed(seed: int) -> dict:
     """All pathway tests for one seed, each drive and its control starting from the same brain snapshot."""
-    import assays
-    import savestate
-    import simcore
+    from kickthefly.lab import assays
+    from kickthefly.core import savestate
+    from kickthefly.core import simcore
 
     br = simcore.new_brain(seed=seed)
     g = assays.groups(br)
@@ -127,7 +127,7 @@ def _pathway_seed(seed: int) -> dict:
 
 
 def _tmaze_seed(args) -> dict:
-    import assays
+    from kickthefly.lab import assays
 
     seed, cs_plus, paired = args
     return assays.tmaze_fly(seed if cs_plus == "odor_a" else seed + 50_000, cs_plus, paired=paired)
@@ -144,11 +144,11 @@ def _wilcoxon_greater(a, b) -> float:
 
 def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None) -> dict:
     """Run the suite. progress(done, total, label) is called as work finishes."""
-    import assays
-    import kick_the_fly as k
-    import lab
-    import simcore
-    from version import __version__
+    from kickthefly.lab import assays
+    from kickthefly.game import kick_the_fly as k
+    from kickthefly.lab import lab
+    from kickthefly.core import simcore
+    from kickthefly.core.version import __version__
 
     t0 = time.time()
     workers = workers or min(4, os.cpu_count() or 1)
@@ -253,14 +253,16 @@ def bundled_path() -> Path | None:
     """validation_results.json shipped inside the exe/AppImage (produced by the build from the same pack)."""
     import sys
 
-    for root in (Path(getattr(sys, "_MEIPASS", "")), Path(__file__).resolve().parent / "data"):
+    import kickthefly
+
+    for root in (Path(getattr(sys, "_MEIPASS", "")), kickthefly.DATA_DIR):
         if str(root) and (root / RESULTS_NAME).exists():
             return root / RESULTS_NAME
     return None
 
 
 def local_path() -> Path:
-    import paths
+    from kickthefly.core import paths
 
     return paths.get().data_dir / RESULTS_NAME
 
@@ -289,7 +291,7 @@ def passing_events(res: dict | None, n_neurons: int, synapses: int) -> dict[str,
     """popup event -> test, for tests that passed on this brain pack with default parameters."""
     if not res or res.get("n_neurons") != n_neurons or res.get("synapses") != synapses:
         return {}
-    import lab
+    from kickthefly.lab import lab
 
     if any(abs(float(res.get("lab_params", {}).get(k, v)) - v) > 1e-9 for k, v in lab.DEFAULTS.items()):
         return {}

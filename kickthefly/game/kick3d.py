@@ -27,11 +27,11 @@ import moderngl
 import numpy as np
 import pygame
 
-import crash
-import kick_the_fly as k2
-from kick_the_fly import (ABD, FOOT, HEAD, KNEE, LINKS, MAX_HEALTH, N_P, PULL, RADIUS, REST, THRESH, THX, TOOLS,
+from kickthefly.core import crash
+from kickthefly.game import kick_the_fly as k2
+from kickthefly.game.kick_the_fly import (ABD, FOOT, HEAD, KNEE, LINKS, MAX_HEALTH, N_P, PULL, RADIUS, REST, THRESH, THX, TOOLS,
                           TORCH_KEYS, TRIPOD, WING)
-from render3d import (P_BOOKS, P_CEIL, P_EYE, P_ICE, P_NONE, P_PAPER, P_RUG, P_STRIPES, P_WALLPAPER, P_WATER,
+from kickthefly.game.render3d import (P_BOOKS, P_CEIL, P_EYE, P_ICE, P_NONE, P_PAPER, P_RUG, P_STRIPES, P_WALLPAPER, P_WATER,
                       P_WOOD, Renderer, frame_from_x, look_at, perspective, rot_x, rot_y, rot_z, segment, trs)
 
 S = 0.006                                   # meters per 2D pixel
@@ -2754,7 +2754,7 @@ class App:
 
 
 def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None) -> int:
-    import config
+    from kickthefly.core import config
     cfg = cfg if cfg is not None else config.Config(None)
     app = App(fullscreen, vsync=cfg["graphics.vsync"])
     clock = pygame.time.Clock()

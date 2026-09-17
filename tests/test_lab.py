@@ -9,7 +9,7 @@ from conftest import ROOT, needs_pack
 
 # --- no brain pack needed ---------------------------------------------------------------------------------------------
 def test_mean_ci_and_paired_stats():
-    import labstats
+    from kickthefly.lab import labstats
     c = labstats.mean_ci([1.0, 2.0, 3.0, 4.0])
     assert c["mean"] == 2.5 and c["n"] == 4 and c["lo"] < 2.5 < c["hi"]
     assert abs((c["hi"] - c["lo"]) / 2 - 3.182446 * np.std([1, 2, 3, 4], ddof=1) / 2) < 1e-4   # t(0.975, 3)
@@ -31,7 +31,7 @@ def test_mean_ci_and_paired_stats():
     ("name: [unclosed\n", "YAML"),
 ])
 def test_protocol_errors(tmp_path, text, message):
-    import protocol
+    from kickthefly.lab import protocol
     f = tmp_path / "p.yaml"
     f.write_text(text)
     with pytest.raises(protocol.ProtocolError, match=message):
@@ -39,7 +39,7 @@ def test_protocol_errors(tmp_path, text, message):
 
 
 def test_example_protocols_are_valid():
-    import protocol
+    from kickthefly.lab import protocol
     files = sorted((ROOT / "protocols").glob("*.yaml"))
     assert {f.name for f in files} >= {"smoke.yaml", "looming-giant-fiber.yaml", "kc-silencing-tmaze.yaml"}
     for f in files:
@@ -50,7 +50,7 @@ def test_example_protocols_are_valid():
 # --- with the brain pack ---------------------------------------------------------------------------------------------
 @needs_pack
 def test_brain_pack_loads_and_runs_one_second():
-    import simcore
+    from kickthefly.core import simcore
     g, W, soma = simcore.pack()
     assert g.n == 166_700 and W.shape == (g.n, g.n) and W.nnz > 10_000_000
     br = simcore.new_brain(seed=0, warmup=0)
@@ -65,8 +65,8 @@ def test_brain_pack_loads_and_runs_one_second():
 
 @needs_pack
 def test_giant_fiber_exceeds_baseline_when_looming_detectors_are_driven():
-    import assays
-    import simcore
+    from kickthefly.lab import assays
+    from kickthefly.core import simcore
     br = simcore.new_brain(seed=5)
     g = assays.groups(br)
     r = assays.pathway_response(br, g["loom"], {"dnp01": g["dnp01"]}, pre=200, stim=200)["dnp01"]
@@ -75,7 +75,7 @@ def test_giant_fiber_exceeds_baseline_when_looming_detectors_are_driven():
 
 @needs_pack
 def test_smoke_protocol_and_export_files(tmp_path):
-    import protocol
+    from kickthefly.lab import protocol
     p = protocol.load(ROOT / "protocols" / "smoke.yaml")
     folder = protocol.run(p, tmp_path, workers=1)
     names = {f.name for f in folder.iterdir()}
@@ -95,7 +95,7 @@ def test_smoke_protocol_and_export_files(tmp_path):
 
 @needs_pack
 def test_protocol_with_surgery_runs_control(tmp_path):
-    import protocol
+    from kickthefly.lab import protocol
     p = protocol.check(dict(name="t", seed=3, flies=2, warmup_s=0.2, duration_s=0.6, surgery={"type:LPLC2,LC4": -1},
                             stimuli=[dict(at_s=0.1, for_s=0.4, target="loom", strength=0.9)],
                             recordings=[dict(name="gf", neurons="dnp01"), dict(name="lc", neurons="loom")]))
@@ -108,7 +108,7 @@ def test_protocol_with_surgery_runs_control(tmp_path):
 
 @needs_pack
 def test_lab_job_with_surgery_pairs_controls():
-    import labjobs
+    from kickthefly.lab import labjobs
     res = labjobs.run_sync("sugar", [11, 12], options=dict(doses=(0.0, 1.0), repeats=1), surgery={"sweet": -1}, workers=1)
     assert res["control"] and res["comparison"]["overall"]["n"] == 2
     top_t = res["treated"]["rows"][-1]["mn9_ratio"]["mean"]
@@ -117,8 +117,8 @@ def test_lab_job_with_surgery_pairs_controls():
 
 
 def test_model_assumptions_disclosure():
-    import lab
-    import kick_the_fly as k2
+    from kickthefly.lab import lab
+    from kickthefly.game import kick_the_fly as k2
 
     titles = [a[0].lower() for a in lab.ASSUMPTIONS]
     contents = " ".join(f"{a[0]} {a[2]} {a[3]} {a[4]}".lower() for a in lab.ASSUMPTIONS)

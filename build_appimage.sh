@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Builds dist/KickTheFly-x86_64.AppImage: one file with the game, Python, numpy/scipy/pygame and the brain pack inside.
-# Needs data/kick_brain.npz first:  python brainpack.py build   (after the connectome build in README.md)
+# Needs data/kick_brain.npz first:  python -m kickthefly.sim.brainpack build   (after the connectome build in README.md)
 # Build on an old glibc (the release uses ubuntu-22.04) so the AppImage runs on most distros.
 # data/validation_results.json, if present, is bundled so the real-science popups work (python kick_the_fly.py
 # --headless --validate --out data/validation_results.json).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_ID=io.github.legendarylolo318_cloud.KickTheFly
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' version.py)
+VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' kickthefly/core/version.py)
 
 if [ ! -f data/kick_brain.npz ]; then
-    echo "data/kick_brain.npz missing: run 'python brainpack.py build' first" >&2
+    echo "data/kick_brain.npz missing: run 'python -m kickthefly.sim.brainpack build' first" >&2
     exit 1
 fi
 
@@ -34,13 +34,11 @@ fi
 # glcontext.x11/egl are moderngl's Linux GL backends (glcontext.wgl is the Windows-only one build_exe.ps1 uses).
 .venv-build/bin/pyinstaller --noconfirm --clean --onefile --name KickTheFly \
     "${EXTRA_DATA[@]}" \
-    --exclude-module connectome.loader --exclude-module connectome.layout --exclude-module pyarrow \
-    --exclude-module tkinter --exclude-module matplotlib \
-    --hidden-import kick3d --hidden-import render3d --hidden-import memory \
+    --exclude-module kickthefly.sim.connectome.loader --exclude-module pyarrow \
+    --exclude-module tkinter --exclude-module matplotlib --exclude-module pynwb --exclude-module h5py \
+    --exclude-module pandas \
     --hidden-import glcontext.x11 --hidden-import glcontext.egl --hidden-import glcontext.empty \
-    --hidden-import assays --hidden-import challenges --hidden-import validation --hidden-import simcore \
-    --hidden-import savestate --hidden-import recorder --hidden-import protocol --hidden-import headless \
-    --hidden-import labjobs --hidden-import labstats --hidden-import lab --hidden-import yaml \
+    --hidden-import yaml --collect-submodules kickthefly \
     kick_the_fly.py
 
 # build check without a display: load the brain, run the smoke protocol, exit 0

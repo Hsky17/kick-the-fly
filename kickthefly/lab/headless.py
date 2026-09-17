@@ -14,13 +14,13 @@ import sys
 import time
 from pathlib import Path
 
-from crash import log
+from kickthefly.core.crash import log
 
 
 def prepare() -> None:
     os.environ["SDL_VIDEODRIVER"] = "dummy"          # nothing in a headless run may open a window or an audio device
     os.environ["SDL_AUDIODRIVER"] = "dummy"
-    import platform_env
+    from kickthefly.core import platform_env
 
     platform_env.attach_console()
 
@@ -39,7 +39,7 @@ def parse_seeds(text: str | None, default):
 
 
 def run_validate(args) -> int:
-    import validation
+    from kickthefly.lab import validation
 
     seeds = parse_seeds(args.seeds, validation.SEEDS)
     t0 = time.time()
@@ -69,8 +69,8 @@ def audit_asymmetry(seconds: float = 5.0, seed: int = 0, mirror: bool = False) -
       DNa01, DNa02, LC10, LPLC2, LC4, DNp01.
     """
     import numpy as np
-    import simcore
-    from connectome.sim import LIFParams, LIFSim
+    from kickthefly.core import simcore
+    from kickthefly.sim.connectome.sim import LIFParams, LIFSim
 
     g, W, _ = simcore.pack()
     if mirror:
@@ -169,7 +169,7 @@ def run_audit_asymmetry(args) -> int:
 
 
 def run_benchmark(args) -> int:
-    import benchmark
+    from kickthefly.lab import benchmark
     flies = args.flies if getattr(args, "flies", None) else (1, 8, 16)
     seconds = getattr(args, "seconds", None) or 5.0
     res = benchmark.run_benchmark(fly_counts=tuple(flies), seconds=seconds)
@@ -190,7 +190,7 @@ def main(args) -> int:
         if args.validate:
             return run_validate(args)
         if args.protocol:
-            import protocol
+            from kickthefly.lab import protocol
 
             return protocol.run_file(Path(args.protocol), Path(args.out) if args.out else None, workers=args.workers)
     except FileNotFoundError as e:

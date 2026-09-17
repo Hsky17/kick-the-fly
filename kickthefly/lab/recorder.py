@@ -24,20 +24,20 @@ from pathlib import Path
 
 import numpy as np
 
-from version import __version__
+from kickthefly.core.version import __version__
 
 CONNECTOME = "Janelia FlyEM MaleCNS v1.0 (minconf 0.5, synapse count >= 3, signed by predicted neurotransmitter)"
 BIN_STEPS = 10
 
 
 def exports_dir() -> Path:
-    import paths
+    from kickthefly.core import paths
 
     return paths.ensure_dir(paths.get().data_dir / "exports")
 
 
 def pack_info() -> dict:
-    import brainpack
+    from kickthefly.sim import brainpack
 
     p = brainpack.find()
     if p is None:
@@ -55,8 +55,8 @@ _pack_info_cache: dict | None = None
 def metadata(brain=None, game=None, extra: dict | None = None) -> dict:
     """Everything needed to know how a recording or result was made."""
     global _pack_info_cache
-    import kick_the_fly as k
-    import lab
+    from kickthefly.game import kick_the_fly as k
+    from kickthefly.lab import lab
 
     if _pack_info_cache is None:
         _pack_info_cache = pack_info()

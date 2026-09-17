@@ -67,8 +67,8 @@ def load(path: Path) -> dict:
 
 
 def check(data, where: str = "protocol") -> dict:
-    import labjobs
-    import lab
+    from kickthefly.lab import labjobs
+    from kickthefly.lab import lab
 
     if not isinstance(data, dict):
         raise ProtocolError(f"{where}: the top level must be a mapping of keys")
@@ -116,8 +116,8 @@ def check(data, where: str = "protocol") -> dict:
 
 
 def _rows(br, spec):
-    import assays
-    import simcore
+    from kickthefly.lab import assays
+    from kickthefly.core import simcore
 
     g = assays.groups(br)
     if isinstance(spec, str) and spec in g:
@@ -130,9 +130,9 @@ def _rows(br, spec):
 
 def run_seed(p: dict, seed: int, surgery: dict | None, folder: Path, tag: str) -> dict:
     """One fly of a stimulus protocol. Returns mean firing per recording group."""
-    import assays
-    import recorder
-    import simcore
+    from kickthefly.lab import assays
+    from kickthefly.lab import recorder
+    from kickthefly.core import simcore
 
     br = simcore.new_brain(seed=seed, params=p.get("params"))
     if surgery:
@@ -182,9 +182,9 @@ def _poke_rows(br, s) -> None:
 
 
 def run(p: dict, out: Path | None = None, workers: int | None = None, progress=None) -> Path:
-    import labjobs
-    import recorder
-    import labstats
+    from kickthefly.lab import labjobs
+    from kickthefly.lab import recorder
+    from kickthefly.lab import labstats
 
     folder = (out or recorder.exports_dir()) / f"{time.strftime('%Y%m%d-%H%M%S')}-{p['name']}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -224,7 +224,7 @@ def find(path: Path) -> Path:
     """A protocol file by path, or by name from your protocols folder or the bundled examples."""
     if Path(path).exists():
         return Path(path)
-    import lab
+    from kickthefly.lab import lab
 
     for f in lab.protocol_files():
         if f.name == Path(path).name or f.stem == Path(path).name:

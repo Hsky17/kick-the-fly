@@ -9,19 +9,21 @@ simulator's rate-normalized matrix from it in about a second, so a packaged buil
 
 Derived from Janelia FlyEM MaleCNS v1.0 (CC BY 4.0).
 
-    python brainpack.py build      # data/graph.pkl + body annotations -> data/kick_brain.npz
+    python -m kickthefly.sim.brainpack build    # data/graph.pkl + body annotations -> data/kick_brain.npz
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+from kickthefly import DATA_DIR as _DATA_DIR
 from types import SimpleNamespace
 
 import numpy as np
 import scipy.sparse as sp
 
 PACK_NAME = "kick_brain.npz"
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = _DATA_DIR                                    # the repo-root data/ folder, unchanged since 2.2
 ANNOTATIONS = "body-annotations-male-cns-v1.0-minconf-0.5.feather"
 
 
@@ -53,12 +55,18 @@ def subclasses(g) -> np.ndarray:
 
 
 def regions(g) -> np.ndarray:
-    """Dataset neuropil region annotations per graph row, 'unassigned' where none."""
-    import pyarrow.feather as feather
+    """Dataset neuropil region annotations per graph row, 'unassigned' where none.
 
+    Packs built since 2.6 carry these, so only a pack older than the annotations file ever lands here; a packaged
+    build has neither pyarrow nor the feather table, and then every neuron stays 'unassigned'.
+    """
     out = np.full(g.n, "unassigned", dtype=object)
     path = DATA_DIR / ANNOTATIONS
     if not path.exists():
+        return out.astype(str)
+    try:
+        import pyarrow.feather as feather
+    except ImportError:
         return out.astype(str)
     t = feather.read_table(path, columns=["bodyId", "class", "somaNeuromere", "superclass"])
     bids = t["bodyId"].to_numpy()
@@ -101,7 +109,7 @@ def regions(g) -> np.ndarray:
 
 
 def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
-    from connectome.loader import load_graph
+    from kickthefly.sim.connectome.loader import load_graph
 
     g = load_graph()
     signed = g.adjacency.T.tocsr()                          # [post, pre]

@@ -15,8 +15,8 @@ import math
 import numpy as np
 import pygame
 
-import assays
-import paths
+from kickthefly.lab import assays
+from kickthefly.core import paths
 
 INK, TEXT, LABEL, DIM = (240, 243, 248), (205, 212, 224), (130, 142, 160), (80, 88, 102)
 AMBER, ACCENT, GOOD, BAD = (255, 176, 64), (86, 214, 255), (90, 200, 120), (230, 90, 80)
@@ -127,7 +127,7 @@ class Challenge:
         self.game.challenge = None
 
     def panel(self, surf, title: str, subtitle: str, h: int = 560) -> pygame.Rect:
-        from kick_the_fly import PLAY_W, H
+        from kickthefly.game.kick_the_fly import PLAY_W, H
         g = self.game
         panel = pygame.Rect(40, 30, min(PLAY_W - 80, 820), min(H - 60, h))
         veil = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
@@ -365,7 +365,7 @@ class Sneak(Challenge):
         self.game.sound.play("dodge" if how == "seen" else "yum", 0.6)
 
     def draw(self, surf, now, mouse) -> None:
-        from kick_the_fly import PLAY_W
+        from kickthefly.game.kick_the_fly import PLAY_W
         g = self.game
         w, h = 330, 120
         box = pygame.Rect(PLAY_W // 2 - w // 2, 120, w, h)
@@ -498,7 +498,7 @@ CLASSES = {"tmaze": TMaze, "sneak": Sneak, "sweet": Sweet}
 
 
 def page_challenges(m, surf, rect, mouse) -> None:
-    import menu as ui
+    from kickthefly.ui import menu as ui
 
     game = m.host
     m.text(surf, "CHALLENGES", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)

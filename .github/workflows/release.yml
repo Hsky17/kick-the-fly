@@ -25,7 +25,7 @@ jobs:
         id: cache
         with:
           path: data/kick_brain.npz
-          key: brainpack-v2-${{ hashFiles('connectome/loader.py', 'brainpack.py') }}
+          key: brainpack-v2-${{ hashFiles('kickthefly/sim/connectome/loader.py', 'kickthefly/sim/brainpack.py') }}
       - uses: actions/setup-python@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -34,8 +34,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install numpy scipy pyarrow
-          python -m connectome.loader build
-          python brainpack.py build
+          python -m kickthefly.sim.connectome.loader build
+          python -m kickthefly.sim.brainpack build
           rm -f data/*.feather data/graph.pkl
       - uses: actions/upload-artifact@v4
         with:

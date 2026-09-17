@@ -7,8 +7,8 @@ row count, and sample rows.
 build: filter neurons and edges, sign edges by presynaptic neurotransmitter,
 and pickle a CSR adjacency plus body_id -> row index to data/graph.pkl.
 
-    python -m connectome.loader inspect
-    python -m connectome.loader build
+    python -m kickthefly.sim.connectome.loader inspect
+    python -m kickthefly.sim.connectome.loader build
 """
 from __future__ import annotations
 
@@ -28,8 +28,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.feather as feather
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+from kickthefly import DATA_DIR, SOURCE_ROOT
+
+PROJECT_ROOT = SOURCE_ROOT
 LOCKFILE = DATA_DIR / "SHA256SUMS"
 GRAPH_PATH = DATA_DIR / "graph.pkl"
 
@@ -359,17 +360,28 @@ def build_graph(accept_out_of_range: bool = False) -> Graph | None:
     return graph
 
 
+# graph.pkl files written before 2.7 recorded this module as "connectome.loader" (it lived in the repo root).
+# They are 260 MB and take a 1.1 GB download to rebuild, so they are still read as they are.
+_LEGACY_MODULES = {"connectome.loader": __name__, "connectome.sim": __name__.replace("loader", "sim")}
+
+
+class _CompatUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        return super().find_class(_LEGACY_MODULES.get(module, module), name)
+
+
 def load_graph() -> Graph:
     if not GRAPH_PATH.exists():
-        raise FileNotFoundError(f"{GRAPH_PATH} not found. Build it once with: python -m connectome.loader build")
+        raise FileNotFoundError(f"{GRAPH_PATH} not found. Build it once with: "
+                                "python -m kickthefly.sim.connectome.loader build")
     with open(GRAPH_PATH, "rb") as fh:
-        return pickle.load(fh)
+        return _CompatUnpickler(fh).load()
 
 
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(prog="python -m connectome.loader")
+    parser = argparse.ArgumentParser(prog="python -m kickthefly.sim.connectome.loader")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_inspect = sub.add_parser("inspect", help="download/verify, then print schema, row count, and sample rows")
     p_inspect.add_argument("tables", nargs="*", metavar="TABLE", help=f"subset of {', '.join(DATASETS)} (default: all)")
@@ -391,6 +403,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # Re-import so pickled classes are recorded as connectome.loader.Graph, not __main__.Graph.
-    from connectome.loader import main as _main
+    # Re-import so pickled classes are recorded as kickthefly.sim.connectome.loader.Graph, not __main__.Graph.
+    from kickthefly.sim.connectome.loader import main as _main
     raise SystemExit(_main())

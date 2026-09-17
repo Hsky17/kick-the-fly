@@ -3,8 +3,8 @@ from pathlib import Path
 
 import numpy as np
 
-import crash
-import paths
+from kickthefly.core import crash
+from kickthefly.core import paths
 
 
 def linux(tmp_path, env=None):
@@ -101,7 +101,7 @@ def test_home_override(isolated_home):
 
 def test_old_memory_file_loads_with_new_code(tmp_path, monkeypatch):
     """A fly-memory.npz written by v2.5.0's memory.save() format still loads (version and signature unchanged)."""
-    import memory
+    from kickthefly.core import memory
     monkeypatch.setenv("KICK_THE_FLY_MEMORY", str(tmp_path / "mem"))
     paths.reset_cache()
     assert memory.memory_dir() == tmp_path / "mem"
@@ -118,7 +118,7 @@ def test_crash_report_contents(tmp_path):
 
 
 def test_backend_choice():
-    import platform_env as pe
+    from kickthefly.core import platform_env as pe
     assert pe.choose_backend(None, None, {"WAYLAND_DISPLAY": "wayland-0"}, "linux") == "wayland"
     assert pe.choose_backend(None, None, {"DISPLAY": ":0"}, "linux") is None
     assert pe.choose_backend("x11", "wayland", {"WAYLAND_DISPLAY": "w"}, "linux") == "x11"
@@ -144,6 +144,6 @@ def test_real_windows_known_folders():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DPI awareness")
 def test_real_windows_dpi_awareness():
-    import platform_env
+    from kickthefly.core import platform_env
     scale = platform_env.windows_dpi_aware()
     assert scale >= 1.0

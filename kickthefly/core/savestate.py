@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from version import __version__
+from kickthefly.core.version import __version__
 
 FORMAT = "kick-the-fly-save"
 FORMAT_VERSION = 1
@@ -111,7 +111,7 @@ def brain_state(brain, prefix: str, arrays: dict) -> dict:
 
 
 def restore_brain(brain, meta: dict, z, prefix: str) -> None:
-    from connectome.sim import LIFParams
+    from kickthefly.sim.connectome.sim import LIFParams
 
     sim = brain.sim
     params = dict(meta["sim"]["params"])

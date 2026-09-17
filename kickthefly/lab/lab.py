@@ -1,7 +1,7 @@
 """Lab mode screens in the pause menu: the hub, and live parameter controls.
 
 Parameters come in two kinds, tagged on screen:
-  MODEL      the LIF simulation's own parameters (connectome/sim.py LIFParams). The wiring is untouched, but the
+  MODEL      the LIF simulation's own parameters (kickthefly/sim/connectome/sim.py LIFParams). The wiring is untouched, but the
              validation results were measured at the defaults, so anything changed here is flagged as "modified" in
              the validation dashboard, exports and save states.
   GAME RULE  thresholds the game uses to turn neuron firing into moves, and how looming is converted to drive.
@@ -12,7 +12,7 @@ import time
 
 import pygame
 
-import menu as ui
+from kickthefly.ui import menu as ui
 
 # name, label, kind (model | rule), default, lo, hi, step, fmt, tooltip
 PARAMS = (
@@ -64,7 +64,7 @@ def apply_to_sim(sim, params: dict) -> None:
 
 
 def apply_rules(params: dict) -> None:
-    import kick_the_fly as k2
+    from kickthefly.game import kick_the_fly as k2
 
     for name, value in params.items():
         if name.startswith("thresh."):
@@ -131,43 +131,43 @@ ASSUMPTIONS = (
      "SYNAPSE",
      "The sim treats raw EM synapse counts between neuron pairs as directly proportional to synaptic conductance.",
      "Biological synapses vary widely in vesicle pool size, neurotransmitter release probability, post-synaptic receptor density, and phosphorylation state. Real connection efficacy does not linearly track anatomical contact count.",
-     "README.md § Connectome vs Game Rule · connectome/sim.py:LIFParams"),
+     "README.md § Connectome vs Game Rule · kickthefly/sim/connectome/sim.py:LIFParams"),
 
     ("Uniform synaptic efficacy per connection type",
      "SYNAPSE",
      "All excitatory and inhibitory synapses share fixed base efficacy constants across the whole connectome.",
      "Drosophila synapses exhibit diverse quantal sizes and kinetics across cell types (cholinergic, GABAergic, glutamatergic). Here, sign is assigned from neurotransmitter annotations with uniform base weights.",
-     "connectome/sim.py:LIFSim · validation.py"),
+     "kickthefly/sim/connectome/sim.py:LIFSim · kickthefly/lab/validation.py"),
 
     ("Leaky integrate-and-fire (LIF) point neurons",
      "BIOPHYSICS",
      "Each cell body and its entire arbor is condensed into a single isopotential point compartment with tau = 20 ms.",
      "Drosophila neurons have complex non-spiking local computations, passive cable filtering along fine neurites, and compartmentalized local dendritic processing (e.g. in mushroom body lobes and optic lobes) that point-LIF collapses.",
-     "connectome/sim.py:LIFParams (tau_m=20ms, dt=5ms)"),
+     "kickthefly/sim/connectome/sim.py:LIFParams (tau_m=20ms, dt=5ms)"),
 
     ("No neurotransmitter or receptor kinetics",
      "DYNAMICS",
      "Synaptic current transfers instantaneously within the discrete 5 ms simulation time-step.",
      "Real ligand-gated and metabotropic receptors have finite activation, desensitization, and clearance timescales (AMPA/nAChR vs slow GABA_B / metabotropic receptors). Slow receptor dynamics are absent.",
-     "connectome/sim.py:step()"),
+     "kickthefly/sim/connectome/sim.py:step()"),
 
     ("No slow NMDA-like or neuromodulatory states",
      "DYNAMICS",
      "No voltage-dependent ion channel gating, NMDA slow kinetics, or broad volumetric neuromodulator wash.",
      "Neuropeptides and biogenic amines (octopamine, serotonin, dopamine) set global arousal, hunger, and sleep states. Except for modeled reward-driven plasticity, broad state transitions are simplified.",
-     "connectome/sim.py · README.md § Limitations"),
+     "kickthefly/sim/connectome/sim.py · README.md § Limitations"),
 
     ("Tonic depolarizing bias (0.20 threshold)",
      "TUNING",
      "A constant current bias of 0.20 (80% of threshold) is injected into every neuron to sustain basal activity.",
      "Without background excitation or unmodeled inputs, resting connectome simulations fall completely silent. The tonic bias maintains the biological ~5 Hz spontaneous brain-wide firing rate.",
-     "lab.py:PARAMS (bias=0.20) · connectome/sim.py"),
+     "kickthefly/lab/lab.py:PARAMS (bias=0.20) · kickthefly/sim/connectome/sim.py"),
 
     ("Gaussian membrane noise (sigma = 0.05)",
      "TUNING",
      "Zero-mean Gaussian current noise is added to every neuron at each 5 ms simulation step.",
      "Stochasticity mimics thermal channel noise, spontaneous miniature EPSPs, and unmodeled inputs from sensory organs, preventing artificial deterministic synchronization across identical network paths.",
-     "lab.py:PARAMS (noise_std=0.05) · connectome/sim.py"),
+     "kickthefly/lab/lab.py:PARAMS (noise_std=0.05) · kickthefly/sim/connectome/sim.py"),
 
     ("Alcohol inebriation as scripted motor degradation",
      "GAME RULE",
@@ -175,13 +175,13 @@ ASSUMPTIONS = (
      "inebriation level rises 0 to 1 and decays over ~45 s, scaling tremors, wobbly flight and slower escape reflexes.",
      "Ethanol acts pharmacologically across the whole nervous system (channel gating, dopaminergic and octopaminergic "
      "signalling), none of which is modelled. No simulated neuron is drunk: only the body's movement is degraded.",
-     "README.md § Connectome vs Game Rule · kick_the_fly.py:Game._alcohol · kick3d.py:Game3D._alcohol3d"),
+     "README.md § Connectome vs Game Rule · kickthefly/game/kick_the_fly.py:Game._alcohol · kickthefly/game/kick3d.py:Game3D._alcohol3d"),
 
     ("Left/Right asymmetry as EM reconstruction artifact risk",
      "DATASET",
      "Asymmetries in synaptic weights or firing between left and right hemibrains reflect both biology and reconstruction noise.",
      "MaleCNS v1.0 EM tracing has variable proofreading depth, staining artifacts, and truncation near slice boundaries. L/R differences may stem from incomplete reconstruction rather than true lateralization.",
-     "README.md § Connectome Data · headless.py"),
+     "README.md § Connectome Data · kickthefly/lab/headless.py"),
 )
 
 
@@ -341,7 +341,7 @@ _bench_job = None
 
 
 def page_benchmark(m: ui.Menu, surf, rect, mouse) -> None:
-    import benchmark
+    from kickthefly.lab import benchmark
     global _bench_job
     host = m.host
     m.text(surf, "SIMULATION BENCHMARK", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
@@ -521,7 +521,7 @@ def _ci(c: dict, fmt="{:.2f}") -> str:
 
 # --- assays and repeated trials ---------------------------------------------------------------------------------------
 def surgery_options() -> list[tuple[str, dict | None]]:
-    import kick_the_fly as k
+    from kickthefly.game import kick_the_fly as k
 
     out = [("none", None)]
     for label, (kind, names) in k.SURGERY:
@@ -557,8 +557,8 @@ def _state(m) -> LabState:
 
 
 def page_assays(m: ui.Menu, surf, rect, mouse) -> None:
-    import labjobs
-    import labstats
+    from kickthefly.lab import labjobs
+    from kickthefly.lab import labstats
 
     st, host = _state(m), m.host
     m.text(surf, "ASSAYS AND REPEATED TRIALS", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
@@ -630,7 +630,7 @@ def page_assays(m: ui.Menu, surf, rect, mouse) -> None:
 
 
 def draw_assay_result(m: ui.Menu, surf, area: pygame.Rect, res: dict) -> None:
-    import labstats
+    from kickthefly.lab import labstats
 
     kind, t, c = res["kind"], res["treated"], res.get("control")
     surg = res.get("surgery")
@@ -695,8 +695,8 @@ def draw_assay_result(m: ui.Menu, surf, area: pygame.Rect, res: dict) -> None:
 
 # --- validation dashboard ---------------------------------------------------------------------------------------------
 def page_validation(m: ui.Menu, surf, rect, mouse) -> None:
-    import labstats
-    import validation
+    from kickthefly.lab import labstats
+    from kickthefly.lab import validation
 
     st, host = _state(m), m.host
     m.text(surf, "VALIDATION", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
@@ -765,8 +765,8 @@ def page_validation(m: ui.Menu, surf, rect, mouse) -> None:
 def start_validation(m: ui.Menu) -> None:
     import threading
 
-    import labjobs
-    import validation
+    from kickthefly.lab import labjobs
+    from kickthefly.lab import validation
 
     st = _state(m)
     job = dict(done=0, total=1, result=None, error=None)
@@ -801,9 +801,9 @@ RECORD_GROUPS = (
 def resolve_group(br, spec: str):
     import numpy as np
 
-    import assays
-    import kick_the_fly as k
-    import simcore
+    from kickthefly.lab import assays
+    from kickthefly.game import kick_the_fly as k
+    from kickthefly.core import simcore
 
     g = assays.groups(br)
     if spec in g:
@@ -816,7 +816,7 @@ def resolve_group(br, spec: str):
 
 
 def page_export(m: ui.Menu, surf, rect, mouse) -> None:
-    import recorder
+    from kickthefly.lab import recorder
 
     st, host = _state(m), m.host
     if not hasattr(st, "rec_pick"):
@@ -861,10 +861,11 @@ def protocol_files() -> list:
     import sys
     from pathlib import Path
 
-    import paths
+    import kickthefly
+    from kickthefly.core import paths
 
     user = paths.get().data_dir / "protocols"
-    roots = [user, Path(getattr(sys, "_MEIPASS", "")) / "protocols", Path(__file__).resolve().parent / "protocols"]
+    roots = [user, Path(getattr(sys, "_MEIPASS", "")) / "protocols", kickthefly.PROTOCOLS_DIR]
     seen, out = set(), []
     for root in roots:
         if str(root) and root.is_dir():
@@ -878,9 +879,9 @@ def protocol_files() -> list:
 def page_protocols(m: ui.Menu, surf, rect, mouse) -> None:
     import threading
 
-    import labjobs
-    import paths
-    import protocol
+    from kickthefly.lab import labjobs
+    from kickthefly.core import paths
+    from kickthefly.lab import protocol
 
     st = _state(m)
     m.text(surf, "PROTOCOLS", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)

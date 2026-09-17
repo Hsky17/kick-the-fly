@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 
-from crash import info, log
+from kickthefly.core.crash import info, log
 
 BACKENDS = ("auto", "wayland", "x11")
 

@@ -16,7 +16,7 @@ import time
 import traceback
 from pathlib import Path
 
-from version import __version__
+from kickthefly.core.version import __version__
 
 log = logging.getLogger("kickthefly")
 CRASH_NAME = "KickTheFly-crash.txt"
@@ -146,7 +146,7 @@ def write_crash_report(exc_text: str | None = None, state_dir: Path | None = Non
     targets = [beside_executable()]
     if state_dir is None:
         try:
-            import paths
+            from kickthefly.core import paths
             state_dir = paths.get().state_dir
         except Exception:
             state_dir = None

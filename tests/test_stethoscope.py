@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-import config
-from kick_the_fly import Sound
-import simcore
+from kickthefly.core import config
+from kickthefly.game.kick_the_fly import Sound
+from kickthefly.core import simcore
 
 
 def test_stethoscope_config_settings():

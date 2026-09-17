@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 import pytest
-import benchmark
+from kickthefly.lab import benchmark
 
 
 def test_system_info_and_memory():

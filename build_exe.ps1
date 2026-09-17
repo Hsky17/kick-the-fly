@@ -1,12 +1,12 @@
 # Builds dist\KickTheFly.exe: one file with the game, Python, numpy/scipy/pygame and the brain pack inside.
-# Needs data\kick_brain.npz first:  python brainpack.py build   (after the connectome build in README.md)
+# Needs data\kick_brain.npz first:  python -m kickthefly.sim.brainpack build   (after the connectome build in README.md)
 # data\validation_results.json, if present, is bundled so the real-science popups work.
 #   -Python path   the Python 3.11 to build with (default: py -3.11)
 #   -GuiSmoke      also open the game window for 3 s as a check (needs a desktop session)
 param([string]$Python = "", [switch]$GuiSmoke)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
-if (-not (Test-Path data\kick_brain.npz)) { throw "data\kick_brain.npz missing: run 'python brainpack.py build' first" }
+if (-not (Test-Path data\kick_brain.npz)) { throw "data\kick_brain.npz missing: run 'python -m kickthefly.sim.brainpack build' first" }
 if (-not (Test-Path .venv-build)) {
     if ($Python) { & $Python -m venv .venv-build } else { py -3.11 -m venv .venv-build }
 }
@@ -16,7 +16,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 .\.venv-build\Scripts\python.exe tools\make_icon.py build\icon.png
 
 # Windows file properties (Details tab): version resource generated from version.py
-$version = (Select-String -Path version.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+$version = (Select-String -Path kickthefly\core\version.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
 $parts = ($version.Split(".") + @("0", "0", "0"))[0..3] -join ", "
 @"
 VSVersionInfo(
@@ -42,12 +42,11 @@ else { Write-Warning "data\validation_results.json not found; the build won't sh
 
 .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --onefile --windowed --name KickTheFly `
     --icon build\icon.png --version-file build\version_info.txt @data `
-    --exclude-module connectome.loader --exclude-module connectome.layout --exclude-module pyarrow `
-    --exclude-module tkinter --exclude-module matplotlib `
-    --hidden-import kick3d --hidden-import render3d --hidden-import memory --hidden-import glcontext.wgl --hidden-import glcontext.empty `
-    --hidden-import assays --hidden-import challenges --hidden-import validation --hidden-import simcore `
-    --hidden-import savestate --hidden-import recorder --hidden-import protocol --hidden-import headless `
-    --hidden-import labjobs --hidden-import labstats --hidden-import lab --hidden-import yaml `
+    --exclude-module kickthefly.sim.connectome.loader --exclude-module pyarrow `
+    --exclude-module tkinter --exclude-module matplotlib --exclude-module pynwb --exclude-module h5py `
+    --exclude-module pandas `
+    --hidden-import glcontext.wgl --hidden-import glcontext.empty `
+    --hidden-import yaml --collect-submodules kickthefly `
     kick_the_fly.py
 if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
 

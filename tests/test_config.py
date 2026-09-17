@@ -1,5 +1,5 @@
 """Settings file: defaults, round trip, corrupt and hostile files, clamping and key rebinding."""
-import config
+from kickthefly.core import config
 
 
 def test_defaults_and_round_trip(tmp_path):

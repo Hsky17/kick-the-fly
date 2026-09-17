@@ -12,10 +12,10 @@ import time
 from pathlib import Path
 import numpy as np
 
-import brainpack
-import config
-from connectome.sim import LIFParams, LIFSim
-import paths
+from kickthefly.sim import brainpack
+from kickthefly.core import config
+from kickthefly.sim.connectome.sim import LIFParams, LIFSim
+from kickthefly.core import paths
 
 
 BENCHMARK_FILE = "benchmark_results.json"
@@ -54,11 +54,11 @@ def get_memory_mb() -> float:
 
 
 def make_bench_brain(g, W, seed: int):
-    import kick_the_fly as k
+    from kickthefly.game import kick_the_fly as k
     sim = LIFSim(None, LIFParams(), W_in=W, seed=seed)
     br = k.Brain(g, sim, seed=seed)
     if getattr(g, "dan_mbon", None) is not None:
-        import memory
+        from kickthefly.core import memory
         os.environ.setdefault("KICK_THE_FLY_MEMORY", str(Path(os.environ.get("TMPDIR", "/tmp")) / "ktf-bench-mem"))
         br.memory = memory.Memory(g, sim)
         br.memory.save = lambda: None

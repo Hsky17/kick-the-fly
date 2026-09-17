@@ -17,11 +17,11 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 @lru_cache(maxsize=1)
 def pack():
     """(graph-like namespace, W_in, soma) from the bundled brain pack, loaded once per process."""
-    import brainpack
+    from kickthefly.sim import brainpack
 
     path = brainpack.find()
     if path is None:
-        raise FileNotFoundError("brain pack kick_brain.npz not found (run 'python brainpack.py build')")
+        raise FileNotFoundError("brain pack kick_brain.npz not found (run 'python -m kickthefly.sim.brainpack build')")
     return brainpack.load(path)
 
 
@@ -55,9 +55,9 @@ def new_brain(seed: int = 0, memory: bool = True, warmup: int = 600, params: dic
               isolated_memory: bool = True, mirror_weights: bool = False):
     """A warmed-up Brain that is not running on a thread. isolated_memory: start from the untrained connectome and never
     read or write the player's saved training memory."""
-    import kick_the_fly as k
-    import lab
-    from connectome.sim import LIFParams, LIFSim
+    from kickthefly.game import kick_the_fly as k
+    from kickthefly.lab import lab
+    from kickthefly.sim.connectome.sim import LIFParams, LIFSim
 
     g, W, _ = pack()
     if mirror_weights:
@@ -67,7 +67,7 @@ def new_brain(seed: int = 0, memory: bool = True, warmup: int = 600, params: dic
         lab.apply_to_sim(sim, params)
     br = k.Brain(g, sim, seed=seed)
     if memory and getattr(g, "dan_mbon", None) is not None:
-        import memory as mem_mod
+        from kickthefly.core import memory as mem_mod
 
         br.memory = mem_mod.Memory(g, sim, load=not isolated_memory)
         br.memory.save = lambda: None

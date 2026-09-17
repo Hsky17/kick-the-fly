@@ -2,8 +2,8 @@
 
 import numpy as np
 import pytest
-import headless
-import simcore
+from kickthefly.lab import headless
+from kickthefly.core import simcore
 
 
 def test_symmetrize_weights_structure():

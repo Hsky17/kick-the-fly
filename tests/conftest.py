@@ -15,14 +15,14 @@ def isolated_home(tmp_path, monkeypatch):
     """Every test writes config, memory, saves and pictures under a temp folder, never the real user folders."""
     monkeypatch.setenv("KICK_THE_FLY_HOME", str(tmp_path / "ktf-home"))
     monkeypatch.delenv("KICK_THE_FLY_MEMORY", raising=False)
-    import paths
+    from kickthefly.core import paths
     paths.reset_cache()
     yield tmp_path / "ktf-home"
     paths.reset_cache()
 
 
 def brain_pack():
-    import brainpack
+    from kickthefly.sim import brainpack
     return brainpack.find()
 
 

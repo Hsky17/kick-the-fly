@@ -10,7 +10,7 @@ Propagation is a scipy sparse matmul. When few neurons are active it
 multiplies only the active columns of the CSC matrix; otherwise the full CSR
 matvec.
 
-    python -m connectome.sim bench
+    python -m kickthefly.sim.connectome.sim bench
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import numpy as np
 import scipy.sparse as sp
 
 if TYPE_CHECKING:  # the loader needs pyarrow; packaged builds that pass W_in never import it
-    from connectome.loader import Graph
+    from kickthefly.sim.connectome.loader import Graph
 
 
 @dataclass
@@ -175,8 +175,8 @@ class LIFSim:
 
 
 def _bench(steps: int) -> None:
-    from connectome.loader import load_graph
-    from connectome.retina import CH_LUM, RetinaEncoder, RetinaMap
+    from kickthefly.sim.connectome.loader import load_graph
+    from kickthefly.sim.connectome.retina import CH_LUM, RetinaEncoder, RetinaMap
 
     t = time.perf_counter()
     g = load_graph()
@@ -245,7 +245,7 @@ def _bench(steps: int) -> None:
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(prog="python -m connectome.sim")
+    parser = argparse.ArgumentParser(prog="python -m kickthefly.sim.connectome.sim")
     sub = parser.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("bench", help="time sim.step and check that visual input propagates")
     b.add_argument("--steps", type=int, default=600)
@@ -256,5 +256,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    from connectome.sim import main as _main
+    from kickthefly.sim.connectome.sim import main as _main
     raise SystemExit(_main())

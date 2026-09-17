@@ -16,7 +16,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import benchmark  # noqa: E402
+from kickthefly.lab import benchmark  # noqa: E402
 
 
 def main() -> int:

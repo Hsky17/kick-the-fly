@@ -14,7 +14,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 
-import labstats
+from kickthefly.lab import labstats
 
 ASSAYS = ("tmaze", "looming", "sugar")
 ASSAY_LABEL = {"tmaze": "T-maze conditioning", "looming": "Looming escape", "sugar": "Sugar response"}
@@ -26,7 +26,7 @@ def default_workers() -> int:
 
 def assay_task(kind: str, seed: int, options: dict, surgery: dict | None, params: dict | None) -> dict:
     """One fly. Runs in a worker process (top level, so it pickles)."""
-    import assays
+    from kickthefly.lab import assays
 
     opts = dict(options or {})
     if kind == "tmaze":
@@ -157,7 +157,7 @@ def run_sync(kind, seeds, options=None, surgery=None, params=None, workers: int 
                     if progress:
                         progress(done, len(tasks))
         except BrokenProcessPool as e:                     # workers couldn't start or died: finish in this process
-            from crash import log
+            from kickthefly.core.crash import log
             log.warning("Lab worker processes failed (%s); running the rest in-process", e)
             notes.append("worker processes failed; ran in one process instead")
     for k, s, o, sg, p, group in tasks:

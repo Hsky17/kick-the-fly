@@ -58,7 +58,7 @@ VERSION = 1
 def memory_dir() -> Path:
     """Per-OS memory folder from paths.py (Documents\\Kick the Fly\\memory on Windows, XDG data on Linux).
     KICK_THE_FLY_MEMORY still overrides it for tests and portable installs."""
-    import paths
+    from kickthefly.core import paths
 
     return paths.ensure_dir(paths.get().memory_dir, Path.cwd() / "Kick the Fly memory")
 

@@ -1,8 +1,8 @@
 """Tests for Screenshot mode: FreeCamera, photo mode controls, clean capture, DOF, and shutter sound."""
 import numpy as np
-import config
-import kick_the_fly as k2
-import kick3d
+from kickthefly.core import config
+from kickthefly.game import kick_the_fly as k2
+from kickthefly.game import kick3d
 
 
 def test_photo_config():

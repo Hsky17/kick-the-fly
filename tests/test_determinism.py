@@ -30,7 +30,7 @@ def run(br, n, start=0):
 
 
 def test_same_seed_same_inputs_same_spikes():
-    import simcore
+    from kickthefly.core import simcore
     a = simcore.new_brain(seed=7, warmup=200)
     b = simcore.new_brain(seed=7, warmup=200)
     assert run(a, 400) == run(b, 400)
@@ -40,8 +40,8 @@ def test_same_seed_same_inputs_same_spikes():
 
 
 def test_brain_state_round_trip_is_exact():
-    import savestate
-    import simcore
+    from kickthefly.core import savestate
+    from kickthefly.core import simcore
     a = simcore.new_brain(seed=3, warmup=200)
     run(a, 300)
     a.poke("legs", "L", 1.0)                                  # a stimulus still being delivered at save time
@@ -61,8 +61,8 @@ def game2d():
     import pygame
     from types import SimpleNamespace
 
-    import kick_the_fly as k
-    import simcore
+    from kickthefly.game import kick_the_fly as k
+    from kickthefly.core import simcore
 
     pygame.init()
     screen = pygame.display.set_mode((k.W, k.H))
@@ -115,7 +115,7 @@ def test_save_file_round_trip_and_rejections(game2d, tmp_path):
     import json
     import zipfile
 
-    import savestate
+    from kickthefly.core import savestate
     g = game2d(0)
     game_run(g, 60)
     g.arena_i = 3

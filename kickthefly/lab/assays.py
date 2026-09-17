@@ -37,7 +37,7 @@ import math
 
 import numpy as np
 
-import simcore
+from kickthefly.core import simcore
 
 STEPS_PER_TICK = (4, 3, 3)          # 10 brain steps (50 ms) per 3 game ticks (1/20 s)
 SWEET_N = 30
@@ -217,7 +217,7 @@ def looming_fly(seed: int, speeds=LOOM_SPEEDS, approaches: int = 3, radius: floa
     from `start` m to contact. Returns per speed whether DNp01 crossed the escape threshold before contact, the latency
     from the start of the approach, and how far away the object still was."""
     contact = radius + 0.02 if contact is None else contact
-    import kick_the_fly as k
+    from kickthefly.game import kick_the_fly as k
 
     br = brain or simcore.new_brain(seed=seed, params=params)
     apply_surgery(br, surgery)
@@ -293,7 +293,7 @@ def apply_surgery(br, surgery: dict | None) -> None:
     """surgery: {neuron spec: -1 silence | +1 stimulate}, specs as in simcore.rows_of or an assays group name."""
     if not surgery:
         return
-    import kick_the_fly as k
+    from kickthefly.game import kick_the_fly as k
 
     g = groups(br)
     for spec, mode in surgery.items():

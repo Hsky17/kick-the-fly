@@ -15,7 +15,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from crash import log
+from kickthefly.core.crash import log
 
 TABS = ("Graphics", "Audio", "Brain", "Controls", "Accessibility")
 CONNECTOME, GAME_RULE = "Connectome", "Game rule"
@@ -308,7 +308,7 @@ class Config:
         return cfg
 
     def to_toml(self) -> str:
-        from version import __version__
+        from kickthefly.core.version import __version__
 
         out = [f"# Kick the Fly {__version__} settings. Edit in the game (Esc > Settings) or by hand.", ""]
         sections: dict[str, list[str]] = {}

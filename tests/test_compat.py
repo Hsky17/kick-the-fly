@@ -11,8 +11,8 @@ FIXTURE = ROOT / "tests" / "fixtures"
 @needs_pack
 def test_v250_training_memory_loads(tmp_path, monkeypatch):
     """fly-memory.npz was written by v2.5.0's memory.py (git tag v2.5.0) after fear training on the swatter smell."""
-    import paths
-    import simcore
+    from kickthefly.core import paths
+    from kickthefly.core import simcore
 
     folder = tmp_path / "Documents" / "Kick the Fly" / "memory"
     folder.mkdir(parents=True)
@@ -31,7 +31,7 @@ def test_v250_training_memory_loads(tmp_path, monkeypatch):
 
 def test_windows_memory_location_is_unchanged(tmp_path):
     """Where v2.2-v2.5 put training memory on Windows is still where this version looks."""
-    import paths
+    from kickthefly.core import paths
     user = tmp_path / "user"
     docs = user / "Documents"
     p = paths.resolve(platform="win32", env={}, home=user, known_folder={"Documents": docs}.get, cwd=tmp_path)
