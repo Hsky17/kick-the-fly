@@ -98,6 +98,38 @@ def run_signflip(args) -> int:
     return 0
 
 
+def run_critical_path(args) -> int:
+    """--critical-path TARGET: silence each candidate cell type in turn and rank them by effect size."""
+    from kickthefly.lab import criticalpath, labjobs, recorder, validation
+
+    target = args.critical_path
+    if target not in validation.BY_ID and target not in labjobs.ASSAYS:
+        print(f"error: unknown target {target!r}; use one of "
+              f"{sorted(validation.BY_ID) + list(labjobs.ASSAYS)}", file=sys.stderr)
+        return 2
+    seeds = parse_seeds(args.seeds, validation.SEEDS)
+    folder = Path(args.out) if args.out else recorder.exports_dir() / f"critical-path-{target}"
+    if folder.exists() and not getattr(args, "resume", False) and (folder / "critical_path_progress.json").exists():
+        print(f"note: {folder} holds an unfinished run; pass --resume to continue it, or --out elsewhere to start "
+              f"fresh", file=sys.stderr)
+    t0 = time.time()
+    last = [0.0]
+
+    def progress(done, total, label):
+        if time.time() - last[0] > 2 or done == total:      # a type takes seconds; don't spam a line per fly
+            last[0] = time.time()
+            print(f"  {done}/{total} {label} ({time.time() - t0:.0f}s)", flush=True)
+
+    res = criticalpath.run(target, seeds=seeds, top=getattr(args, "top", None) or criticalpath.DEFAULT_TOP,
+                           workers=args.workers, progress=progress,
+                           resume=folder if getattr(args, "resume", False) else folder,
+                           types=getattr(args, "types", None))
+    criticalpath.save(res, folder)
+    print(criticalpath.summary(res))
+    print(f"results written to {folder}")
+    return 0
+
+
 def audit_asymmetry(seconds: float = 5.0, seed: int = 0, mirror: bool = False) -> dict:
     """Audit bilateral asymmetry between left and right hemibrains:
     - Measures baseline turning bias with no input over a calm run
@@ -227,6 +259,8 @@ def main(args) -> int:
             return run_threshold_sweep(args)
         if getattr(args, "signflip_test", False):
             return run_signflip(args)
+        if getattr(args, "critical_path", None):
+            return run_critical_path(args)
         if args.validate:
             return run_validate(args)
         if args.protocol:
@@ -237,8 +271,8 @@ def main(args) -> int:
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print("nothing to do: use --validate, --protocol FILE, --audit-asymmetry, --benchmark, --threshold-sweep or "
-          "--signflip-test", file=sys.stderr)
+    print("nothing to do: use --validate, --protocol FILE, --audit-asymmetry, --benchmark, --threshold-sweep, "
+          "--signflip-test or --critical-path TARGET", file=sys.stderr)
     return 2
 
 

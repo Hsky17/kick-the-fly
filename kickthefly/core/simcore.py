@@ -120,11 +120,15 @@ def rows_of(br, spec) -> np.ndarray:
 
 
 def drive(br, rows: np.ndarray, amp: float = 0.5) -> None:
-    """Hold these neurons driven (like brain surgery's ON, with a chosen current) until undrive()."""
-    br.override[rows] = amp
-    br.surgery = bool(np.any(br.override))
+    """Hold these neurons driven (like brain surgery's ON, with a chosen current) until undrive().
+
+    This is its own current, added to any surgery already in force rather than replacing it, so silencing a cell
+    type and then driving it in an assay leaves it silenced (net negative) instead of quietly undoing the lesion.
+    """
+    br.drive_cur[rows] = amp
+    br.driving = bool(np.any(br.drive_cur))
 
 
 def undrive(br, rows: np.ndarray) -> None:
-    br.override[rows] = 0
-    br.surgery = bool(np.any(br.override))
+    br.drive_cur[rows] = 0
+    br.driving = bool(np.any(br.drive_cur))

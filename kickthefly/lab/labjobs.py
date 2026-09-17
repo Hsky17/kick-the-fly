@@ -43,6 +43,21 @@ def assay_task(kind: str, seed: int, options: dict, surgery: dict | None, params
     raise ValueError(kind)
 
 
+HEADLINE_LABEL = {"tmaze": "performance index", "looming": "escape probability (all speeds)",
+                  "sugar": "MN9 ratio (all doses)"}
+
+
+def headline(kind: str, fly: dict) -> float:
+    """One fly's single headline number, the same one summarize() puts in per_fly."""
+    if kind == "tmaze":
+        return float(fly["pi"])
+    if kind == "looming":
+        return float(np.mean([np.mean([t["escaped"] for t in tr]) for tr in fly["trials"].values()]))
+    if kind == "sugar":
+        return float(np.mean([np.mean([o["ratio"] for o in offs]) for offs in fly["offers"].values()]))
+    raise ValueError(kind)
+
+
 def summarize(kind: str, flies: list[dict]) -> dict:
     """Standard metrics with mean and 95% CI across flies."""
     if kind == "tmaze":

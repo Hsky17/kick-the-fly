@@ -340,6 +340,10 @@ class Brain:
         self.instance = np.array([i or "" for i in g.instance])
         self.override = np.zeros(g.n, np.float32)    # brain surgery: per-neuron silencing / stimulating current
         self.surgery = False
+        # Experimental activation (assays, validation, protocols) is its own current, added to surgery rather than
+        # replacing it: a neuron you silenced does not start firing because the experiment drives its type.
+        self.drive_cur = np.zeros(g.n, np.float32)
+        self.driving = False
         self.sense[("all", None)] = np.arange(g.n)   # the zapper's shock
         self.n_det = len(self.names)
         for k, (name, classes) in enumerate(POPS):
@@ -472,7 +476,9 @@ class Brain:
                 drive = drive + self._inhib * np.float32(self.sedation)
             if self.surgery:
                 drive = drive + self.override
-            spikes = self.sim.step(drive if (active or self.sedation > 0 or self.surgery) else None)
+            if self.driving:
+                drive = drive + self.drive_cur
+            spikes = self.sim.step(drive if (active or self.sedation > 0 or self.surgery or self.driving) else None)
         for _, (rows, _) in active:
             self._cur[rows] = 0
 
@@ -490,14 +496,16 @@ class Brain:
         counts[-1] = len(on)
         inst = counts / self.g_size / self.dt
         self.fast += (inst - self.fast) * self.k_fast
-        if self.death_step is None and self.sedation == 0 and not self.surgery and self.steps - self.last_poke > CALM_STEPS:
+        if (self.death_step is None and self.sedation == 0 and not self.surgery and not self.driving
+                and self.steps - self.last_poke > CALM_STEPS):
             self.base += (self.fast - self.base) * self.k_base
         self.steps += 1
         if self.steps % 4 == 0:
             self.hist[self.hist_n % HIST] = self.fast
             self.hist_n += 1
         if self.memory is not None and self.steps % MEMORY_STEPS == 0 and self.death_step is None:
-            calm = self.sedation == 0 and not self.surgery and self.steps - self.last_poke > CALM_STEPS
+            calm = (self.sedation == 0 and not self.surgery and not self.driving
+                    and self.steps - self.last_poke > CALM_STEPS)
             self.memory.step(self.sim.activity.rates(), calm, self.steps)
 
     def reseed(self, seed: int) -> None:
@@ -2077,6 +2085,8 @@ class Game:
                 ("Asymmetry audit", "lab_asymmetry", "Measure baseline turning bias and bilateral L vs R synapse & firing asymmetries."),
                 ("Connectome robustness", "lab_wiring", "Drop weak connections, flip uncertain neurotransmitter signs "
                  "or block inhibition, and see which validated behaviors survive."),
+                ("Critical path finder", "lab_critical", "Silence each cell type in turn and rank them by what it "
+                 "does to a behavior, against a same-seed unperturbed control."),
                 ("Simulation benchmark", "lab_benchmark", "Measure simulation throughput (neurons/s, synapses/s, sim vs real time) for 1, 8, 16 flies."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
@@ -5331,6 +5341,12 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--flip-share", dest="flip_share", type=float,
                     help="share of the candidates each trial flips (default 0.5)")
     ap.add_argument("--trials", type=int, help="randomized trials for --signflip-test (default 5)")
+    ap.add_argument("--critical-path", dest="critical_path", metavar="TARGET",
+                    help="rank cell types by what silencing each does to a behavior (looming_escape, sugar_feeding, "
+                         "antenna_grooming_circuit, mb_conditioning) or an assay (tmaze, looming, sugar)")
+    ap.add_argument("--top", type=int, help="how many candidate cell types --critical-path tries (default 25)")
+    ap.add_argument("--types", nargs="+", help="test exactly these cell types instead of the shortlist")
+    ap.add_argument("--resume", action="store_true", help="continue an interrupted --critical-path run in --out")
     ap.add_argument("--flies", type=int, nargs="+", help="flies count list for benchmark (default: 1 8 16)")
     ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
@@ -5354,7 +5370,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info(n)
     if (args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False)
             or getattr(args, "benchmark", False) or getattr(args, "threshold_sweep", False)
-            or getattr(args, "signflip_test", False)):
+            or getattr(args, "signflip_test", False) or getattr(args, "critical_path", None)):
         from kickthefly.lab import headless
 
         return headless.main(args)

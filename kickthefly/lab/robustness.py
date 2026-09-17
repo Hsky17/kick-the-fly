@@ -42,6 +42,10 @@ def _results_by_id(res: dict) -> dict:
             effect=float(m.get("drive_ratio_mean", m.get("pi_mean", 0.0))),
             control=float(m.get("control_ratio_mean", m.get("control_pi_mean", 0.0))),
             p_value=float(m.get("p_value", 1.0)),
+            # the ratio's denominator has a floor, so a brain that has gone quieter overall shows a bigger ratio
+            # without the pathway having got any stronger: the rates say which of the two happened
+            base_hz=float(m.get("readout_base_hz", float("nan"))),
+            driven_hz=float(m.get("readout_driven_hz", float("nan"))),
             metric="drive/baseline ratio" if "drive_ratio_mean" in m else "performance index")
     return out
 
@@ -172,17 +176,17 @@ def flips_csv(res: dict, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["behavior", "trial", "neurons_flipped", "metric", "effect", "control_effect", "p_value",
-                    "passed"])
-        for run in res["runs"]:
-            for test_id, b in run["behaviors"].items():
+        w.writerow(["behavior", "trial", "neurons_flipped", "metric", "effect", "control_effect",
+                    "readout_base_hz", "readout_driven_hz", "p_value", "passed"])
+        rows = [(run["trial"], run["flipped"], run["behaviors"]) for run in res["runs"]]
+        rows.append((0, 0, res["control"]))                         # trial 0 is the unperturbed control
+        for trial, flipped, behaviors in rows:
+            for test_id, b in behaviors.items():
                 ctrl = res["control"].get(test_id, {})
-                w.writerow([test_id, run["trial"], run["flipped"], b["metric"], f"{b['effect']:.4f}",
-                            f"{ctrl.get('effect', float('nan')):.4f}", f"{b['p_value']:.5f}",
+                w.writerow([test_id, trial, flipped, b["metric"], f"{b['effect']:.4f}",
+                            f"{ctrl.get('effect', float('nan')):.4f}", f"{b.get('base_hz', float('nan')):.4f}",
+                            f"{b.get('driven_hz', float('nan')):.4f}", f"{b['p_value']:.5f}",
                             "pass" if b["passed"] else "fail"])
-        for test_id, b in res["control"].items():
-            w.writerow([test_id, 0, 0, b["metric"], f"{b['effect']:.4f}", f"{b['effect']:.4f}",
-                        f"{b['p_value']:.5f}", "pass" if b["passed"] else "fail"])
     return path
 
 
@@ -195,13 +199,14 @@ def sweep_csv(res: dict, path: Path) -> Path:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["behavior", "threshold", "connections_dropped", "connections_dropped_share", "neurons_cut_off",
-                    "metric", "effect", "control", "p_value", "passed"])
+                    "metric", "effect", "control", "readout_base_hz", "readout_driven_hz", "p_value", "passed"])
         for step in res["steps"]:
             st = step["stats"]
             for test_id, b in step["behaviors"].items():
                 w.writerow([test_id, step["threshold"], st["connections_dropped"],
                             f"{st['connections_dropped_share']:.4f}", st["neurons_cut_off"], b["metric"],
-                            f"{b['effect']:.4f}", f"{b['control']:.4f}", f"{b['p_value']:.5f}",
+                            f"{b['effect']:.4f}", f"{b['control']:.4f}", f"{b.get('base_hz', float('nan')):.4f}",
+                            f"{b.get('driven_hz', float('nan')):.4f}", f"{b['p_value']:.5f}",
                             "pass" if b["passed"] else "fail"])
     return path
 
@@ -227,7 +232,13 @@ def summary(res: dict) -> str:
              f"of 1-{res['pack_min_synapses']} change nothing)"]
     for test_id, b in res["breaks"].items():
         where = f"breaks at >= {b['breaks_at']} synapses" if b["breaks_at"] else "survives every threshold tried"
-        lines.append(f"  {b['name']}: {where}")
+        last = res["steps"][-1]["behaviors"].get(test_id, {})
+        first = res["steps"][0]["behaviors"].get(test_id, {})
+        rates = ""
+        if last.get("driven_hz") == last.get("driven_hz"):      # not NaN: a pathway test, so rates exist
+            rates = (f"; readout {first['driven_hz']:.1f} -> {last['driven_hz']:.1f} spikes/s driven, "
+                     f"{first['base_hz']:.1f} -> {last['base_hz']:.1f} at rest")
+        lines.append(f"  {b['name']}: {where}{rates}")
     return "\n".join(lines)
 
 

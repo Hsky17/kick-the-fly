@@ -36,6 +36,7 @@ class StubHost:
         self.arena_i = 0
         self.surgery_modes = []
         self.type_ops = {}
+        self.surgery_applied = 0
         self.clock = SimpleNamespace(scale=1.0, now=0.0)
         self.notes = []
 
@@ -49,6 +50,9 @@ class StubHost:
 
     def set_wiring(self, w, note=True):
         self.wiring = w
+
+    def _apply_surgery(self):
+        self.surgery_applied += 1
 
     def note(self, text, source=None):
         self.notes.append(text)
@@ -73,7 +77,7 @@ def menu():
 
 
 LAB_PAGES = ["lab", "lab_params", "lab_assumptions", "lab_asymmetry", "lab_benchmark", "lab_export", "lab_protocols",
-             "lab_validation", "lab_assays", "lab_wiring"]
+             "lab_validation", "lab_assays", "lab_wiring", "lab_critical"]
 
 
 @pytest.mark.parametrize("page", LAB_PAGES)
