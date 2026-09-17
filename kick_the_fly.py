@@ -1812,6 +1812,23 @@ class Game:
             self.view.set_palette(c[key])
         elif key == "access.larger_text":
             self.make_fonts()
+        elif key == "brain.mirror_weights":
+            import simcore
+            mirror = bool(c[key])
+            g, orig_w, _ = simcore.pack()
+            w_new = simcore.symmetrize_weights(g, orig_w) if mirror else orig_w
+            self.weights = w_new
+            w_csr = w_new.astype(np.float32).tocsr()
+            w_csc = w_csr.tocsc()
+            for slot in self.flies:
+                slot.brain.sim.W_csr = w_csr
+                slot.brain.sim.W_csc = w_csc
+
+    def toggle_mirror_weights(self) -> None:
+        val = not bool(self.cfg["brain.mirror_weights"])
+        self.cfg.set("brain.mirror_weights", val)
+        self.apply_setting("brain.mirror_weights")
+        self.cfg.save()
 
     @staticmethod
     def is_fullscreen() -> bool:
@@ -1939,6 +1956,7 @@ class Game:
                 ("Assays and repeated trials", "lab_assays", "T-maze conditioning, looming escape and sugar response over "
                  "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
                 ("Model assumptions", "lab_assumptions", "Transparent disclosure of biophysical simplifications and EM reconstruction caveats."),
+                ("Asymmetry audit", "lab_asymmetry", "Measure baseline turning bias and bilateral L vs R synapse & firing asymmetries."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
                  "metadata."),
@@ -4726,6 +4744,9 @@ def load_brain(out: dict) -> None:
             pack = brainpack.build()
         out["stage"] = "unpacking the fly's brain"
         g, weights, soma = brainpack.load(pack)
+        if out.get("mirror_weights", False):
+            import simcore
+            weights = simcore.symmetrize_weights(g, weights)
         out["stage"] = f"wiring {g.n:,} neurons"
         seed = int(out.get("seed", 0))
         sim = LIFSim(None, LIFParams(), W_in=weights, seed=seed)
@@ -4763,6 +4784,8 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--workers", type=int, help="worker processes for headless runs (default: up to 4)")
     ap.add_argument("--seeds", help="validation seeds, e.g. 1000-1009")
     ap.add_argument("--autopilot", "--spectator", dest="autopilot", action="store_true", help="spectator mode: hands-off simulation with auto-orbiting brain view")
+    ap.add_argument("--audit-asymmetry", dest="audit_asymmetry", action="store_true", help="run bilateral asymmetry audit and exit")
+    ap.add_argument("--mirror-weights", dest="mirror_weights", action="store_true", help="mirror-average synaptic weights (game rule: data modification)")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
@@ -4782,13 +4805,15 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Kick the Fly %s on %s", __version__, crash.os_description())
     for n in p.notes:
         log.info(n)
-    if args.headless or args.validate or args.protocol:
+    if args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False):
         import headless
 
         return headless.main(args)
     cfg = config.Config.load(p.config_file)
     if args.autopilot:
         cfg["brain.autopilot"] = True
+    if getattr(args, "mirror_weights", False):
+        cfg["brain.mirror_weights"] = True
     seed = args.seed if args.seed is not None else cfg["brain.seed"]
     crash.info["seed"] = str(seed)
     smoke, shot = args.smoke_s, args.shot
@@ -4832,6 +4857,7 @@ def main(argv: list[str] | None = None) -> int:
     font = pygame.font.SysFont("segoeui,consolas", 22)
     state: dict = {"stage": "starting"}
     state["seed"] = seed
+    state["mirror_weights"] = bool(cfg["brain.mirror_weights"])
     threading.Thread(target=load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
     while "brain" not in state:

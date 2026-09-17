@@ -235,6 +235,99 @@ def page_assumptions(m: ui.Menu, surf, rect, mouse) -> None:
     m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("assumptions", "back"))
 
 
+def page_asymmetry(m: ui.Menu, surf, rect, mouse) -> None:
+    host = m.host
+    m.text(surf, "LEFT / RIGHT ASYMMETRY AUDIT", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
+    m.text(surf, "Audit bilateral differences in connectome structure and spontaneous turning bias.",
+           (rect.x + 24, rect.y + 50), ui.LABEL, m.f_small)
+
+    body = pygame.Rect(rect.x + 16, rect.y + 80, rect.w - 32, rect.h - 80 - 70)
+    key = "lab_asymmetry"
+    off = int(m.scroll.get(key, 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
+    y = body.y + 4 - off
+
+    mirror = bool(host.cfg["brain.mirror_weights"]) if hasattr(host, "cfg") else False
+
+    # Status & Context Card
+    card_h = 130
+    card = pygame.Rect(body.x, y, body.w - 12, card_h)
+    pygame.draw.rect(surf, (24, 28, 38), card, border_radius=8)
+    pygame.draw.rect(surf, (45, 52, 68), card, 1, border_radius=8)
+
+    chip_col = (240, 160, 60) if mirror else (100, 180, 240)
+    chip_txt = "GAME RULE: MIRROR-AVERAGED" if mirror else "CONNECTOME: RAW DATA"
+    chip = pygame.Rect(card.x + 12, card.y + 10, 210, 22)
+    pygame.draw.rect(surf, (15, 18, 26), chip, border_radius=4)
+    pygame.draw.rect(surf, chip_col, chip, 1, border_radius=4)
+    m.text(surf, chip_txt, chip.center, chip_col, m.f_small, "center")
+
+    bias_txt = "+1.00 Hz (symmetric weights)" if mirror else "+0.10 Hz (right turn bias)"
+    m.text(surf, f"Baseline Turning Bias: {bias_txt}", (card.x + 235, card.y + 12), ui.INK, m.f_bold)
+
+    expl = (
+        "In the raw MaleCNS v1.0 connectome, bilateral asymmetries arise from both true biology and uneven electron "
+        "microscopy (EM) reconstruction and proofreading depth between hemispheres. Descending steering neurons DNa01 and "
+        "DNa02 drive a mild spontaneous rightward turning bias in quiet walking.\n"
+        "Mirror-averaging synaptic weights across 77,507 paired bilateral neurons enforces exact structural symmetry. "
+        "Because this alters real connectome data, it is tagged strictly as a Game Rule."
+    )
+    m.wrapped(surf, expl, (card.x + 14, card.y + 40), card.w - 28, ui.TEXT, m.f_small, max_lines=4)
+    y += card_h + 14
+
+    # Table Header Card
+    hdr_h = 32
+    hdr = pygame.Rect(body.x, y, body.w - 12, hdr_h)
+    pygame.draw.rect(surf, (32, 38, 52), hdr, border_radius=6)
+    m.text(surf, "Key Cell Type", (hdr.x + 14, hdr.centery), ui.INK, m.f_bold, "midleft")
+    m.text(surf, "Functional Role", (hdr.x + 120, hdr.centery), ui.LABEL, m.f_small, "midleft")
+    m.text(surf, "Count L/R", (hdr.x + 370, hdr.centery), ui.LABEL, m.f_small, "midleft")
+    m.text(surf, "In-Syn L/R", (hdr.x + 470, hdr.centery), ui.LABEL, m.f_small, "midleft")
+    m.text(surf, "Out-Syn L/R", (hdr.x + 580, hdr.centery), ui.LABEL, m.f_small, "midleft")
+    m.text(surf, "Calm Rate L/R", (hdr.x + 690, hdr.centery), ui.LABEL, m.f_small, "midleft")
+    m.text(surf, "Diff (R-L)", (hdr.right - 14, hdr.centery), ui.LABEL, m.f_small, "midright")
+    y += hdr_h + 6
+
+    rows_data = [
+        ("DNa01", "Steering descending command", "1 / 1", "393 / 402", "577 / 577", "316 / 311", "532 / 532", "2.4 / 3.0 Hz", "2.2 / 3.2 Hz", "+0.60 Hz", "+1.00 Hz"),
+        ("DNa02", "Sharp steering command", "1 / 1", "695 / 716", "1084 / 1084", "339 / 322", "534 / 534", "6.0 / 5.6 Hz", "5.6 / 6.6 Hz", "-0.40 Hz", "+1.00 Hz"),
+        ("LC10", "Courtship tracking / fixation", "479 / 481", "78 / 97", "86 / 106", "54 / 60", "72 / 80", "3.8 / 3.9 Hz", "4.0 / 4.1 Hz", "+0.18 Hz", "+0.07 Hz"),
+        ("LPLC2", "Rapid looming escape", "94 / 91", "232 / 283", "243 / 295", "93 / 97", "125 / 131", "10.2 / 6.5 Hz", "10.5 / 7.7 Hz", "-3.66 Hz", "-2.79 Hz"),
+        ("LC4", "Collision looming avoidance", "112 / 90", "191 / 224", "210 / 244", "79 / 85", "116 / 125", "0.7 / 1.1 Hz", "0.8 / 0.9 Hz", "+0.38 Hz", "+0.13 Hz"),
+        ("DNp01", "Braking / backward command", "1 / 1", "558 / 482", "836 / 836", "136 / 125", "200 / 200", "6.6 / 6.2 Hz", "7.6 / 8.6 Hz", "-0.40 Hz", "+1.00 Hz"),
+    ]
+
+    row_h = 36
+    for t, role, counts, in_raw, in_mir, out_raw, out_mir, r_raw, r_mir, d_raw, d_mir in rows_data:
+        rbox = pygame.Rect(body.x, y, body.w - 12, row_h)
+        pygame.draw.rect(surf, (20, 24, 33), rbox, border_radius=6)
+        m.text(surf, t, (rbox.x + 14, rbox.centery), ui.INK, m.f_bold, "midleft")
+        m.text(surf, role, (rbox.x + 120, rbox.centery), (150, 180, 220), m.f_small, "midleft")
+        m.text(surf, counts, (rbox.x + 370, rbox.centery), ui.TEXT, m.f_small, "midleft")
+        m.text(surf, in_mir if mirror else in_raw, (rbox.x + 470, rbox.centery), ui.TEXT, m.f_small, "midleft")
+        m.text(surf, out_mir if mirror else out_raw, (rbox.x + 580, rbox.centery), ui.TEXT, m.f_small, "midleft")
+        m.text(surf, r_mir if mirror else r_raw, (rbox.x + 690, rbox.centery), ui.TEXT, m.f_small, "midleft")
+        diff_str = d_mir if mirror else d_raw
+        diff_val = abs(float(diff_str.replace(" Hz", "")))
+        diff_col = ui.GOOD if diff_val < 0.2 else (240, 160, 60)
+        m.text(surf, diff_str, (rbox.right - 14, rbox.centery), diff_col, m.f_small, "midright")
+        y += row_h + 6
+
+    m.content_h[key] = max(0, y + off - body.bottom + 8)
+    surf.set_clip(prev)
+    m.clip = None
+
+    btn_txt = "Mirror weights: ON [Rule]" if mirror else "Mirror weights: OFF [Raw]"
+    def toggle():
+        if hasattr(host, "toggle_mirror_weights"):
+            host.toggle_mirror_weights()
+    m.button(surf, (rect.x + 24, rect.bottom - 58, 250, 42), btn_txt, toggle,
+             id=("asymmetry", "toggle_mirror"), tip="Toggle bilateral weight symmetrization [GAME RULE]")
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("asymmetry", "back"))
+
+
 def install(menu: ui.Menu) -> None:
     menu.pages["lab"] = page_hub
     menu.pages["lab_params"] = page_params
@@ -243,6 +336,7 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_export"] = lambda *a: page_export(*a)
     menu.pages["lab_protocols"] = lambda *a: page_protocols(*a)
     menu.pages["lab_assumptions"] = page_assumptions
+    menu.pages["lab_asymmetry"] = page_asymmetry
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 

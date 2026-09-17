@@ -112,6 +112,9 @@ SETTINGS: tuple[Setting, ...] = (
       "Slowly orbit the brain view in spectator mode.", tag=GAME_RULE),
     S("brain.autopilot_hide_hud", "Brain", "Autopilot hide HUD", "bool", True,
       "Hide HUD in spectator mode for demo or screensaver use.", tag=GAME_RULE),
+    S("brain.mirror_weights", "Brain", "Mirror-average weights", "bool", False,
+      "Average left and right synaptic weights to enforce bilateral symmetry. Clearly a data modification game rule.",
+      tag=GAME_RULE),
     # --- Controls
     S("controls.mouse_sensitivity", "Controls", "Mouse sensitivity", "float", 1.0,
       "How far the view turns when you move the mouse.", lo=0.1, hi=5.0, step=0.1, only="3d", fmt="{:.1f}"),

@@ -25,8 +25,34 @@ def pack():
     return brainpack.load(path)
 
 
+_symmetric_weights_cache = None
+
+
+def symmetrize_weights(g, weights):
+    """Mirror-average synaptic weights across bilateral pairs. Clearly a game-rule data modification."""
+    global _symmetric_weights_cache
+    if _symmetric_weights_cache is not None and _symmetric_weights_cache[0] is weights:
+        return _symmetric_weights_cache[1]
+    inst = g.instance.astype(str)
+    inst_to_idx = {name: idx for idx, name in enumerate(inst) if len(name) > 0}
+    perm = np.arange(g.n, dtype=np.int32)
+    for idx, name in enumerate(inst):
+        if name.endswith("_L"):
+            other = inst_to_idx.get(name[:-2] + "_R")
+            if other is not None:
+                r_name = inst[other]
+                if r_name.endswith("_R") and inst_to_idx.get(r_name[:-2] + "_L") == idx:
+                    perm[idx] = other
+                    perm[other] = idx
+    W_mirrored = weights[perm, :][:, perm]
+    W_sym = (weights + W_mirrored) * 0.5
+    W_sym.eliminate_zeros()
+    _symmetric_weights_cache = (weights, W_sym)
+    return W_sym
+
+
 def new_brain(seed: int = 0, memory: bool = True, warmup: int = 600, params: dict | None = None,
-              isolated_memory: bool = True):
+              isolated_memory: bool = True, mirror_weights: bool = False):
     """A warmed-up Brain that is not running on a thread. isolated_memory: start from the untrained connectome and never
     read or write the player's saved training memory."""
     import kick_the_fly as k
@@ -34,6 +60,8 @@ def new_brain(seed: int = 0, memory: bool = True, warmup: int = 600, params: dic
     from connectome.sim import LIFParams, LIFSim
 
     g, W, _ = pack()
+    if mirror_weights:
+        W = symmetrize_weights(g, W)
     sim = LIFSim(None, LIFParams(), W_in=W, seed=seed)
     if params:
         lab.apply_to_sim(sim, params)
