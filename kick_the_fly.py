@@ -98,6 +98,15 @@ neurons and the PAM dopaminergic neurons (316), which signal reward in flies. In
 this sim taste input alone doesn't reach PAM, so sugar drives them directly, as in
 PAM activation experiments. The REWARD meter is PAM activity above calm.
 
+Alcohol (-): a droplet of fermented fruit the fly walks over and sips. Connectome:
+drinking drives the sugar-pathway taste neurons and the PAM reward neurons, as sugar
+does, and the droplet's smell drives the real ORNs of the fermentation glomeruli DM1,
+DM2 and DP1m. Game rule: the drunkenness. Each sip raises an inebriation level (0..1)
+that decays over ~45 s of game time, and the game scales tremors, a stumbling gait,
+wobbly flight and a delayed escape reflex by it. The simulated neurons are not
+intoxicated: ethanol's pharmacology isn't modelled, only the body's movement is
+degraded. The HUD card, the REAL/RULE tags and Lab > Model Assumptions all say so.
+
 Flight: DNg02 (29 wing-power descending neurons). It takes off when DNg02 fires
 above 1.58x calm, and flies away when the head-touch escape group fires. Flight
 speed follows DNg02. The flight path itself is a game rule.
@@ -245,7 +254,7 @@ PAIN_LEVELS = (  # name, share of a region's neurons a light touch recruits, how
     ("normal", 0.3, 0.0), ("more", 0.6, 0.5), ("max", 1.0, 1.0),
 )
 SURGERY_CURRENT = {-1: -0.6, 0: 0.0, 1: 0.12}   # x ext_gain 4: silenced -2.4 per step (beats any touch), stimulated +0.48
-TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", "freeze", "spider", "sugar")
+TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", "freeze", "spider", "sugar", "alcohol")
 STIM_AMP = 0.5              # x ext_gain 4 = 2.0 per step: a driven neuron fires every refractory cycle
 HIST = 1500                  # history samples, one per 20 ms = 30 s
 CALM_STEPS = 400             # 2 s without a touch before the baseline learns again
@@ -313,8 +322,12 @@ class Brain:
         glom = np.array([t.split("_", 1)[1] for t in types[orn]])
         order = np.random.default_rng(11).permutation(np.unique(glom))
         for k, name in enumerate(TOOL_NAMES):        # each tool's scent: its own 5 of the 53 olfactory glomeruli
-            self.sense[("scent", name)] = orn[np.isin(glom, order[k * 5:(k + 1) * 5])]
-        self.sense[("scent", "player")] = orn[np.isin(glom, order[len(TOOL_NAMES) * 5:])]   # you: the last 3 glomeruli
+            if name == "alcohol":
+                # Fermented fruit / ethanol odor activates canonical food attraction glomeruli (DM1, DM2, DP1m)
+                self.sense[("scent", name)] = orn[np.isin(glom, ["DM1", "DM2", "DP1m"])]
+            else:
+                self.sense[("scent", name)] = orn[np.isin(glom, order[k * 5:(k + 1) * 5])]
+        self.sense[("scent", "player")] = orn[np.isin(glom, order[50:])]   # you: the last 3 glomeruli
         import assays
         odor_order = np.random.default_rng(assays.ODOR_GLOMERULI_SEED).permutation(np.unique(glom))
         self.sense[("scent", "odor_a")] = orn[np.isin(glom, odor_order[:6])]      # T-maze odors (game rule: which
@@ -919,6 +932,7 @@ class Fly:
         self.arena = "room"
         self.wind = 0.0                   # fan push, px/frame^2
         self.wet = 0.0                    # seconds until its wings dry
+        self.inebriation = 0.0            # alcohol intoxication (0..1, GAME RULE: motor degradation)
         self.stuck: dict[int, np.ndarray] = {}   # flypaper: particle -> glued position
 
     @property
@@ -946,12 +960,16 @@ class Fly:
     def escape(self, now: float, seconds: float = 2.4, wander: bool = False) -> None:
         """Take off. Escapes fly up and away from the last hit; wandering flights drift around the room."""
         away = 1.0 if self.p[THX, 0] >= self.last_hit_x else -1.0
-        self.prev[:] = self.p - np.array([away * 4.0, -9.0])
+        launch = np.array([away * 4.0, -9.0])
+        if getattr(self, "inebriation", 0.0) > 0:
+            launch += np.random.normal(0, 2.5 * self.inebriation, 2)
+        self.prev[:] = self.p - launch
         self.hover = self.p[THX].copy()
         self.wander = wander
         self._new_target(away)
         self.escape_until = now + seconds
-        self.escape_ready = now + seconds + 1.0
+        delay = 2.0 * getattr(self, "inebriation", 0.0)
+        self.escape_ready = now + seconds + 1.0 + delay
 
     def _new_target(self, away: float | None = None) -> None:
         x = self.p[THX, 0]
@@ -1013,6 +1031,10 @@ class Fly:
             idx = list(KNEE + FOOT)
             self.p[idx] += np.random.normal(0, 2.5, (12, 2))
 
+        if getattr(self, "inebriation", 0.0) > 0 and not self.dead:
+            # Uncoordinated motor tremors (GAME RULE: alcohol inebriation)
+            self.p += np.random.normal(0, 1.8 * self.inebriation, (N_P, 2))
+
         posed = strength > 0.5
         for _ in range(6):
             if self.grabbed is not None:
@@ -1054,6 +1076,9 @@ class Fly:
         self.anchor_x = float(self.hover[0])
         self.action = "flying"
         bob = 4 * math.sin(now * 9)
+        if getattr(self, "inebriation", 0.0) > 0:
+            # Erratic drunk flight wobble (GAME RULE: alcohol inebriation)
+            self.hover += np.array([math.sin(now * 3.7) * 4.5 * self.inebriation, math.cos(now * 2.9) * 3.0 * self.inebriation])
         off = REST.copy()
         off[:, 0] *= self.facing
         tgt = off + (self.hover[0], self.hover[1] + bob)
@@ -1081,6 +1106,13 @@ class Fly:
         off = REST * s
         off[:, 0] *= self.facing
         tgt = off + (self.anchor_x, FLOOR - STAND * s + bob)
+        if getattr(self, "inebriation", 0.0) > 0:
+            # Stumbling gait and wobbling drift (GAME RULE: alcohol inebriation)
+            wobble = math.sin(now * 3.8) * 6.0 * self.inebriation
+            bob += math.cos(now * 4.5) * 3.0 * self.inebriation
+            tgt[:, 0] += wobble
+            if vx:
+                self.phase += 0.06 * self.inebriation * math.sin(now * 7.0)
         for leg in range(6):
             ph = self.phase + math.pi * TRIPOD[leg]
             if vx:
@@ -1426,6 +1458,10 @@ def draw_icon(surf, name: str, c, col) -> None:
         aapoly(surf, [(x - 12, y + 2), (x + 2, y - 4), (x + 5, y + 2), (x - 9, y + 8)], col)
         aapoly(surf, [(x + 4, y - 4), (x + 16, y - 14), (x + 11, y - 1)], (255, 140, 40))
         aapoly(surf, [(x + 5, y - 3), (x + 12, y - 9), (x + 9, y - 2)], (255, 230, 120))
+    elif name == "alcohol":
+        aapoly(surf, [(x - 6, y + 11), (x + 6, y + 11), (x + 8, y + 3), (x + 3, y - 3), (x + 3, y - 10), (x - 3, y - 10), (x - 3, y - 3), (x - 8, y + 3)], col)
+        aapoly(surf, [(x - 5, y + 10), (x + 5, y + 10), (x + 6, y + 4), (x - 6, y + 4)], (225, 80, 130))
+        aacircle(surf, (x, y - 1), 2, (255, 180, 210))
     else:
         aacircle(surf, (x - 2, y + 3), 10, col)
         thick_line(surf, (x + 5, y - 5), (x + 10, y - 11), 3, col)
@@ -1437,7 +1473,8 @@ TOOLS = (("hand", "HAND", "drag the fly and throw it"), ("flick", "FLICK", "clic
          ("swatter", "SWAT", "click on the fly"), ("bomb", "BOMB", "click to drop a bomb, 1.5 s fuse"),
          ("torch", "TORCH", "hold: burns it, maxes out pain"), ("cleaner", "CLEANER", "hold: brake cleaner dissolves it"),
          ("zapper", "ZAP", "click: electric shock through its body"), ("freeze", "FREEZE", "hold: freezes it solid, then smash the ice"),
-         ("spider", "SPIDER", "click: drop a spider that hunts it"), ("sugar", "SUGAR", "click: drop sugar to reward it"))
+         ("spider", "SPIDER", "click: drop a spider that hunts it"), ("sugar", "SUGAR", "click: drop sugar to reward it"),
+         ("alcohol", "ALCOHOL", "click: drop alcohol, sweet PAM reward but escalating drunkenness"))
 assert tuple(t[0] for t in TOOLS) == TOOL_NAMES
 # Real vs rule (the on-screen tags, Settings > Brain): which reactions are triggered by the connectome sim's own neurons
 # and which by a rule the game adds. REAL means live descending-neuron firing crossed a threshold; how the body then
@@ -1447,12 +1484,12 @@ REACTION_SOURCE = {
     "WALK": "real", "TURN": "real", "SHOOT": "real", "GROOM": "real", "PROBOSCIS": "real",
     "EATING": "rule", "TO LIGHT": "rule", "AVOID": "rule", "APPROACH": "rule", "FLEE": "rule", "WRAPPED": "rule",
     "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule", "AUTOPILOT": "rule",
-    "PHOTO MODE": "rule",
+    "PHOTO MODE": "rule", "ALCOHOL": "rule", "INEBRIATED": "rule", "STUMBLE": "rule", "SIP": "rule", "DRINKING": "rule",
 }
 POPUP_SOURCE = {"DODGE!": "real", "YIKES!": "real", "NOPE!": "rule", "RUN AWAY!": "rule", "YUM!": "rule",
                 "SWEET!": "rule", "NOM NOM": "rule", "K.O.!": "rule", "BROKE FREE!": "rule", "FLY WINS!": "rule",
                 "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule", "AUTOPILOT": "rule", "SPECTATOR": "rule",
-                "PHOTO MODE": "rule"}
+                "PHOTO MODE": "rule", "*HIC*": "rule", "SIP...": "rule", "GLUG!": "rule", "STUMBLE!": "rule"}
 SOURCE_TIP = {"real": "REAL: triggered by the connectome sim's own neurons firing above a threshold.",
               "rule": "RULE: a game rule, not something the connectome sim produced."}
 
@@ -1479,7 +1516,7 @@ def draw_source_chip(surf, pos, source: str, font, anchor: str = "midtop", alpha
     return r
 
 
-TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0)
+TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0, pygame.K_MINUS)
 TORCH_KEYS = (("head", None), ("body", None), ("legs", "L"), ("legs", "R"), ("wing", "L"), ("wing", "R"), ("heat", None))
 OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
 CURSOR_SIZE = {"flick": 12, "swatter": 38, "bomb": 16, "torch": 18, "cleaner": 22, "zapper": 16, "freeze": 22, "spider": 20}
@@ -1738,7 +1775,7 @@ SURGERY = (  # label, how to find the neurons (see Game._surgery_rows)
     ("Every neuron", ("all", ())),
 )
 HELP = (
-    ("1-9, 0", "pick a tool (or click the toolbar)"),
+    ("1-9, 0, -", "pick a tool (or click the toolbar)"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery: silence or stimulate neuron groups"),
     ("E", "change arena: room, fan, flypaper, pool, lamp"),
@@ -2223,6 +2260,7 @@ class Game:
         self.death_frames: list = []
         self.clear_transients()
         self.sugars: list[dict] = []
+        self.alcohols: list[dict] = []
         self.surgery_modes = [0] * len(SURGERY)
         self.type_ops = {}
 
@@ -2285,10 +2323,13 @@ class Game:
     # --- save states -------------------------------------------------------------------------------------------------
     def save_extra(self, arrays: dict, now: float) -> dict:
         return dict(sugars=[dict(p=[float(x) for x in sg["p"]], v=float(sg.get("v", 0.0)), left=float(sg["left"]))
-                            for sg in self.sugars])
+                            for sg in self.sugars],
+                    alcohols=[dict(p=[float(x) for x in al["p"]], v=float(al.get("v", 0.0)), left=float(al["left"]))
+                              for al in self.alcohols])
 
     def load_extra(self, extra: dict, z, now: float) -> None:
         self.sugars = [dict(p=np.array(sg["p"]), v=sg["v"], left=sg["left"]) for sg in extra.get("sugars", [])]
+        self.alcohols = [dict(p=np.array(al["p"]), v=al["v"], left=al["left"]) for al in extra.get("alcohols", [])]
 
     def prepare_load(self, n: int, seeds: list[int]) -> None:
         """Match the number of flies to a save (using brains built for it in the background) and clear effects."""
@@ -2676,7 +2717,7 @@ class Game:
     def _threats(self, slot: "FlySlot", now: float, mouse) -> list:
         out = []
         name = TOOLS[self.tool][0]
-        if not self.cfg["brain.autopilot"] and not self._overlay_open() and mouse[0] < PLAY_W and mouse[1] < FLOOR and name not in ("hand", "sugar"):
+        if not self.cfg["brain.autopilot"] and not self._overlay_open() and mouse[0] < PLAY_W and mouse[1] < FLOOR and name not in ("hand", "sugar", "alcohol"):
             out.append(("cursor", np.array(mouse, float), CURSOR_SIZE.get(name, 16)))
         for sw in self.swats:
             ph = (now - sw[1]) / 0.55
@@ -2733,6 +2774,8 @@ class Game:
         if any(abs(sg["p"][0] - fly.p[HEAD, 0]) < 400 for sg in self.sugars):
             slot.sugar_scent = True
             slot.brain.poke("scent", "sugar", 0.3)
+        if any(abs(al["p"][0] - fly.p[HEAD, 0]) < 400 for al in self.alcohols):
+            slot.brain.poke("scent", "alcohol", 0.35)
 
     # --- real training (memory.py) --------------------------------------------------------------------------------
     def _learn(self, slot: "FlySlot", now: float) -> None:
@@ -3657,6 +3700,9 @@ class Game:
         elif name == "sugar" and len(self.sugars) < 3:
             self.sugars.append({"p": np.array(pos, float), "v": 0.0, "left": 1.0})
             self.sound.play("pop")
+        elif name == "alcohol" and len(self.alcohols) < 3:
+            self.alcohols.append({"p": np.array(pos, float), "v": 0.0, "left": 1.0})
+            self.sound.play("drop")
 
     def _spray(self, mouse, now: float, kind: str) -> None:
         """Mist toward the nearest fly, but drenches every fly it passes over. Brake cleaner soaks (dissolves; smell
@@ -3745,9 +3791,12 @@ class Game:
             self._effects_one(slot, now)
         self._spider(now)
         self._sugar(now)
+        self._alcohol(now)
 
     def _effects_one(self, slot: "FlySlot", now: float) -> None:
         fly = slot.fly
+        if getattr(fly, "inebriation", 0.0) > 0:
+            fly.inebriation = max(0.0, fly.inebriation - 0.00035)   # ethanol metabolism (~45s)
         if self.immortal:                                    # melting and venom stop short and wear off
             fly.melt = min(fly.melt, 0.85)
             if fly.soak < 0.05:
@@ -3866,6 +3915,44 @@ class Game:
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
                 self.sugars.remove(s)
+                break
+
+    def _alcohol(self, now: float) -> None:
+        """Alcohol drop: each fly walks over and sips the nearest droplet (fermented fruit / ethanol).
+        Connectome component: PAM dopaminergic reward excitation (316 neurons) + sweet taste pathway.
+        Game rule component: escalating motor degradation (inebriation: uncoordinated tremors, wobbly drift, stumbling gait, delayed jump reflexes)."""
+        for a in self.alcohols:
+            if a["p"][1] < FLOOR - 8:
+                a["v"] += 0.9
+                a["p"][1] = min(FLOOR - 8, a["p"][1] + a["v"])
+        if not self.alcohols:
+            return
+        for slot in self.flies:
+            fly = slot.fly
+            if fly.dead or fly.wrapped or fly.frozen_at is not None or fly.grabbed is not None:
+                continue
+            a = min(self.alcohols, key=lambda a: abs(a["p"][0] - fly.p[THX, 0]))
+            dx = a["p"][0] - fly.p[HEAD, 0]
+            on_floor = fly.p[THX, 1] > FLOOR - STAND - 30 and now >= fly.escape_until
+            if abs(dx) > 30:
+                if on_floor and now >= fly.stun_until:
+                    fly.facing = 1 if dx > 0 else -1
+                    fly.walk_until, fly.run = now + 0.2, False
+                continue
+            if not on_floor or a["p"][1] < FLOOR - 10:
+                continue
+            if now >= fly.eating_until:
+                self.popup(fly.p[HEAD] + (0, -60), random.choice(("SIP...", "GLUG!", "*HIC*")), (255, 140, 210))
+                self.sound.play("yum")
+                self.note("ALCOHOL  drinking: sweet + PAM reward [GAME RULE: inebriation]", source="rule")
+            fly.eating_until = now + 0.4
+            a["left"] -= 1 / 240
+            slot.brain.poke("taste", None, 0.5)
+            slot.brain.poke("sweet", None, 0.6, recruit=0.6)
+            slot.brain.poke("reward", None, 0.6)
+            fly.inebriation = min(1.0, getattr(fly, "inebriation", 0.0) + 0.008)
+            if a["left"] <= 0:
+                self.alcohols.remove(a)
                 break
 
     def _torch(self, mouse, now: float) -> None:
@@ -4282,6 +4369,13 @@ class Game:
             aapoly(arena, [(x - e, y - e * 0.4), (x, y - e), (x + e, y - e * 0.4), (x, y + e * 0.2)], (250, 250, 255))
             aapoly(arena, [(x - e, y - e * 0.4), (x, y + e * 0.2), (x, y + e), (x - e, y + e * 0.5)], (215, 215, 228))
             aapoly(arena, [(x, y + e * 0.2), (x + e, y - e * 0.4), (x + e, y + e * 0.5), (x, y + e)], (185, 185, 205))
+        for a in self.alcohols:
+            k_ = max(0.35, a["left"])
+            x, y = a["p"]
+            r = int(9 * k_)
+            aapoly(arena, [(x - r, y), (x, y - int(r * 0.8)), (x + r, y), (x, y + int(r * 0.8))], (215, 75, 125))
+            aacircle(arena, (int(x), int(y)), r, (235, 90, 140))
+            aacircle(arena, (int(x - r * 0.3), int(y - r * 0.2)), max(1, int(r * 0.35)), (255, 180, 210))
         self._draw_arena_front(arena, now)
         self._clean_frame = arena.copy()
         if self.torching and TOOLS[self.tool][0] == "torch" and self.report is None and mouse[0] < PLAY_W:
@@ -4464,6 +4558,16 @@ class Game:
         self._draw_pain(surf)
         self._draw_reward(surf)
         self._draw_memory(surf)
+        if getattr(fly, "inebriation", 0.0) > 0.02:
+            ix, iy, iw, ih = 10, 452, 236, 40
+            if iy + ih < FLOOR:
+                icard = pygame.Surface((iw, ih), pygame.SRCALPHA)
+                pygame.draw.rect(icard, (36, 16, 26, 195), icard.get_rect(), border_radius=8)
+                surf.blit(icard, (ix, iy))
+                pct = int(fly.inebriation * 100)
+                st_str = "wobbly" if pct < 35 else "stumbling" if pct < 70 else "inebriated"
+                self._text(surf, f"ALCOHOL {pct}% ({st_str})", (ix + 10, iy + 4), (255, 140, 190), self.f_small)
+                self._text(surf, "[GAME RULE: motor degradation]", (ix + 10, iy + 20), (215, 160, 180), self.f_small)
 
     def _draw_reward(self, surf) -> None:
         x, y, w, h = 10, 308, 236, 64
@@ -4520,11 +4624,11 @@ class Game:
         if self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]:
             self.tool_rects = []
             return
-        bw, gap = 80, 6
+        bw, gap = 72, 5
         x0 = (PLAY_W - bw * len(TOOLS) - gap * (len(TOOLS) - 1)) // 2
         self.tool_rects = []
         name, label, hint = TOOLS[self.tool]
-        key = "0" if self.tool == 9 else str(self.tool + 1)
+        key = "0" if self.tool == 9 else ("-" if self.tool == 10 else str(self.tool + 1))
         self._text(surf, f"{key}  {label}: {hint}", (PLAY_W // 2, FLOOR + 10), INK, self.f_bold, "midtop")
         for k, (name, label, hint) in enumerate(TOOLS):
             r = pygame.Rect(x0 + k * (bw + gap), FLOOR + 38, bw, 64)
@@ -4535,7 +4639,8 @@ class Game:
             surf.blit(card, r)
             pygame.draw.rect(surf, AMBER if on else BORDER, r, 2, border_radius=10)
             draw_icon(surf, name, (r.centerx, r.y + 24), AMBER if on else TEXT)
-            self._text(surf, "0" if k == 9 else str(k + 1), (r.x + 7, r.y + 4), LABEL, self.f_small)
+            k_lbl = "0" if k == 9 else ("-" if k == 10 else str(k + 1))
+            self._text(surf, k_lbl, (r.x + 7, r.y + 4), LABEL, self.f_small)
             self._text(surf, label, (r.centerx, r.y + 44), AMBER if on else INK, self.f_small, "midtop")
 
     def _draw_brain(self, now: float) -> None:
@@ -4826,8 +4931,8 @@ class Game:
             if ev.key == pygame.K_s and self.cfg.action_for("s") in (None, *config.MOVEMENT_3D_ONLY):
                 self.save_png()                          # S has always saved a screenshot in the 2D game
                 return True
-            if ev.key in TOOL_KEYS:
-                self.tool = TOOL_KEYS.index(ev.key)
+            if ev.key in TOOL_KEYS or ev.key == pygame.K_KP_MINUS:
+                self.tool = 10 if ev.key == pygame.K_KP_MINUS else TOOL_KEYS.index(ev.key)
                 return True
             action = self.cfg.action_for(pygame.key.name(ev.key))
             if action is not None:

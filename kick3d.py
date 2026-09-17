@@ -68,7 +68,7 @@ def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int, ui_scale: fl
     view_w = play_w if PANEL_MODES[panel_mode][0] == "solid" else hud_w
     return s, hud_w, hud_h, play_w, view_w
 TOOL_SIZE = {"flick": 0.06, "swatter": 0.2, "bomb": 0.08, "torch": 0.09, "cleaner": 0.09, "zapper": 0.12,
-             "freeze": 0.09, "spider": 0.08}
+             "freeze": 0.09, "spider": 0.08, "alcohol": 0.07}
 SKY_CLEAR = (0.08, 0.09, 0.11)
 PLAYER_HP, PLAYER_RADIUS = 100.0, 0.32
 PELLET_SPEED, PELLET_SPREAD, PELLET_DAMAGE = 9.0, 0.035, 9.0     # m/s, radians of scatter, health per hit
@@ -92,7 +92,7 @@ COLLIDERS = [
 HELP3D = (
     ("WASD", "walk (Shift sprint, Ctrl crouch)"),
     ("Mouse", "look; left click uses the tool in your hand"),
-    ("1-9, 0 / wheel", "pick a tool"),
+    ("1-9, 0, - / wheel", "pick a tool"),
     ("Tab", "free the mouse to click the brain panel and menus"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery"),
@@ -195,6 +195,7 @@ class Fly3D:
         self.arena = "room"
         self.wind = np.zeros(3)
         self.wet = 0.0
+        self.inebriation = 0.0
         self.stuck: dict[int, np.ndarray] = {}
 
     @property
@@ -232,12 +233,16 @@ class Fly3D:
 
     def escape(self, now: float, seconds: float = 2.4, wander: bool = False) -> None:
         away = self.away_from(self.last_hit)
-        self.prev[:] = self.p - (away * 4.0 * S + np.array([0, 9.0 * S, 0]))
+        launch = away * 4.0 * S + np.array([0, 9.0 * S, 0])
+        if getattr(self, "inebriation", 0.0) > 0:
+            launch += np.random.normal(0, 2.5 * S * self.inebriation, 3)
+        self.prev[:] = self.p - launch
         self.hover = self.p[THX].copy()
         self.wander = wander
         self._new_target(None if wander else away)
         self.escape_until = now + seconds
-        self.escape_ready = now + seconds + 1.0
+        delay = 2.0 * getattr(self, "inebriation", 0.0)
+        self.escape_ready = now + seconds + 1.0 + delay
 
     def _new_target(self, away=None) -> None:
         for _ in range(12):
@@ -301,6 +306,10 @@ class Fly3D:
             idx = list(KNEE + FOOT)
             self.p[idx] += np.random.normal(0, 2.5 * S, (12, 3))
 
+        if getattr(self, "inebriation", 0.0) > 0 and not self.dead:
+            # Uncoordinated motor tremors (GAME RULE: alcohol inebriation)
+            self.p += np.random.normal(0, 1.8 * S * self.inebriation, (N_P, 3))
+
         posed = strength > 0.5
         for _ in range(6):
             if self.grabbed is not None:
@@ -342,7 +351,13 @@ class Fly3D:
         self.yaw += wrap(self.yaw_target - self.yaw) * 0.15
         self.anchor = self.hover[[0, 2]].copy()
         self.action = "flying"
-        tgt = to_world(REST3, self.yaw) + self.hover + (0, 4 * S * math.sin(now * 9), 0)
+        bob = 4 * S * math.sin(now * 9)
+        if getattr(self, "inebriation", 0.0) > 0:
+            # Erratic 3D flight drift (GAME RULE: alcohol inebriation)
+            self.hover += np.array([math.sin(now * 3.7) * 4.5 * S * self.inebriation,
+                                    math.sin(now * 2.5) * 2.0 * S * self.inebriation,
+                                    math.cos(now * 2.9) * 4.5 * S * self.inebriation])
+        tgt = to_world(REST3, self.yaw) + self.hover + (0, bob, 0)
         f, u, _ = body_axes(self.yaw)
         for i in range(6):
             tgt[FOOT[i]] = tgt[KNEE[i]] - f * 6 * S - u * 14 * S
@@ -371,7 +386,16 @@ class Fly3D:
         if v:
             self.phase += 0.12 * abs(v) / S
         s = 1 - 0.35 * self.melt
-        tgt = to_world(REST3 * s, self.yaw) + (self.anchor[0], STAND3 * s + 1.5 * S * math.sin(now * 2.2), self.anchor[1])
+        bob = 1.5 * S * math.sin(now * 2.2)
+        tgt = to_world(REST3 * s, self.yaw) + (self.anchor[0], STAND3 * s + bob, self.anchor[1])
+        if getattr(self, "inebriation", 0.0) > 0:
+            # Stumbling gait and wobbling roll/pitch drift (GAME RULE: alcohol inebriation)
+            wobble = math.sin(now * 3.8) * 6.0 * S * self.inebriation
+            self.yaw += 0.04 * self.inebriation * math.sin(now * 2.7)
+            tgt[:, 0] += wobble
+            tgt[:, 1] += math.cos(now * 4.5) * 3.0 * S * self.inebriation
+            if v:
+                self.phase += 0.06 * self.inebriation * math.sin(now * 7.0)
         for leg in range(6):
             ph = self.phase + math.pi * TRIPOD[leg]
             if v:
@@ -563,6 +587,8 @@ class Game3D(k2.Game):
         return dict(
             sugars3=[dict(p=[float(x) for x in sg["p"]], v=[float(x) for x in sg["v"]], left=float(sg["left"]),
                           landed=bool(sg["landed"])) for sg in self.sugars3],
+            alcohols3=[dict(p=[float(x) for x in al["p"]], v=[float(x) for x in al["v"]], left=float(al["left"]),
+                            landed=bool(al["landed"])) for al in getattr(self, "alcohols3", [])],
             player=dict(pos=[float(x) for x in pl.pos], yaw=pl.yaw, pitch=pl.pitch, eye_h=pl.eye_h,
                         vel=[float(x) for x in pl.vel]),
             duel=bool(self.duel), player_hp=float(self.player_hp), duel_stats=dict(self.duel_stats),
@@ -571,6 +597,8 @@ class Game3D(k2.Game):
     def load_extra(self, extra: dict, z, now: float) -> None:
         self.sugars3 = [dict(p=np.array(sg["p"]), v=np.array(sg["v"]), left=sg["left"], landed=sg["landed"])
                         for sg in extra.get("sugars3", [])]
+        self.alcohols3 = [dict(p=np.array(al["p"]), v=np.array(al["v"]), left=al["left"], landed=al["landed"])
+                          for al in extra.get("alcohols3", [])]
         pl, sp = self.player, extra.get("player")
         if sp:
             pl.pos, pl.yaw, pl.pitch, pl.eye_h = np.array(sp["pos"]), sp["yaw"], sp["pitch"], sp["eye_h"]
@@ -746,6 +774,7 @@ class Game3D(k2.Game):
     def new_fly(self) -> None:
         super().new_fly()
         self.sugars3: list = []
+        self.alcohols3: list = []
 
     def clear_transients(self) -> None:
         super().clear_transients()
@@ -801,7 +830,7 @@ class Game3D(k2.Game):
         """Your body or the tool in your hand, whichever is closer to the fly's head, in fly lengths (0.55 m)."""
         head = slot.fly.p[HEAD]
         d = float(np.linalg.norm((self.player.eye - head)[[0, 2]]))          # your body: distance along the floor
-        if TOOLS[self.tool][0] not in ("hand", "sugar"):
+        if TOOLS[self.tool][0] not in ("hand", "sugar", "alcohol"):
             d = min(d, float(np.linalg.norm(self.tool_tip() - head)))
         return d / 0.55
 
@@ -882,6 +911,10 @@ class Game3D(k2.Game):
             self.throw_t = now
             self.sugars3.append(dict(p=self.tool_tip(), v=d * 0.07 + np.array([0, 0.02, 0]), left=1.0, landed=False))
             self.sound.play("pop")
+        elif name == "alcohol" and len(self.alcohols3) < 3 and now - self.throw_t > 0.3:
+            self.throw_t = now
+            self.alcohols3.append(dict(p=self.tool_tip(), v=d * 0.07 + np.array([0, 0.02, 0]), left=1.0, landed=False))
+            self.sound.play("drop")
 
     def _swat3d(self, now: float) -> None:
         eye, d = self.aim()
@@ -1051,7 +1084,7 @@ class Game3D(k2.Game):
             eye = self.player.eye
             out.append(("player", eye - (0, 0.35, 0), 0.28))
             name = TOOLS[self.tool][0]
-            if name not in ("hand", "sugar"):
+            if name not in ("hand", "sugar", "alcohol"):
                 out.append(("tool", self.tool_tip(), TOOL_SIZE.get(name, 0.08)))
             ph = now - self.swing_t
             if ph < 0.14:
@@ -1102,6 +1135,8 @@ class Game3D(k2.Game):
         if any(np.linalg.norm((s["p"] - head)[[0, 2]]) < 2.4 for s in self.sugars3):
             slot.sugar_scent = True
             slot.brain.poke("scent", "sugar", 0.3)
+        if any(np.linalg.norm((a["p"] - head)[[0, 2]]) < 2.4 for a in self.alcohols3):
+            slot.brain.poke("scent", "alcohol", 0.35)     # fermented fruit odor on DM1/DM2/DP1m (real ORNs)
         slot.player_scent = bool(self.duel and slot is self.flies[self.focus] and self.player_dead_at is None
                                  and np.linalg.norm((self.player.eye - head)[[0, 2]]) < 3.5)
         if slot.player_scent:
@@ -1248,9 +1283,12 @@ class Game3D(k2.Game):
             self._effects_one(slot, now)
         self._spider3d(now)
         self._sugar3d(now)
+        self._alcohol3d(now)
 
     def _effects_one(self, slot: "k2.FlySlot", now: float) -> None:
         fly = slot.fly
+        if getattr(fly, "inebriation", 0.0) > 0:
+            fly.inebriation = max(0.0, fly.inebriation - 0.00035)   # ethanol metabolism (~45s)
         if self.immortal:
             fly.melt = min(fly.melt, 0.85)
             if fly.soak < 0.05:
@@ -1378,6 +1416,50 @@ class Game3D(k2.Game):
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
                 self.sugars3.remove(s)
+                break
+
+    def _alcohol3d(self, now: float) -> None:
+        """Alcohol drop: each fly walks over and sips the nearest droplet (fermented fruit / ethanol).
+        Connectome: the sweet taste pathway and the PAM dopaminergic reward neurons, as for sugar.
+        Game rule: the escalating inebriation (tremors, wobbly drift, stumbling gait, slower escape reflexes)."""
+        for a in self.alcohols3:
+            if not a["landed"]:
+                a["v"][1] -= GRAV
+                a["p"] += a["v"]
+                for ax, lim in ((0, RX - 0.05), (2, RZ - 0.05)):
+                    if abs(a["p"][ax]) > lim:
+                        a["p"][ax] = math.copysign(lim, a["p"][ax])
+                        a["v"][ax] *= -0.4
+                if a["p"][1] <= 0.03:
+                    a["p"][1], a["landed"] = 0.03, True
+        if not self.alcohols3:
+            return
+        for slot in self.flies:
+            fly = slot.fly
+            if fly.dead or fly.wrapped or fly.frozen_at is not None or fly.grabbed is not None:
+                continue
+            a = min(self.alcohols3, key=lambda a: float(np.linalg.norm((a["p"] - fly.p[THX])[[0, 2]])))
+            dxz = (a["p"] - fly.p[HEAD])[[0, 2]]
+            on_floor = fly.p[THX, 1] < STAND3 + 0.2 and now >= fly.escape_until
+            if float(np.linalg.norm(dxz)) > 0.2:
+                if on_floor and now >= fly.stun_until and a["landed"]:
+                    fly.yaw_target = math.atan2(dxz[1], dxz[0])
+                    fly.walk_until, fly.run = now + 0.2, False
+                continue
+            if not on_floor or not a["landed"]:
+                continue
+            if now >= fly.eating_until:
+                self.popup(fly.p[HEAD] + (0, 0.4, 0), random.choice(("SIP...", "GLUG!", "*HIC*")), (255, 140, 210))
+                self.sound.play("yum")
+                self.note("ALCOHOL  drinking: sweet + PAM reward [GAME RULE: inebriation]", source="rule")
+            fly.eating_until = now + 0.4
+            a["left"] -= 1 / 240
+            slot.brain.poke("taste", None, 0.5)
+            slot.brain.poke("sweet", None, 0.6, recruit=0.6)          # the sugar-pathway taste neurons (assays.py)
+            slot.brain.poke("reward", None, 0.6)                      # PAM dopaminergic reward (real neurons)
+            fly.inebriation = min(1.0, getattr(fly, "inebriation", 0.0) + 0.008)   # GAME RULE
+            if a["left"] <= 0:
+                self.alcohols3.remove(a)
                 break
 
     def _die(self, slot: "k2.FlySlot", now: float) -> None:
@@ -1878,6 +1960,14 @@ class Game3D(k2.Game):
         for s in self.sugars3:
             e = max(0.35, s["left"]) * 0.07
             rd.add("cube", trs(s["p"], rot_y(0.5), (e, e, e)), (0.98, 0.98, 1.0), P_NONE, 0.1)
+        for a in self.alcohols3:                             # a shallow pink puddle of fermented fruit juice
+            e = max(0.35, a["left"]) * 0.09
+            flat = 0.35 if a["landed"] else 0.9
+            rd.add("sphere", trs(a["p"], None, (e, e * flat, e)), (0.86, 0.32, 0.55, 0.85), P_NONE, 0.25)
+            rd.add("sphere", trs(a["p"] + (e * 0.3, e * flat * 0.5, -e * 0.2), None, (e * 0.3,) * 3),
+                   (1.0, 0.72, 0.85, 0.7), P_NONE, 0.4)
+            if a["landed"]:
+                self._shadow(rd, a["p"], e * 1.3)
         if self.spider3 is not None:
             sp = self.spider3
             x, y, z = sp["p"]

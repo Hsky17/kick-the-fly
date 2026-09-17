@@ -170,7 +170,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("timelapse", "Time-lapse record", "l"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
-RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound
+RESERVED_KEYS = {"escape", *"0123456789", "-"}           # the pause menu and the tool keys can't be rebound
 MOVEMENT_3D_ONLY = {"forward", "back", "left", "right", "sprint", "crouch", "free_mouse", "duel", "panel", "menu_size"}
 
 

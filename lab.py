@@ -169,6 +169,16 @@ ASSUMPTIONS = (
      "Stochasticity mimics thermal channel noise, spontaneous miniature EPSPs, and unmodeled inputs from sensory organs, preventing artificial deterministic synchronization across identical network paths.",
      "lab.py:PARAMS (noise_std=0.05) · connectome/sim.py"),
 
+    ("Alcohol inebriation as scripted motor degradation",
+     "GAME RULE",
+     "Drinking the alcohol drop drives the real sweet taste pathway and the PAM dopaminergic reward neurons, but the "
+     "drunkenness itself is scripted: an 'inebriation' number rises 0 to 1 while sipping and decays over ~45 s, and "
+     "the game adds tremors, wobbly flight, a stumbling gait and slower escape reflexes in proportion to it.",
+     "Ethanol in real flies acts pharmacologically on membranes and receptors across the whole nervous system "
+     "(altered channel gating, dopaminergic and octopaminergic signalling), which this connectome sim does not model. "
+     "No neuron here is made drunk: the motor degradation is applied to the body, not to the simulated brain.",
+     "README.md § Connectome vs Game Rule · kick_the_fly.py:Game._alcohol · kick3d.py:Game3D._alcohol3d"),
+
     ("Left/Right asymmetry as EM reconstruction artifact risk",
      "DATASET",
      "Asymmetries in synaptic weights or firing between left and right hemibrains reflect both biology and reconstruction noise.",
@@ -195,6 +205,7 @@ def page_assumptions(m: ui.Menu, surf, rect, mouse) -> None:
         "DYNAMICS": (240, 160, 60),
         "TUNING": (80, 200, 140),
         "DATASET": (240, 100, 100),
+        "GAME RULE": (220, 150, 50),
     }
 
     card_h = 136
