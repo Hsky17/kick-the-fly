@@ -80,6 +80,9 @@ def metadata(brain=None, game=None, extra: dict | None = None) -> dict:
                                          stimulated=int(np.count_nonzero(brain.override > 0))),
                     pain_level=int(brain.pain_level))
     if game is not None:
+        w = getattr(game, "wiring", None)
+        if w is not None:
+            meta["wiring"] = w.as_dict()
         meta.update(mode="3d" if game.three_d else "2d", arena=k.ARENAS[game.arena_i],
                     lab_params=dict(game.lab_params), lab_params_modified=lab.modified(game.lab_params),
                     surgery={label: mode for (label, _), mode in zip(k.SURGERY, game.surgery_modes) if mode},

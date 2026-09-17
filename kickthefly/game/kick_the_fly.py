@@ -1828,6 +1828,9 @@ class Game:
         self.want_quit = False
         self.train_active_speed = 1.0
         self.graph, self.weights = graph, weights     # the loaded connectome, kept so spawn_fly() can build more brains
+        from kickthefly.sim.wiring import Wiring
+        self.wiring = Wiring()                        # Lab: changes to the connectome itself, off by default
+        self.wiring_busy = ""
         self._next_seed = 1
         self._spawning = False
         self._new_slot: FlySlot | None = None
@@ -2071,6 +2074,8 @@ class Game:
                  "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
                 ("Model assumptions", "lab_assumptions", "Transparent disclosure of biophysical simplifications and EM reconstruction caveats."),
                 ("Asymmetry audit", "lab_asymmetry", "Measure baseline turning bias and bilateral L vs R synapse & firing asymmetries."),
+                ("Connectome robustness", "lab_wiring", "Drop weak connections, flip uncertain neurotransmitter signs "
+                 "or block inhibition, and see which validated behaviors survive."),
                 ("Simulation benchmark", "lab_benchmark", "Measure simulation throughput (neurons/s, synapses/s, sim vs real time) for 1, 8, 16 flies."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
@@ -2336,14 +2341,49 @@ class Game:
         lab.apply_to_sim(sim, self.lab_params)
         new_brain = Brain(self.graph, sim, seed=seed)
         new_brain.set_pain_level(self.pain_level)
+        new_brain.graph = self.graph
         if getattr(self.graph, "dan_mbon", None) is not None:
             from kickthefly.core import memory
             new_brain.memory = memory.Memory(self.graph, sim)
             # it still loads the primary's saved weights as a starting point and learns live from there, but
             # never writes back to that shared file (no matter which code path calls .save(), now or later)
             new_brain.memory.save = lambda: None
+        if not self.wiring.is_identity:               # a fly spawned under a Lab wiring gets the same connectome
+            from kickthefly.sim import wiring as wiring_mod
+
+            wiring_mod.apply(new_brain, self.wiring, self.graph)
         new_brain.warmup()
         return new_brain
+
+    # --- Lab: changing the connectome itself -----------------------------------------------------------------------
+    def set_wiring(self, w, note: bool = True) -> None:
+        """Rebuild every live fly's synapse matrix under a new wiring (threshold, sign flips, inhibition block).
+
+        Runs on a worker thread: rebuilding the column copy of 10.3M synapses takes about a second per fly, and the
+        brains keep stepping meanwhile, each one pausing only for its own swap.
+        """
+        from kickthefly.sim import wiring as wiring_mod
+
+        if self.wiring_busy:
+            return
+        self.wiring = w
+        self.wiring_busy = w.label()
+
+        def work():
+            try:
+                for slot in list(self.flies):
+                    br = slot.brain
+                    with br.step_lock:
+                        wiring_mod.apply(br, w, self.graph)
+                if note:
+                    self.note(f"WIRING   {w.label()}")   # like SURGERY and ARENA: a setting, not a reaction
+            except Exception as e:
+                log.exception("applying the wiring failed")
+                self.menu.flash(f"wiring failed: {e}", menu_ui.BAD)
+            finally:
+                self.wiring_busy = ""
+
+        threading.Thread(target=work, name="wiring", daemon=True).start()
 
     # --- save states -------------------------------------------------------------------------------------------------
     def save_extra(self, arrays: dict, now: float) -> dict:
@@ -5230,6 +5270,9 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--audit-asymmetry", dest="audit_asymmetry", action="store_true", help="run bilateral asymmetry audit and exit")
     ap.add_argument("--mirror-weights", dest="mirror_weights", action="store_true", help="mirror-average synaptic weights (game rule: data modification)")
     ap.add_argument("--benchmark", action="store_true", help="run simulation throughput benchmark (1, 8, 16 flies) and exit")
+    ap.add_argument("--threshold-sweep", dest="threshold_sweep", action="store_true",
+                    help="re-run the validated behaviors at a range of minimum-synapse thresholds and exit")
+    ap.add_argument("--thresholds", type=int, nargs="+", help="minimum-synapse thresholds for --threshold-sweep")
     ap.add_argument("--flies", type=int, nargs="+", help="flies count list for benchmark (default: 1 8 16)")
     ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
@@ -5251,7 +5294,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Kick the Fly %s on %s", __version__, crash.os_description())
     for n in p.notes:
         log.info(n)
-    if args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False) or getattr(args, "benchmark", False):
+    if (args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False)
+            or getattr(args, "benchmark", False) or getattr(args, "threshold_sweep", False)):
         from kickthefly.lab import headless
 
         return headless.main(args)

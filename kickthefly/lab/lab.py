@@ -83,15 +83,29 @@ def page_hub(m: ui.Menu, surf, rect, mouse) -> None:
     m.text(surf, "Research tools. Everything here runs on the same connectome sim as the game.", (rect.x + 24, rect.y + 50),
            ui.LABEL, m.f_small)
     items = [(label, page, tip) for label, page, tip in host.lab_pages() if page in m.pages]
+    body = pygame.Rect(rect.x + 8, rect.y + 84, rect.w - 16, rect.h - 84 - 96)
+    off = int(m.scroll.get("lab", 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
     bw, bh = (rect.w - 72) // 2, 64
     for i, (label, page, tip) in enumerate(items):
         x = rect.x + 24 + (i % 2) * (bw + 24)
-        y = rect.y + 90 + (i // 2) * (bh + 16)
+        y = body.y + 6 + (i // 2) * (bh + 16) - off
         m.button(surf, (x, y, bw, bh), label, (lambda p=page: m.show(p)), id=("lab", page), tip=tip)
+    rows = (len(items) + 1) // 2
+    m.content_h["lab"] = max(0, body.y + 6 + rows * (bh + 16) - body.bottom + 8)
+    surf.set_clip(prev)
+    m.clip = None
     mod = modified(host.lab_params)
+    notes = []
     if mod:
-        m.text(surf, f"Modified parameters: {', '.join(BY_NAME[k][1] for k in mod)}", (rect.x + 24, rect.bottom - 100),
-               ui.AMBER, m.f_small)
+        notes.append(f"Modified parameters: {', '.join(BY_NAME[k][1] for k in mod)}")
+    w = getattr(host, "wiring", None)
+    if w is not None and not w.is_identity:
+        notes.append(f"Modified connectome: {w.label()}")
+    for i, note in enumerate(notes):
+        m.text(surf, note, (rect.x + 24, rect.bottom - 100 + i * 18), ui.AMBER, m.f_small)
     m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("lab", "back"))
 
 
@@ -176,6 +190,16 @@ ASSUMPTIONS = (
      "Ethanol acts pharmacologically across the whole nervous system (channel gating, dopaminergic and octopaminergic "
      "signalling), none of which is modelled. No simulated neuron is drunk: only the body's movement is degraded.",
      "README.md § Connectome vs Game Rule · kickthefly/game/kick_the_fly.py:Game._alcohol · kickthefly/game/kick3d.py:Game3D._alcohol3d"),
+
+    ("Weak connections are kept as real wiring",
+     "DATASET",
+     "Every connection the reconstruction found at least 3 synapses for is simulated as a real synapse, at full "
+     "strength for its count. The Lab's synapse threshold drops connections below any count you choose and re-runs "
+     "the validated behaviors, so you can see which results depend on them.",
+     "A contact reconstructed from a handful of synapses can be a mis-assigned fragment, an artefact of proofreading "
+     "depth, or a real but negligible connection. At a threshold of 5 synapses, 40% of this connectome's connections "
+     "and 2,828 neurons' entire input go; the four validated behaviors were re-run at 1, 4, 5, 6, 8 and 10.",
+     "kickthefly/sim/wiring.py · kickthefly/lab/robustness.py · Lab > Connectome robustness"),
 
     ("Left/Right asymmetry as EM reconstruction artifact risk",
      "DATASET",
@@ -458,6 +482,8 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_assumptions"] = page_assumptions
     menu.pages["lab_asymmetry"] = page_asymmetry
     menu.pages["lab_benchmark"] = page_benchmark
+    from kickthefly.lab import labwiring
+    menu.pages["lab_wiring"] = labwiring.page
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 

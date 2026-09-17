@@ -1,0 +1,221 @@
+"""Wiring manipulations: change the connectome the simulation runs on, reversibly, and say exactly what changed.
+
+Everything here edits the synapse matrix itself rather than driving neurons, so it answers a different question from
+brain surgery: not "what happens when this cell type is silenced" but "how much does this result depend on the
+reconstruction being right".
+
+  min_synapses     drop every connection reconstructed with fewer than N synapses. The EM reconstruction's weak
+                   connections are the ones most likely to be noise: a 1-2 synapse contact can be a mis-assigned
+                   fragment. A result that survives a threshold of 5 does not rest on them.
+  flip_rows        flip the sign of a neuron's outgoing synapses (excitatory <-> inhibitory). MaleCNS v1.0 predicts
+                   each neuron's neurotransmitter with a confidence; the low-confidence ones are where the sign in
+                   this simulation could be wrong.
+  inhibition_scale scale every synapse whose presynaptic neuron the dataset calls inhibitory (GABA or glutamate).
+                   At 0 they are gone; at 1 nothing changes.
+
+All three are reversible: apply() remembers the values it overwrote, so the next apply() or a clear() puts the brain
+back exactly as it was, learned synapses included.
+
+The manipulations use the dataset's own numbers (synapse counts, neurotransmitter predictions and their confidence).
+How a severity slider maps onto them, and which neurons a bulk flip picks, are choices this game makes.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from functools import lru_cache
+
+import numpy as np
+
+SIGN_OF = {"acetylcholine": 1, "gaba": -1, "glutamate": -1, "histamine": -1}
+INHIBITORY = ("gaba", "glutamate")
+
+
+@dataclass(frozen=True)
+class Wiring:
+    """One reversible change to the connectome. The default changes nothing."""
+
+    min_synapses: int = 1
+    flip_rows: tuple[int, ...] = field(default=())
+    inhibition_scale: float = 1.0
+
+    @property
+    def is_identity(self) -> bool:
+        return self.min_synapses <= 1 and not self.flip_rows and self.inhibition_scale == 1.0
+
+    def label(self) -> str:
+        bits = []
+        if self.min_synapses > 1:
+            bits.append(f"drop <{self.min_synapses} synapses")
+        if self.flip_rows:
+            bits.append(f"{len(self.flip_rows):,} neurons sign-flipped")
+        if self.inhibition_scale != 1.0:
+            bits.append(f"inhibition x{self.inhibition_scale:g}")
+        return ", ".join(bits) or "unmodified connectome"
+
+    def as_dict(self) -> dict:
+        """For metadata and exports: what was changed, without the (possibly huge) list of flipped neurons."""
+        return dict(min_synapses=int(self.min_synapses), flipped_neurons=len(self.flip_rows),
+                    inhibition_scale=float(self.inhibition_scale), label=self.label())
+
+    def with_rows(self, rows) -> "Wiring":
+        return Wiring(self.min_synapses, tuple(int(r) for r in rows), self.inhibition_scale)
+
+    @staticmethod
+    def from_dict(d: dict | None, rows=()) -> "Wiring":
+        """Rebuild from as_dict() plus the flipped rows, which save states keep as an array next to it."""
+        if not d:
+            return Wiring()
+        return Wiring(int(d.get("min_synapses", 1)), tuple(int(r) for r in rows),
+                      float(d.get("inhibition_scale", 1.0)))
+
+
+@lru_cache(maxsize=1)
+def synapse_counts() -> np.ndarray:
+    """|synapses| for every entry of W, in the brain pack's CSR order (the same order as sim.W_csr.data).
+
+    Read straight from the pack rather than divided back out of the rate-normalized weights, so the counts are the
+    dataset's integers and not a rounding of them.
+    """
+    from kickthefly.sim import brainpack
+
+    path = brainpack.find()
+    if path is None:
+        raise FileNotFoundError("brain pack kick_brain.npz not found")
+    with np.load(path) as z:
+        return np.abs(z["data"]).astype(np.int32)
+
+
+@lru_cache(maxsize=1)
+def edge_pre() -> np.ndarray:
+    """The presynaptic neuron's row for every entry of W (W is [post, pre], so this is W.indices)."""
+    from kickthefly.sim import brainpack
+
+    path = brainpack.find()
+    with np.load(path) as z:
+        return z["indices"].astype(np.int32)
+
+
+@lru_cache(maxsize=1)
+def edge_post() -> np.ndarray:
+    """The postsynaptic neuron's row for every entry of W."""
+    from kickthefly.sim import brainpack
+
+    path = brainpack.find()
+    with np.load(path) as z:
+        return np.repeat(np.arange(len(z["inv"]), dtype=np.int32), np.diff(z["indptr"]))
+
+
+def threshold_stats(n: int) -> dict:
+    """What a minimum-synapse threshold of n would remove, counted over the whole connectome."""
+    counts = synapse_counts()
+    pre, post = edge_pre(), edge_post()
+    total = int(len(counts))
+    drop = counts < max(1, int(n))
+    n_drop = int(drop.sum())
+    n_neurons = int(max(pre.max(), post.max())) + 1 if total else 0
+    kept = ~drop
+    in_before = np.bincount(post, minlength=n_neurons)
+    in_after = np.bincount(post[kept], minlength=n_neurons)
+    out_before = np.bincount(pre, minlength=n_neurons)
+    out_after = np.bincount(pre[kept], minlength=n_neurons)
+    touched = np.bincount(post[drop], minlength=n_neurons) + np.bincount(pre[drop], minlength=n_neurons)
+    return dict(
+        threshold=int(n), connections=total, connections_dropped=n_drop,
+        connections_dropped_share=n_drop / max(1, total),
+        synapses=int(counts.sum()), synapses_dropped=int(counts[drop].sum()),
+        neurons=n_neurons, neurons_touched=int(np.count_nonzero(touched)),
+        neurons_cut_off=int(np.count_nonzero((in_before > 0) & (in_after == 0))),
+        neurons_silenced_output=int(np.count_nonzero((out_before > 0) & (out_after == 0))),
+    )
+
+
+def _inhibitory_edges(g) -> np.ndarray:
+    """Entries of W whose presynaptic neuron the dataset calls inhibitory (GABA or glutamate)."""
+    nt = getattr(g, "nt", None)
+    if nt is None:
+        raise ValueError("this brain pack has no neurotransmitter predictions; rebuild it with "
+                         "`python -m kickthefly.sim.brainpack build`")
+    inhib = np.isin(np.asarray(nt).astype(str), INHIBITORY)
+    return inhib[edge_pre()]
+
+
+def modified_entries(g, w: Wiring) -> tuple[np.ndarray, np.ndarray]:
+    """(entry indices this wiring changes, multiplier to apply to each). Multiplying keeps learned weights learned."""
+    counts = synapse_counts()
+    mult = np.ones(len(counts), np.float32)
+    if w.min_synapses > 1:
+        mult[counts < w.min_synapses] = 0.0
+    if w.flip_rows:
+        flip = np.zeros(int(edge_pre().max()) + 1, bool)
+        flip[np.asarray(w.flip_rows, np.int64)] = True
+        mult[flip[edge_pre()]] *= -1.0
+    if w.inhibition_scale != 1.0:
+        mult[_inhibitory_edges(g)] *= np.float32(w.inhibition_scale)
+    idx = np.flatnonzero(mult != 1.0)
+    return idx, mult[idx]
+
+
+def apply(brain, w: Wiring, g=None) -> dict:
+    """Put this wiring on a live brain (or any object with .sim), undoing whatever wiring was on it first.
+
+    Returns what changed. Call under the brain's step lock if it is running on a thread.
+    """
+    sim = getattr(brain, "sim", brain)
+    g = g if g is not None else getattr(brain, "graph", None)
+    if g is None:
+        from kickthefly.core import simcore
+        g = simcore.pack()[0]
+    _restore(sim, brain)
+    if w.is_identity:
+        sim.wiring = Wiring()
+        return dict(changed=0, **Wiring().as_dict())
+    idx, mult = modified_entries(g, w)
+    saved = sim.W_csr.data[idx].copy()
+    sim.W_csr.data[idx] = saved * mult
+    sim.W_csc = sim.W_csr.tocsc()                       # structure is unchanged, so index maps stay valid
+    sim._wiring_idx, sim._wiring_saved = idx, saved
+    sim.wiring = w
+    mem = getattr(brain, "memory", None)
+    if mem is not None:                                 # keep learning from writing the change back out
+        _apply_to_memory(mem, idx, mult)
+    return dict(changed=int(len(idx)), **w.as_dict())
+
+
+def clear(brain) -> None:
+    apply(brain, Wiring())
+
+
+def _restore(sim, brain=None) -> None:
+    idx = getattr(sim, "_wiring_idx", None)
+    if idx is not None:
+        sim.W_csr.data[idx] = sim._wiring_saved
+        sim.W_csc = sim.W_csr.tocsc()
+        sim._wiring_idx = sim._wiring_saved = None
+    mem = getattr(brain, "memory", None) if brain is not None else None
+    if mem is not None and getattr(mem, "_wiring_saved", None) is not None:
+        with mem.lock:
+            pos, w0, ww = mem._wiring_saved
+            mem.w0[pos], mem.w[pos] = w0, ww
+            mem.sim.W_csr.data[mem.csr_pos] = mem.w
+            mem.sim.W_csc.data[mem.csc_pos] = mem.w
+            mem._wiring_saved = None
+
+
+def _apply_to_memory(mem, idx: np.ndarray, mult: np.ndarray) -> None:
+    """The plastic KC -> MBON synapses are written back from memory.w each update; change those the same way, or the
+    manipulation would quietly wear off on exactly the synapses learning touches."""
+    with mem.lock:
+        order = np.argsort(idx)
+        hit = np.searchsorted(idx[order], mem.csr_pos)
+        hit = np.clip(hit, 0, len(idx) - 1)
+        match = idx[order][hit] == mem.csr_pos
+        pos = np.flatnonzero(match)
+        if not len(pos):
+            mem._wiring_saved = None
+            return
+        m = mult[order][hit[pos]]
+        mem._wiring_saved = (pos, mem.w0[pos].copy(), mem.w[pos].copy())
+        mem.w0[pos] = mem.w0[pos] * m
+        mem.w[pos] = mem.w[pos] * m
+        mem.sim.W_csr.data[mem.csr_pos] = mem.w
+        mem.sim.W_csc.data[mem.csc_pos] = mem.w

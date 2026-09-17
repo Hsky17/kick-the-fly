@@ -62,6 +62,23 @@ def run_validate(args) -> int:
     return 0
 
 
+def run_threshold_sweep(args) -> int:
+    """--threshold-sweep: which validated behaviors survive dropping weakly reconstructed connections."""
+    from kickthefly.lab import recorder, robustness, validation
+
+    seeds = parse_seeds(args.seeds, validation.SEEDS)
+    thresholds = tuple(args.thresholds) if getattr(args, "thresholds", None) else robustness.DEFAULT_THRESHOLDS
+    t0 = time.time()
+    res = robustness.threshold_sweep(thresholds=thresholds, seeds=seeds, workers=args.workers,
+                                     progress=lambda d, n, label: print(f"  {d}/{n} {label} "
+                                                                        f"({time.time() - t0:.0f}s)", flush=True))
+    folder = Path(args.out) if args.out else recorder.exports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-threshold"
+    robustness.save(res, folder)
+    print(robustness.summary(res))
+    print(f"results written to {folder}")
+    return 0
+
+
 def audit_asymmetry(seconds: float = 5.0, seed: int = 0, mirror: bool = False) -> dict:
     """Audit bilateral asymmetry between left and right hemibrains:
     - Measures baseline turning bias with no input over a calm run
@@ -187,6 +204,8 @@ def main(args) -> int:
             return run_benchmark(args)
         if getattr(args, "audit_asymmetry", False):
             return run_audit_asymmetry(args)
+        if getattr(args, "threshold_sweep", False):
+            return run_threshold_sweep(args)
         if args.validate:
             return run_validate(args)
         if args.protocol:
@@ -197,7 +216,8 @@ def main(args) -> int:
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print("nothing to do: use --validate or --protocol FILE or --audit-asymmetry or --benchmark", file=sys.stderr)
+    print("nothing to do: use --validate, --protocol FILE, --audit-asymmetry, --benchmark or --threshold-sweep",
+          file=sys.stderr)
     return 2
 
 

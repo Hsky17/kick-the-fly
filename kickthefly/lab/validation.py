@@ -97,13 +97,13 @@ def _ratio(base: float, driven: float) -> float:
     return driven / max(base, 0.5)
 
 
-def _pathway_seed(seed: int) -> dict:
+def _pathway_seed(seed: int, wiring=None) -> dict:
     """All pathway tests for one seed, each drive and its control starting from the same brain snapshot."""
     from kickthefly.lab import assays
     from kickthefly.core import savestate
     from kickthefly.core import simcore
 
-    br = simcore.new_brain(seed=seed)
+    br = simcore.new_brain(seed=seed, wiring=wiring)
     g = assays.groups(br)
     snap: dict = {}
     meta = savestate.brain_state(br, "s_", snap)
@@ -126,11 +126,11 @@ def _pathway_seed(seed: int) -> dict:
     return out
 
 
-def _tmaze_seed(args) -> dict:
+def _tmaze_seed(args, wiring=None) -> dict:
     from kickthefly.lab import assays
 
     seed, cs_plus, paired = args
-    return assays.tmaze_fly(seed if cs_plus == "odor_a" else seed + 50_000, cs_plus, paired=paired)
+    return assays.tmaze_fly(seed if cs_plus == "odor_a" else seed + 50_000, cs_plus, paired=paired, wiring=wiring)
 
 
 def _wilcoxon_greater(a, b) -> float:
@@ -142,8 +142,12 @@ def _wilcoxon_greater(a, b) -> float:
     return float(stats.wilcoxon(a, b, alternative="greater", zero_method="wilcox").pvalue)
 
 
-def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None) -> dict:
-    """Run the suite. progress(done, total, label) is called as work finishes."""
+def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wiring=None) -> dict:
+    """Run the suite. progress(done, total, label) is called as work finishes.
+
+    wiring: a sim.wiring.Wiring every fly is built with (the threshold sweep and the sign-flip stress test use this
+    to ask which of these results survive a changed connectome). The pass criteria are the same either way.
+    """
     from kickthefly.lab import assays
     from kickthefly.game import kick_the_fly as k
     from kickthefly.lab import lab
@@ -168,8 +172,8 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None) ->
     if workers > 1:
         import multiprocessing
         with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as ex:
-            futs = {ex.submit(_pathway_seed, s): ("path", s) for s in jobs_path}
-            futs.update({ex.submit(_tmaze_seed, j): ("tmaze", j) for j in jobs_tmaze})
+            futs = {ex.submit(_pathway_seed, s, wiring): ("path", s) for s in jobs_path}
+            futs.update({ex.submit(_tmaze_seed, j, wiring): ("tmaze", j) for j in jobs_tmaze})
             from concurrent.futures import as_completed
             for f in as_completed(futs):
                 kind, key = futs[f]
@@ -180,10 +184,10 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None) ->
                 tick(kind)
     else:
         for s in jobs_path:
-            path_res[s] = _pathway_seed(s)
+            path_res[s] = _pathway_seed(s, wiring)
             tick("path")
         for j in jobs_tmaze:
-            tmaze_res.append((j, _tmaze_seed(j)))
+            tmaze_res.append((j, _tmaze_seed(j, wiring)))
             tick("tmaze")
 
     results = []
@@ -230,6 +234,7 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None) ->
     g, W, _ = simcore.pack()
     return dict(app_version=__version__, created=time.strftime("%Y-%m-%d %H:%M:%S"), seconds=round(time.time() - t0, 1),
                 seeds=list(seeds), workers=workers, n_neurons=int(g.n), synapses=int(W.nnz),
+                wiring=(wiring.as_dict() if wiring is not None else None),
                 lab_params=dict(lab.DEFAULTS), thresholds=dict(k.THRESH), loom=[k.LOOM_MIN, k.LOOM_FULL],
                 sweet_n=assays.SWEET_N, tests=results)
 

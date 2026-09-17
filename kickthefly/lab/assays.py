@@ -151,9 +151,9 @@ def rest(br, steps: int) -> None:
 
 def tmaze_fly(seed: int, cs_plus: str = "odor_a", cycles: int = 6, test_trials: int = 20, paired: bool = True,
               decision_noise: float = 0.08, surgery: dict | None = None, params: dict | None = None,
-              brain=None) -> dict:
+              brain=None, wiring=None) -> dict:
     """One fly: train CS+ with shock (paired) or with shocks in the rests (unpaired control), then T-maze choices."""
-    br = brain or simcore.new_brain(seed=seed, params=params)
+    br = brain or simcore.new_brain(seed=seed, params=params, wiring=wiring)
     cs_minus = "odor_b" if cs_plus == "odor_a" else "odor_a"
     apply_surgery(br, surgery)
     rest(br, 500)                                    # memory.py learns resting activity before any plasticity
@@ -212,14 +212,14 @@ LOOM_SPEEDS = (0.7, 1.4, 3.0, 5.5, 9.0)      # m/s: creeping, crouch-walking, wa
 
 def looming_fly(seed: int, speeds=LOOM_SPEEDS, approaches: int = 3, radius: float = 0.28, start: float = 3.0,
                 contact: float | None = None, surgery: dict | None = None, params: dict | None = None,
-                brain=None) -> dict:
+                brain=None, wiring=None) -> dict:
     """An object of `radius` m (default: your body in the 3D game) approaches the fly's head straight on at each speed,
     from `start` m to contact. Returns per speed whether DNp01 crossed the escape threshold before contact, the latency
     from the start of the approach, and how far away the object still was."""
     contact = radius + 0.02 if contact is None else contact
     from kickthefly.game import kick_the_fly as k
 
-    br = brain or simcore.new_brain(seed=seed, params=params)
+    br = brain or simcore.new_brain(seed=seed, params=params, wiring=wiring)
     apply_surgery(br, surgery)
     rest(br, 400)
     out = {}
@@ -274,8 +274,8 @@ def offer_sugar(br, dose: float, steps: int = 200, baseline: int = 200) -> dict:
 
 
 def sugar_fly(seed: int, doses=(0.0, 0.05, 0.1, 0.2, 0.4, 0.7, 1.0), repeats: int = 2, surgery: dict | None = None,
-              params: dict | None = None, brain=None) -> dict:
-    br = brain or simcore.new_brain(seed=seed, params=params)
+              params: dict | None = None, brain=None, wiring=None) -> dict:
+    br = brain or simcore.new_brain(seed=seed, params=params, wiring=wiring)
     apply_surgery(br, surgery)
     rest(br, 200)
     out = {d: [] for d in doses}

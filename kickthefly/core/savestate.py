@@ -210,6 +210,15 @@ def pack_signature(game) -> dict:
                 memory_signature=[float(x) for x in mem.signature] if mem is not None else None)
 
 
+def _wiring_meta(game, arrays: dict) -> dict | None:
+    """Lab changes to the connectome itself. The flipped rows go in the arrays; the rest is small enough for JSON."""
+    w = getattr(game, "wiring", None)
+    if w is None or w.is_identity:
+        return None
+    arrays["wiring_flip_rows"] = np.asarray(w.flip_rows, np.int32)
+    return w.as_dict()
+
+
 def save_game(game, path: Path) -> Path:
     now = game.clock.now
     arrays: dict[str, np.ndarray] = {}
@@ -228,6 +237,7 @@ def save_game(game, path: Path) -> Path:
         signature=pack_signature(game), arena_i=int(game.arena_i), tool=int(game.tool), focus=int(game.focus),
         kills=int(game.kills), immortal=bool(game.immortal), pain_level=int(game.pain_level),
         sim_speed=float(game.clock.scale), lab_params=dict(game.lab_params), surgery_modes=list(game.surgery_modes),
+        wiring=_wiring_meta(game, arrays),
         type_ops=dict(game.type_ops), flies=flies, extra=game.save_extra(arrays, now),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -299,5 +309,10 @@ def load_game(game, path: Path) -> dict:
             game.set_lab_param(name, float(v))
     game.surgery_modes = list(meta["surgery_modes"])
     game.type_ops = dict(meta["type_ops"])
+    from kickthefly.sim.wiring import Wiring                  # the connectome the save was made on (Lab)
+
+    want = Wiring.from_dict(meta.get("wiring"), z["wiring_flip_rows"] if "wiring_flip_rows" in z else ())
+    if want != getattr(game, "wiring", Wiring()):
+        game.set_wiring(want, note=False)
     game.load_extra(meta.get("extra", {}), z, now)
     return meta
