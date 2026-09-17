@@ -66,6 +66,15 @@ SETTINGS: tuple[Setting, ...] = (
       "Hotkey U.", options=("crisp", "large"), labels=("Crisp", "Large"), only="3d"),
     S("graphics.ui_scale", "Graphics", "UI scale", "float", 1.0,
       "Makes every menu, meter and label bigger or smaller.", lo=0.75, hi=1.5, step=0.05, only="3d", fmt="{:.0%}"),
+    S("graphics.photo_scale", "Graphics", "Screenshot resolution", "choice", 2,
+      "Render scale multiplier for screenshots (1x, 2x, 4x) saved to pictures.", options=(1, 2, 4),
+      labels=("1x", "2x (Hi-Res)", "4x (Ultra)")),
+    S("graphics.clean_capture", "Graphics", "Clean screenshots", "bool", True,
+      "Hide HUD, crosshairs, toolbars, and debug overlays in saved screenshots."),
+    S("graphics.photo_dof", "Graphics", "Depth of field blur", "float", 0.0,
+      "Camera depth of field blur amount in photo mode.", lo=0.0, hi=1.0, step=0.05, only="3d", fmt="{:.2f}"),
+    S("graphics.photo_focus", "Graphics", "Photo focus distance", "float", 1.8,
+      "Focus distance in meters for depth of field.", lo=0.1, hi=15.0, step=0.1, only="3d", fmt="{:.1f}m"),
     # --- Audio
     S("audio.master", "Audio", "Master volume", "float", 1.0, "Volume of everything.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
     S("audio.buzz", "Audio", "Wing buzz volume", "float", 1.0,
@@ -134,6 +143,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("time_pause", "Pause / resume time", "z"), ("time_slower", "Slower", "["), ("time_faster", "Faster", "]"),
     ("time_step", "Single step (paused)", "."),
     ("autopilot", "Autopilot / spectator", "y"),
+    ("photo_mode", "Photo mode / free camera", "f10"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound

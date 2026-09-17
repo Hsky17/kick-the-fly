@@ -473,6 +473,54 @@ class Player:
             self.walk_phase += dt * float(np.linalg.norm(self.vel)) * 2.2
 
 
+class FreeCamera:
+    """Detached 6-DOF flying camera for photo mode."""
+
+    def __init__(self, pos, yaw: float, pitch: float):
+        self.pos = np.array(pos, dtype=float)
+        self.yaw = float(yaw)
+        self.pitch = float(pitch)
+        self.vel = np.zeros(3, dtype=float)
+
+    @property
+    def eye(self) -> np.ndarray:
+        return self.pos
+
+    def forward(self) -> np.ndarray:
+        cp = math.cos(self.pitch)
+        return np.array([cp * math.cos(self.yaw), math.sin(self.pitch), cp * math.sin(self.yaw)])
+
+    def basis(self):
+        f = self.forward()
+        r = np.array([-math.sin(self.yaw), 0.0, math.cos(self.yaw)])
+        rn = np.linalg.norm(r)
+        r = r / (rn if rn > 1e-6 else 1.0)
+        u = np.cross(r, f)
+        un = np.linalg.norm(u)
+        u = u / (un if un > 1e-6 else 1.0)
+        return f, r, u
+
+    def update(self, dt: float, keys: dict, rel: tuple[float, float]) -> None:
+        self.yaw += rel[0] * 0.0024
+        self.pitch = float(np.clip(self.pitch - rel[1] * 0.0024, -1.55, 1.55))
+        f, r, u = self.basis()
+        want = np.zeros(3, dtype=float)
+        if keys.get("w"): want += f
+        if keys.get("s"): want -= f
+        if keys.get("d"): want += r
+        if keys.get("a"): want -= r
+        if keys.get("up"): want += np.array([0.0, 1.0, 0.0])
+        if keys.get("down_fly"): want -= np.array([0.0, 1.0, 0.0])
+        n = float(np.linalg.norm(want))
+        speed = 5.5 if keys.get("sprint") else 2.5
+        target = want / n * speed if n > 0 else np.zeros(3)
+        self.vel += (target - self.vel) * min(1.0, dt * 10)
+        self.pos += self.vel * dt
+        self.pos[0] = float(np.clip(self.pos[0], -RX + 0.15, RX - 0.15))
+        self.pos[1] = float(np.clip(self.pos[1], 0.08, RY - 0.08))
+        self.pos[2] = float(np.clip(self.pos[2], -RZ + 0.15, RZ - 0.15))
+
+
 def _c(col, alpha: float | None = None):
     rgb = tuple(c / 255.0 for c in col[:3])
     a = col[3] / 255.0 if len(col) > 3 else 1.0
@@ -484,6 +532,12 @@ class Game3D(k2.Game):
 
     def __init__(self, hud: pygame.Surface, brain, view, graph=None, weights=None, cfg=None):
         self.player = Player()
+        self.photo_mode = False
+        self.free_cam: FreeCamera | None = None
+        self.photo_fov = 70.0
+        self.photo_dof = 0.0
+        self.photo_focus = 1.8
+        self.photo_hide_ui = False
         self.panel_mode, self.ui_mode = 0, "crisp"
         self.panel_alpha = 255
         self.look = False
@@ -559,7 +613,10 @@ class Game3D(k2.Game):
                 return False
 
         return dict(w=down("forward"), s=down("back"), a=down("left"), d=down("right"),
-                    sprint=down("sprint") or kp[pygame.K_RSHIFT], crouch=down("crouch") or kp[pygame.K_c])
+                    sprint=down("sprint") or kp[pygame.K_RSHIFT],
+                    crouch=down("crouch") or kp[pygame.K_c],
+                    up=kp[pygame.K_SPACE] or kp[pygame.K_e],
+                    down_fly=down("crouch") or kp[pygame.K_c] or kp[pygame.K_q] or kp[pygame.K_LCTRL])
 
     def update_player(self, dt: float, keys, rel) -> None:
         """You move and look in real time, even in slow motion or while time is paused."""
@@ -567,7 +624,105 @@ class Game3D(k2.Game):
             c = self.cfg
             sens = c["controls.mouse_sensitivity"]
             rel = (rel[0] * sens, rel[1] * sens * (-1 if c["controls.invert_y"] else 1))
-            self.player.update(dt, keys, rel)
+            if self.photo_mode and self.free_cam is not None:
+                self.free_cam.update(dt, keys, rel)
+            else:
+                self.player.update(dt, keys, rel)
+
+    def toggle_photo_mode(self) -> None:
+        self.photo_mode = not self.photo_mode
+        if self.photo_mode:
+            self.free_cam = FreeCamera(self.player.eye.copy(), self.player.yaw, self.player.pitch)
+            self.photo_fov = float(self.cfg["controls.fov"])
+            self.photo_dof = float(self.cfg.get("graphics.photo_dof", 0.0))
+            self.photo_focus = self.nearest_fly_dist()
+            self.set_look(True)
+            self.note("PHOTO MODE: WASD/Space/C fly, Mouse aim, [ ] FOV, , . DOF, F12 snap", source="rule")
+        else:
+            self.free_cam = None
+            self.note("PHOTO MODE off", source="rule")
+
+    def nearest_fly_dist(self) -> float:
+        eye = self.free_cam.eye if (self.photo_mode and self.free_cam) else self.player.eye
+        fwd = self.free_cam.forward() if (self.photo_mode and self.free_cam) else self.player.forward()
+        best_dist = float("inf")
+        flies = getattr(self, "flies3", []) or ([self.fly] if getattr(self, "fly", None) else [])
+        for fly in flies:
+            pos = fly.p[THX]
+            vec = pos - eye
+            d = float(np.linalg.norm(vec))
+            if d < 0.05:
+                continue
+            cos = float(np.dot(vec / d, fwd))
+            if cos > 0.2:
+                if d < best_dist:
+                    best_dist = d
+        if best_dist < 100.0:
+            return round(best_dist, 2)
+        if getattr(self, "fly", None):
+            return round(float(np.linalg.norm(self.fly.p[THX] - eye)), 2)
+        return 1.8
+
+    def take_photo(self) -> None:
+        self.want_png = True
+        self.sound.play("shutter")
+
+    def _draw_photo_viewfinder(self, hud: pygame.Surface) -> None:
+        w, h = hud.get_size()
+        margin = 32
+        corner_len = 28
+        col = (220, 225, 235, 180)
+        thick = 2
+        # Four viewfinder corners
+        pygame.draw.line(hud, col, (margin, margin), (margin + corner_len, margin), thick)
+        pygame.draw.line(hud, col, (margin, margin), (margin, margin + corner_len), thick)
+        pygame.draw.line(hud, col, (w - margin, margin), (w - margin - corner_len, margin), thick)
+        pygame.draw.line(hud, col, (w - margin, margin), (w - margin, margin + corner_len), thick)
+        pygame.draw.line(hud, col, (margin, h - margin), (margin + corner_len, h - margin), thick)
+        pygame.draw.line(hud, col, (margin, h - margin), (margin, h - margin - corner_len), thick)
+        pygame.draw.line(hud, col, (w - margin, h - margin), (w - margin - corner_len, h - margin), thick)
+        pygame.draw.line(hud, col, (w - margin, h - margin), (w - margin, h - margin - corner_len), thick)
+
+        # Center subtle crosshair / focus dot
+        cx, cy = w // 2, h // 2
+        pygame.draw.circle(hud, (255, 255, 255, 120), (cx, cy), 3, 1)
+
+        # Bottom info bar
+        dof = float(getattr(self, "photo_dof", 0.0))
+        focus = float(getattr(self, "photo_focus", 1.8))
+        fov = float(getattr(self, "photo_fov", 70.0))
+        scale = int(self.cfg.get("graphics.photo_scale", 2))
+
+        text = f"PHOTO MODE  |  FOV: {fov:.0f}° [ ]  |  Focus: {focus:.1f}m (K/L, F auto)  |  DOF: {dof:.2f} (, .)  |  Scale: {scale}x  |  F12/Click: Snap"
+        txt_surf = self.f_small.render(text, True, (240, 243, 248))
+        chip_w = txt_surf.get_width() + 24
+        bg_rect = pygame.Rect((w - chip_w) // 2, h - margin - 26, chip_w, 24)
+        pygame.draw.rect(hud, (12, 15, 22, 200), bg_rect, border_radius=6)
+        pygame.draw.rect(hud, (70, 80, 100, 180), bg_rect, 1, border_radius=6)
+        hud.blit(txt_surf, txt_surf.get_rect(center=bg_rect.center))
+
+        # Top-left mode badge with RULE tag
+        tag_bg = pygame.Rect(margin + 8, margin + 8, 140, 24)
+        pygame.draw.rect(hud, (15, 18, 26, 190), tag_bg, border_radius=4)
+        title_surf = self.f_small.render("FREE CAMERA", True, (240, 240, 240))
+        hud.blit(title_surf, (margin + 14, margin + 12))
+        if self.cfg.tags_on():
+            k2.draw_source_chip(hud, (margin + 14 + title_surf.get_width() + 8, margin + 12), "rule", self.f_small)
+
+        # Saved toast
+        if self.saved_msg:
+            msg, t0 = self.saved_msg
+            age = time.perf_counter() - t0
+            if age < 3.0:
+                alpha = int(255 * min(1.0, (3.0 - age) * 2))
+                s_surf = self.f_bold.render(msg, True, (120, 255, 160))
+                s_surf.set_alpha(alpha)
+                s_box = s_surf.get_rect(center=(cx, margin + 20)).inflate(20, 8)
+                s_bg = pygame.Surface(s_box.size, pygame.SRCALPHA)
+                s_bg.fill((10, 14, 20, int(200 * (alpha / 255))))
+                hud.blit(s_bg, s_box.topleft)
+                hud.blit(s_surf, s_box.center)
+
 
     # --- lifecycle -------------------------------------------------------------------------------------------------
     def _spawn_point(self) -> tuple[np.ndarray, float]:
@@ -2029,6 +2184,10 @@ class Game3D(k2.Game):
     def draw_hud3d(self, now: float, project) -> None:
         hud = self.screen
         hud.fill((0, 0, 0, 0))
+        if getattr(self, "photo_mode", False):
+            if not getattr(self, "photo_hide_ui", False):
+                self._draw_photo_viewfinder(hud)
+            return
         for pos, text, t0, color, source in self.popups3:
             sp = project(pos)
             if sp is None:
@@ -2115,6 +2274,44 @@ class Game3D(k2.Game):
                 self.tool = k2.TOOL_KEYS.index(ev.key)
                 return True
             action = self.cfg.action_for(pygame.key.name(ev.key))
+            if action == "photo_mode" or ev.key == pygame.K_F10:
+                self.toggle_photo_mode()
+                return True
+            if self.photo_mode:
+                if ev.key == pygame.K_LEFTBRACKET:
+                    self.photo_fov = max(20.0, self.photo_fov - 5.0)
+                    self.saved_msg = (f"FOV: {self.photo_fov:.0f}°", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_RIGHTBRACKET:
+                    self.photo_fov = min(120.0, self.photo_fov + 5.0)
+                    self.saved_msg = (f"FOV: {self.photo_fov:.0f}°", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_COMMA:
+                    self.photo_dof = max(0.0, round(self.photo_dof - 0.05, 2))
+                    self.saved_msg = (f"DOF blur: {self.photo_dof:.2f}", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_PERIOD:
+                    self.photo_dof = min(1.0, round(self.photo_dof + 0.05, 2))
+                    self.saved_msg = (f"DOF blur: {self.photo_dof:.2f}", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_k:
+                    self.photo_focus = max(0.2, round(self.photo_focus - 0.2, 2))
+                    self.saved_msg = (f"Focus: {self.photo_focus:.1f}m", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_l:
+                    self.photo_focus = min(15.0, round(self.photo_focus + 0.2, 2))
+                    self.saved_msg = (f"Focus: {self.photo_focus:.1f}m", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_f:
+                    self.photo_focus = self.nearest_fly_dist()
+                    self.saved_msg = (f"Auto-focus: {self.photo_focus:.1f}m", time.perf_counter())
+                    return True
+                elif ev.key == pygame.K_h:
+                    self.photo_hide_ui = not self.photo_hide_ui
+                    return True
+                elif ev.key in (pygame.K_F12, pygame.K_RETURN, pygame.K_SPACE):
+                    self.take_photo()
+                    return True
             if action == "free_mouse":
                 self.set_look(not self.look)
             elif action in ("forward", "back", "left", "right", "sprint", "crouch") or ev.key in (pygame.K_c, pygame.K_SPACE):
@@ -2145,8 +2342,12 @@ class Game3D(k2.Game):
         if ev.type == pygame.MOUSEMOTION and not self.look and self.big_view and getattr(self, "big_drag", None):
             return k2.Game.handle(self, pygame.event.Event(ev.type, {**ev.dict, "pos": self.mouse_logical}), now)
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
+            if self.photo_mode and ev.button == 1:
+                self.take_photo()
+                return True
             if self.look:
-                self.use_tool3d(now)
+                if not getattr(self, "autopilot", False) and not self.photo_mode:
+                    self.use_tool3d(now)
                 return True
             pos = ev.pos
             if self.science_card is not None and self.science_rect().collidepoint(pos):
@@ -2272,17 +2473,18 @@ class App:
         fb.use()
         ctx.viewport = (0, 0, vw, vh)
         ctx.clear(*SKY_CLEAR, depth=1.0)
-        ctx.enable(moderngl.DEPTH_TEST)
-        pl = game.player
-        eye = pl.eye
+        cam = game.free_cam if (getattr(game, "photo_mode", False) and getattr(game, "free_cam", None) is not None) else game.player
+        eye = cam.eye
         shake = np.random.uniform(-0.01, 0.01, 3) if now < game.shake_until and not game.calm_fx else 0
-        f, r, u = pl.basis()
+        f, r, u = cam.basis()
         view = look_at(eye + shake, eye + shake + f)
-        proj = perspective(math.radians(game.cfg["controls.fov"]), vw / vh, 0.03, 40.0)
+        cam_fov = getattr(game, "photo_fov", float(game.cfg["controls.fov"])) if getattr(game, "photo_mode", False) else float(game.cfg["controls.fov"])
+        proj = perspective(math.radians(cam_fov), vw / vh, 0.03, 40.0)
         # when the 3D view runs under a see-through panel, shift the lens so the crosshair and your hand stay centered
         # on the open part of the screen
         lens = np.eye(4)
-        lens[0, 3] = play_w / view_w - 1                  # shift in clip x by w: moves the image center left
+        if not getattr(game, "photo_mode", False):
+            lens[0, 3] = play_w / view_w - 1                  # shift in clip x by w: moves the image center left
         proj = lens @ proj
         lamp_on = k2.ARENAS[game.arena_i] == "lamp"
         lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
@@ -2294,18 +2496,19 @@ class App:
         rd.draw_layer("opaque")
         rd.draw_layer("blend")
         rd.draw_particles()
-        # the tool in your hand: squeezed into the front 10% of the depth range so it never sinks into walls,
-        # lit by the same lights moved into camera space
-        game.draw_viewmodel(rd, now)
-        Rv = view[:3, :3]
-        cam_lights = dict(lights)
-        cam_lights["u_sun_dir"] = Rv @ lights["u_sun_dir"]
-        cam_lights["u_lp0"] = (view @ np.append(lights["u_lp0"], 1))[:3]
-        cam_lights["u_lp1"] = (view @ np.append(lights["u_lp1"], 1))[:3]
-        squeeze = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.1, -0.9], [0, 0, 0, 1.0]])
-        rd.set_scene(np.eye(4), squeeze @ lens @ perspective(math.radians(60), vw / vh, 0.01, 5.0), (0, 0, 0), cam_lights, now)
-        rd.draw_layer("view")
-        rd.draw_layer("view_blend")
+        if not getattr(game, "photo_mode", False):
+            # the tool in your hand: squeezed into the front 10% of the depth range so it never sinks into walls,
+            # lit by the same lights moved into camera space
+            game.draw_viewmodel(rd, now)
+            Rv = view[:3, :3]
+            cam_lights = dict(lights)
+            cam_lights["u_sun_dir"] = Rv @ lights["u_sun_dir"]
+            cam_lights["u_lp0"] = (view @ np.append(lights["u_lp0"], 1))[:3]
+            cam_lights["u_lp1"] = (view @ np.append(lights["u_lp1"], 1))[:3]
+            squeeze = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.1, -0.9], [0, 0, 0, 1.0]])
+            rd.set_scene(np.eye(4), squeeze @ lens @ perspective(math.radians(60), vw / vh, 0.01, 5.0), (0, 0, 0), cam_lights, now)
+            rd.draw_layer("view")
+            rd.draw_layer("view_blend")
         if self.ms is not None:
             ctx.copy_framebuffer(self.scene, self.ms)
 
@@ -2325,8 +2528,15 @@ class App:
         out.use()
         ctx.viewport = (0, 0, Wn, Hn)
         out.clear(0, 0, 0, 1)
-        rd.blit_texture(self.scene_tex, (0, 0, round(view_w * s), Hn), (Wn, Hn), flip=False, blend=False)
-        rd.blit_texture(tex, (0, 0, hud_w * s, hud_h * s), (Wn, Hn), flip=True, blend=True)
+        dof = float(getattr(game, "photo_dof", 0.0)) if getattr(game, "photo_mode", False) else 0.0
+        focus = float(getattr(game, "photo_focus", 1.8))
+        if dof > 0:
+            rd.blit_dof(self.scene_tex, self.scene.depth_attachment, (0, 0, round(view_w * s), Hn), (Wn, Hn),
+                        focus=focus, dof=dof, flip=False, blend=False)
+        else:
+            rd.blit_texture(self.scene_tex, (0, 0, round(view_w * s), Hn), (Wn, Hn), flip=False, blend=False)
+        if not (getattr(game, "photo_mode", False) and getattr(game, "photo_hide_ui", False)):
+            rd.blit_texture(tex, (0, 0, hud_w * s, hud_h * s), (Wn, Hn), flip=True, blend=True)
         self.view_frac = view_w / hud_w
         return (Wn, Hn, s, hud_w, hud_h, play_w, view_w)
 
@@ -2348,10 +2558,79 @@ class App:
         rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
         game.frames.append(rows.tobytes())
 
-    def screenshot(self, path: Path, lay) -> None:
+    def screenshot(self, path: Path, lay, game: Game3D | None = None, now: float = 0.0,
+                   scale: int | None = None, clean: bool | None = None) -> None:
         Wn, Hn = lay[0], lay[1]
-        data = self.ctx.screen.read(viewport=(0, 0, Wn, Hn), components=3)   # the screen's own size is stale after F11
-        img = pygame.image.frombytes(data, (Wn, Hn), "RGB", True)
+        if game is not None:
+            if scale is None:
+                scale = int(game.cfg.get("graphics.photo_scale", 2))
+            if clean is None:
+                clean = bool(game.cfg.get("graphics.clean_capture", True))
+        else:
+            scale = scale or 1
+            clean = False if clean is None else clean
+
+        if scale <= 1 and not clean:
+            self.ctx.screen.use()
+            data = self.ctx.screen.read(viewport=(0, 0, Wn, Hn), components=3)
+            img = pygame.image.frombytes(data, (Wn, Hn), "RGB", True)
+            pygame.image.save(img, str(path))
+            return
+
+        tw, th = int(Wn * scale), int(Hn * scale)
+        tex = self.ctx.texture((tw, th), 4)
+        tex.filter = moderngl.LINEAR, moderngl.LINEAR
+        depth_tex = self.ctx.depth_texture((tw, th))
+        fb = self.ctx.framebuffer(color_attachments=[tex], depth_attachment=depth_tex)
+        fb.use()
+        self.ctx.viewport = (0, 0, tw, th)
+        self.ctx.clear(*SKY_CLEAR, depth=1.0)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+
+        cam = (game.free_cam if (getattr(game, "photo_mode", False) and getattr(game, "free_cam", None) is not None) else game.player) if game else None
+        if cam is not None:
+            eye = cam.eye
+            f, r, u = cam.basis()
+            view = look_at(eye, eye + f)
+            cam_fov = getattr(game, "photo_fov", float(game.cfg["controls.fov"])) if getattr(game, "photo_mode", False) else float(game.cfg["controls.fov"])
+        else:
+            eye = (0, 0, 0)
+            view = np.eye(4)
+            cam_fov = 70.0
+        proj = perspective(math.radians(cam_fov), tw / th, 0.03, 40.0)
+
+        lamp_on = (k2.ARENAS[game.arena_i] == "lamp") if game else False
+        lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
+                      u_sky=(0.42, 0.44, 0.5), u_ground=(0.24, 0.2, 0.17), u_lp0=(0.0, RY - 0.3, 0.0), u_lc0=(2.4, 2.2, 1.9),
+                      u_lp1=tuple(LAMP3), u_lc1=(3.5, 2.8, 1.8) if lamp_on else (0, 0, 0))
+        self.rd.clear()
+        if game:
+            game.draw_world(self.rd, now)
+        self.rd.set_scene(view, proj, eye, lights, now)
+        self.rd.draw_layer("opaque")
+        self.rd.draw_layer("blend")
+        self.rd.draw_particles()
+
+        dof = float(getattr(game, "photo_dof", 0.0)) if game else 0.0
+        focus = float(getattr(game, "photo_focus", 1.8)) if game else 1.8
+        if dof > 0:
+            out_tex = self.ctx.texture((tw, th), 4)
+            out_fb = self.ctx.framebuffer(color_attachments=[out_tex])
+            out_fb.use()
+            self.ctx.viewport = (0, 0, tw, th)
+            self.ctx.clear(0, 0, 0, 1)
+            self.rd.blit_dof(tex, depth_tex, (0, 0, tw, th), (tw, th), focus=focus, dof=dof, flip=False, blend=False)
+            data = out_fb.read(viewport=(0, 0, tw, th), components=3)
+            out_fb.release()
+            out_tex.release()
+        else:
+            data = fb.read(viewport=(0, 0, tw, th), components=3)
+
+        fb.release()
+        tex.release()
+        depth_tex.release()
+
+        img = pygame.image.frombytes(data, (tw, th), "RGB", True)
         pygame.image.save(img, str(path))
 
 
@@ -2428,7 +2707,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             game.want_png = False
             path = game.media_path("png")
             app.ctx.screen.use()
-            app.screenshot(path, lay)
+            app.screenshot(path, lay, game=game, now=now)
             game.saved_note(path)
         pygame.display.flip()
         if smoke and real - t_game > smoke:

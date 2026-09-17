@@ -1432,10 +1432,12 @@ REACTION_SOURCE = {
     "WALK": "real", "TURN": "real", "SHOOT": "real", "GROOM": "real", "PROBOSCIS": "real",
     "EATING": "rule", "TO LIGHT": "rule", "AVOID": "rule", "APPROACH": "rule", "FLEE": "rule", "WRAPPED": "rule",
     "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule", "AUTOPILOT": "rule",
+    "PHOTO MODE": "rule",
 }
 POPUP_SOURCE = {"DODGE!": "real", "YIKES!": "real", "NOPE!": "rule", "RUN AWAY!": "rule", "YUM!": "rule",
                 "SWEET!": "rule", "NOM NOM": "rule", "K.O.!": "rule", "BROKE FREE!": "rule", "FLY WINS!": "rule",
-                "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule", "AUTOPILOT": "rule", "SPECTATOR": "rule"}
+                "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule", "AUTOPILOT": "rule", "SPECTATOR": "rule",
+                "PHOTO MODE": "rule"}
 SOURCE_TIP = {"real": "REAL: triggered by the connectome sim's own neurons firing above a threshold.",
               "rule": "RULE: a game rule, not something the connectome sim produced."}
 
@@ -1609,6 +1611,11 @@ class Sound:
         fx["pew"] = self._snd(np.sign(sweep(1500, 260, 0.16)) * 0.5 * np.exp(-tt * 14) + noise(0.16) * np.exp(-tt * 60) * 0.3, 0.35)
         tt = t(0.25)
         fx["hurt"] = self._snd(low(noise(0.25), 20) * 3 * np.exp(-tt * 14) + np.sin(2 * np.pi * 70 * tt) * np.exp(-tt * 10), 0.7)
+        t1, t2 = t(0.04), t(0.06)
+        c1 = np.sin(2 * np.pi * 1800 * t1) * np.exp(-t1 * 120) + noise(0.04) * np.exp(-t1 * 150) * 0.4
+        c2 = np.sin(2 * np.pi * 1100 * t2) * np.exp(-t2 * 80) + noise(0.06) * np.exp(-t2 * 100) * 0.5
+        pause = np.zeros(int(R * 0.02))
+        fx["shutter"] = self._snd(np.concatenate([c1, pause, c2]), 0.6)
         return fx
 
     def configure(self, cfg) -> None:
@@ -2370,6 +2377,14 @@ class Game:
         self.big_rect = rect
         surf.blit(self._view_surface("big"), rect)
         self._hud_overlay(surf, rect, now, small=False)
+        self._clean_frame = surf.copy()
+        if getattr(self, "photo_mode", False):
+            b_txt = self.f_small.render("PHOTO MODE  |  S / F12: Clean Snap  |  F10: Exit", True, (240, 240, 240))
+            box = b_txt.get_rect(midbottom=(rect.centerx, rect.bottom - 16)).inflate(24, 8)
+            pygame.draw.rect(surf, (12, 16, 24, 200), box, border_radius=6)
+            pygame.draw.rect(surf, (70, 80, 100, 180), box, 1, border_radius=6)
+            surf.blit(b_txt, b_txt.get_rect(center=box.center))
+            return
         if self.inspect is not None:
             self._draw_inspect(surf, rect, now)
         labels = (("optic lobe", 0.10, 0.18), ("optic lobe", 0.90, 0.18), ("mushroom bodies", 0.50, 0.06),
@@ -3179,11 +3194,20 @@ class Game:
     def saved_note(self, path: Path) -> None:
         self.saved_msg = (f"saved {path.name} in {path.parent.name}", time.perf_counter())
 
-    def save_png(self) -> None:
+    def save_png(self, clean: bool | None = None) -> None:
+        if clean is None:
+            clean = bool(self.cfg.get("graphics.clean_capture", True))
+        scale = int(self.cfg.get("graphics.photo_scale", 2))
         path = self.media_path("png")
-        pygame.image.save(self.screen, str(path))
+        surf = self.screen
+        if clean and getattr(self, "_clean_frame", None) is not None:
+            surf = self._clean_frame
+        if scale > 1:
+            w, h = surf.get_size()
+            surf = pygame.transform.smoothscale(surf, (w * scale, h * scale))
+        pygame.image.save(surf, str(path))
         self.saved_note(path)
-        self.sound.play("click")
+        self.sound.play("shutter")
 
     def save_gif(self, frames: list | None = None) -> None:
         frames = list(self.frames) if frames is None else list(frames)
@@ -3978,6 +4002,7 @@ class Game:
             aapoly(arena, [(x - e, y - e * 0.4), (x, y + e * 0.2), (x, y + e), (x - e, y + e * 0.5)], (215, 215, 228))
             aapoly(arena, [(x, y + e * 0.2), (x + e, y - e * 0.4), (x + e, y + e * 0.5), (x, y + e)], (185, 185, 205))
         self._draw_arena_front(arena, now)
+        self._clean_frame = arena.copy()
         if self.torching and TOOLS[self.tool][0] == "torch" and self.report is None and mouse[0] < PLAY_W:
             aim = getattr(self, "torch_aim", np.array([1.0, 0.0]))
             m = np.array(mouse, float)
@@ -4005,12 +4030,21 @@ class Game:
             arena.blit(txt, (x, y))
             if pu[5] and self.cfg.tags_on():
                 draw_source_chip(arena, (pu[0], y + txt.get_height()), pu[5], self.f_small, alpha=a)
-        self._draw_toolbar(arena)
-        self._draw_hud(arena, now)
-        if not (self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]) and not self._overlay_open() and TOOLS[self.tool][0] != "hand" and mouse[0] < PLAY_W and mouse[1] < FLOOR:
-            gfxdraw.aacircle(arena, mouse[0], mouse[1], 10, (255, 255, 255))
-            pygame.draw.line(arena, (255, 255, 255), (mouse[0] - 14, mouse[1]), (mouse[0] + 14, mouse[1]))
-            pygame.draw.line(arena, (255, 255, 255), (mouse[0], mouse[1] - 14), (mouse[0], mouse[1] + 14))
+        if getattr(self, "photo_mode", False):
+            b_txt = self.f_small.render("PHOTO MODE  |  S / F12: Clean Snap  |  F10: Exit", True, (240, 240, 240))
+            box = b_txt.get_rect(midbottom=(PLAY_W // 2, FLOOR + 30)).inflate(24, 8)
+            pygame.draw.rect(arena, (12, 16, 24, 200), box, border_radius=6)
+            pygame.draw.rect(arena, (70, 80, 100, 180), box, 1, border_radius=6)
+            arena.blit(b_txt, b_txt.get_rect(center=box.center))
+            if self.cfg.tags_on():
+                draw_source_chip(arena, (box.right + 6, box.y + 2), "rule", self.f_small)
+        else:
+            self._draw_toolbar(arena)
+            self._draw_hud(arena, now)
+            if not (self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]) and not self._overlay_open() and TOOLS[self.tool][0] != "hand" and mouse[0] < PLAY_W and mouse[1] < FLOOR:
+                gfxdraw.aacircle(arena, mouse[0], mouse[1], 10, (255, 255, 255))
+                pygame.draw.line(arena, (255, 255, 255), (mouse[0] - 14, mouse[1]), (mouse[0] + 14, mouse[1]))
+                pygame.draw.line(arena, (255, 255, 255), (mouse[0], mouse[1] - 14), (mouse[0], mouse[1] + 14))
         if self.report is not None:
             self._draw_autopsy(arena, now)
         elif self.big_view:
@@ -4459,6 +4493,9 @@ class Game:
             new_val = not self.cfg["brain.autopilot"]
             self.set_setting("brain.autopilot", new_val)
             self.note(f"AUTOPILOT {'on: spectator mode' if new_val else 'off'}", source="rule")
+        elif action == "photo_mode":
+            self.photo_mode = not getattr(self, "photo_mode", False)
+            self.note(f"PHOTO MODE {'on (clean preview)' if self.photo_mode else 'off'}", source="rule")
         elif action == "immortal":
             self.set_setting("brain.immortal", not self.immortal)
             self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")

@@ -349,6 +349,54 @@ void main() {
 }
 """
 
+DOF_FS = """
+#version 330
+uniform sampler2D u_tex;
+uniform sampler2D u_depth;
+uniform float u_focus;
+uniform float u_dof;
+uniform float u_near;
+uniform float u_far;
+uniform vec2 u_res;
+uniform float u_flip;
+
+in vec2 v_uv;
+out vec4 f_color;
+
+const vec2 SAMPLES[12] = vec2[12](
+    vec2( 0.000,  0.300), vec2( 0.285,  0.093),
+    vec2( 0.176, -0.243), vec2(-0.176, -0.243),
+    vec2(-0.285,  0.093), vec2( 0.000,  0.600),
+    vec2( 0.520,  0.300), vec2( 0.520, -0.300),
+    vec2( 0.000, -0.600), vec2(-0.520, -0.300),
+    vec2(-0.520,  0.300), vec2( 0.000,  1.000)
+);
+
+void main() {
+    vec2 uv = vec2(v_uv.x, u_flip > 0.5 ? 1.0 - v_uv.y : v_uv.y);
+    float d = texture(u_depth, uv).r;
+    float z_lin = (u_near * u_far) / max(u_far - d * (u_far - u_near), 0.0001);
+    float coc = clamp(abs(z_lin - u_focus) * u_dof * 0.8, 0.0, 1.0);
+    if (coc < 0.01) {
+        f_color = texture(u_tex, uv);
+        return;
+    }
+    vec2 blur_rad = (coc * 16.0) / u_res;
+    vec4 acc = texture(u_tex, uv);
+    float total_w = 1.0;
+    for (int i = 0; i < 12; i++) {
+        vec2 sample_uv = uv + SAMPLES[i] * blur_rad;
+        float sd = texture(u_depth, sample_uv).r;
+        float sz = (u_near * u_far) / max(u_far - sd * (u_far - u_near), 0.0001);
+        float scoc = clamp(abs(sz - u_focus) * u_dof * 0.8, 0.0, 1.0);
+        float w = (sz >= z_lin) ? 1.0 : scoc;
+        acc += texture(u_tex, sample_uv) * w;
+        total_w += w;
+    }
+    f_color = acc / total_w;
+}
+"""
+
 LAYERS = ("opaque", "blend", "view", "view_blend")
 MESHES = ("sphere", "cylinder", "cube", "disk", "torus")
 
@@ -359,6 +407,7 @@ class Renderer:
         self.lit = ctx.program(vertex_shader=LIT_VS, fragment_shader=LIT_FS)
         self.part = ctx.program(vertex_shader=PART_VS, fragment_shader=PART_FS)
         self.quad = ctx.program(vertex_shader=QUAD_VS, fragment_shader=QUAD_FS)
+        self.dof = ctx.program(vertex_shader=QUAD_VS, fragment_shader=DOF_FS)
         geo = {"sphere": mesh_sphere(), "cylinder": mesh_cylinder(), "cube": mesh_cube(), "disk": mesh_disk(),
                "torus": mesh_torus()}
         self.vbo = {k: ctx.buffer(v.tobytes()) for k, v in geo.items()}
@@ -372,7 +421,9 @@ class Renderer:
         self.part_cap, self.part_buf, self.part_vao = 0, None, {}
         self.particles = {"alpha": [], "add": []}
         uv = np.array([[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]], "f4")
-        self.quad_vao = ctx.vertex_array(self.quad, [(ctx.buffer(uv.tobytes()), "2f", "in_uv")])
+        uv_buf = ctx.buffer(uv.tobytes())
+        self.quad_vao = ctx.vertex_array(self.quad, [(uv_buf, "2f", "in_uv")])
+        self.dof_vao = ctx.vertex_array(self.dof, [(uv_buf, "2f", "in_uv")])
         self.hud_tex: moderngl.Texture | None = None
 
     # --- queueing -----------------------------------------------------------------------------
@@ -480,3 +531,32 @@ class Renderer:
         self.ctx.enable(moderngl.DEPTH_TEST)
         if blend:
             self.ctx.disable(moderngl.BLEND)
+
+    def blit_dof(self, tex: moderngl.Texture, depth_tex: moderngl.Texture, rect_px, target_size,
+                 focus: float = 1.8, dof: float = 0.5, near: float = 0.03, far: float = 40.0,
+                 flip: bool = False, blend: bool = False):
+        """Draw a texture with depth-of-field blur guided by depth_tex into rect_px."""
+        W, H = target_size
+        x, y, w, h = rect_px
+        x0, x1 = 2 * x / W - 1, 2 * (x + w) / W - 1
+        y0, y1 = 1 - 2 * (y + h) / H, 1 - 2 * y / H
+        self.dof["u_rect"].value = (x0, y0, x1, y1)
+        self.dof["u_flip"].value = 1.0 if flip else 0.0
+        self.dof["u_focus"].value = float(focus)
+        self.dof["u_dof"].value = float(dof)
+        self.dof["u_near"].value = float(near)
+        self.dof["u_far"].value = float(far)
+        self.dof["u_res"].value = (float(tex.width), float(tex.height))
+        self.dof["u_tex"].value = 0
+        self.dof["u_depth"].value = 1
+        tex.use(0)
+        depth_tex.use(1)
+        if blend:
+            self.ctx.enable(moderngl.BLEND)
+            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        self.dof_vao.render(moderngl.TRIANGLES)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        if blend:
+            self.ctx.disable(moderngl.BLEND)
+
