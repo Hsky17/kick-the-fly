@@ -2022,6 +2022,7 @@ class Game:
                  "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
                 ("Model assumptions", "lab_assumptions", "Transparent disclosure of biophysical simplifications and EM reconstruction caveats."),
                 ("Asymmetry audit", "lab_asymmetry", "Measure baseline turning bias and bilateral L vs R synapse & firing asymmetries."),
+                ("Simulation benchmark", "lab_benchmark", "Measure simulation throughput (neurons/s, synapses/s, sim vs real time) for 1, 8, 16 flies."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
                  "metadata."),
@@ -4971,6 +4972,9 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--autopilot", "--spectator", dest="autopilot", action="store_true", help="spectator mode: hands-off simulation with auto-orbiting brain view")
     ap.add_argument("--audit-asymmetry", dest="audit_asymmetry", action="store_true", help="run bilateral asymmetry audit and exit")
     ap.add_argument("--mirror-weights", dest="mirror_weights", action="store_true", help="mirror-average synaptic weights (game rule: data modification)")
+    ap.add_argument("--benchmark", action="store_true", help="run simulation throughput benchmark (1, 8, 16 flies) and exit")
+    ap.add_argument("--flies", type=int, nargs="+", help="flies count list for benchmark (default: 1 8 16)")
+    ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
@@ -4990,7 +4994,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Kick the Fly %s on %s", __version__, crash.os_description())
     for n in p.notes:
         log.info(n)
-    if args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False):
+    if args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False) or getattr(args, "benchmark", False):
         import headless
 
         return headless.main(args)

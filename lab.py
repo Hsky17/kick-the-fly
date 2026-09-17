@@ -328,6 +328,117 @@ def page_asymmetry(m: ui.Menu, surf, rect, mouse) -> None:
     m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("asymmetry", "back"))
 
 
+_bench_job = None
+
+
+def page_benchmark(m: ui.Menu, surf, rect, mouse) -> None:
+    import benchmark
+    global _bench_job
+    host = m.host
+    m.text(surf, "SIMULATION BENCHMARK", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
+    m.text(surf, "Throughput, real-time pace, neurons/sec and memory footprint across 1, 8, and 16 flies.",
+           (rect.x + 24, rect.y + 50), ui.LABEL, m.f_small)
+
+    body = pygame.Rect(rect.x + 16, rect.y + 80, rect.w - 32, rect.h - 80 - 70)
+    key = "lab_benchmark"
+    off = int(m.scroll.get(key, 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
+    y = body.y + 4 - off
+
+    res = getattr(host, "_benchmark_results", None)
+    if res is None:
+        res = benchmark.load_benchmark_results()
+        host._benchmark_results = res
+
+    # System card
+    card_h = 74
+    card = pygame.Rect(body.x, y, body.w - 12, card_h)
+    pygame.draw.rect(surf, (24, 28, 38), card, border_radius=8)
+    pygame.draw.rect(surf, (45, 52, 68), card, 1, border_radius=8)
+
+    sys_info = (res or {}).get("system") or benchmark.get_system_info()
+    m.text(surf, f"CPU: {sys_info.get('cpu_model')} ({sys_info.get('cpu_count')} threads)", (card.x + 14, card.y + 12), ui.INK, m.f_bold)
+    m.text(surf, f"OS: {sys_info.get('os')}  ·  Python: {sys_info.get('python')}", (card.x + 14, card.y + 32), ui.TEXT, m.f_small)
+    m.text(surf, "Connectome: Janelia MaleCNS v1.0 (166,700 neurons, 10,272,125 synapses)", (card.x + 14, card.y + 50), (140, 180, 220), m.f_small)
+    y += card_h + 16
+
+    # Results Table
+    if res and "records" in res:
+        hdr_h = 32
+        hdr = pygame.Rect(body.x, y, body.w - 12, hdr_h)
+        pygame.draw.rect(surf, (32, 38, 52), hdr, border_radius=6)
+        m.text(surf, "Flies", (hdr.x + 14, hdr.centery), ui.INK, m.f_bold, "midleft")
+        m.text(surf, "Paced Rate", (hdr.x + 80, hdr.centery), ui.LABEL, m.f_small, "midleft")
+        m.text(surf, "Real-Time", (hdr.x + 230, hdr.centery), ui.LABEL, m.f_small, "midleft")
+        m.text(surf, "Uncapped Rate", (hdr.x + 340, hdr.centery), ui.LABEL, m.f_small, "midleft")
+        m.text(surf, "Max Speedup", (hdr.x + 490, hdr.centery), ui.LABEL, m.f_small, "midleft")
+        m.text(surf, "Throughput", (hdr.x + 620, hdr.centery), ui.LABEL, m.f_small, "midleft")
+        m.text(surf, "Memory", (hdr.right - 14, hdr.centery), ui.LABEL, m.f_small, "midright")
+        y += hdr_h + 6
+
+        row_h = 36
+        for r in res["records"]:
+            rbox = pygame.Rect(body.x, y, body.w - 12, row_h)
+            pygame.draw.rect(surf, (20, 24, 33), rbox, border_radius=6)
+            m.text(surf, f"{r['flies']} flies", (rbox.x + 14, rbox.centery), ui.INK, m.f_bold, "midleft")
+            paced_s = f"{r['paced_steps_per_s']:.1f} steps/s"
+            m.text(surf, paced_s, (rbox.x + 80, rbox.centery), ui.TEXT, m.f_small, "midleft")
+            rt_ratio = r["paced_realtime_ratio"]
+            rt_col = ui.GOOD if rt_ratio >= 0.99 else (240, 160, 60) if rt_ratio >= 0.8 else ui.BAD
+            m.text(surf, f"{rt_ratio:.2f}x", (rbox.x + 230, rbox.centery), rt_col, m.f_bold, "midleft")
+            uncap_s = f"{r['uncapped_steps_per_s']:.1f} steps/s"
+            m.text(surf, uncap_s, (rbox.x + 340, rbox.centery), ui.TEXT, m.f_small, "midleft")
+            m.text(surf, f"{r['uncapped_realtime_ratio']:.2f}x", (rbox.x + 490, rbox.centery), (140, 200, 240), m.f_small, "midleft")
+            tp_s = f"{r['neurons_per_sec'] / 1e6:.1f} M neurons/s"
+            m.text(surf, tp_s, (rbox.x + 620, rbox.centery), (170, 230, 190), m.f_small, "midleft")
+            m.text(surf, f"{r['memory_mb']:.0f} MB", (rbox.right - 14, rbox.centery), ui.LABEL, m.f_small, "midright")
+            y += row_h + 6
+
+        m.text(surf, f"Measured at {res.get('timestamp')}  ·  {res.get('seconds_per_run', 3):.0f}s per condition  ·  Target: 200 steps/s",
+               (body.x + 12, y + 10), ui.LABEL, m.f_small)
+        y += 36
+    else:
+        m.text(surf, "No benchmark results found. Click 'Run Benchmark' to measure multi-fly simulation throughput.",
+               (body.x + 14, y + 10), ui.TEXT, m.f_text)
+        y += 40
+
+    m.content_h[key] = max(0, y + off - body.bottom + 8)
+    surf.set_clip(prev)
+    m.clip = None
+
+    # Benchmark Execution / Status
+    busy = _bench_job is not None and _bench_job["thread"].is_alive()
+    if busy:
+        status_txt = f"Benchmarking... {_bench_job.get('status', '')}"
+        m.text(surf, status_txt, (rect.x + 24, rect.bottom - 48), ui.AMBER, m.f_bold)
+    else:
+        if _bench_job is not None and _bench_job.get("result"):
+            host._benchmark_results = _bench_job["result"]
+            _bench_job = None
+
+        def start_bench():
+            global _bench_job
+            import threading
+            job_state = {"status": "starting", "result": None}
+            def worker():
+                def progress(done, total, label):
+                    job_state["status"] = f"{label} ({done}/{total})"
+                r = benchmark.run_benchmark(fly_counts=(1, 8, 16), seconds=2.5, progress_cb=progress)
+                benchmark.save_benchmark_results(r)
+                job_state["result"] = r
+            t = threading.Thread(target=worker, name="benchmark-worker", daemon=True)
+            job_state["thread"] = t
+            _bench_job = job_state
+            t.start()
+
+        m.button(surf, (rect.x + 24, rect.bottom - 58, 220, 42), "Run Benchmark", start_bench,
+                 id=("benchmark", "run"), tip="Measure simulation throughput across 1, 8, 16 flies")
+
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("benchmark", "back"))
+
+
 def install(menu: ui.Menu) -> None:
     menu.pages["lab"] = page_hub
     menu.pages["lab_params"] = page_params
@@ -337,6 +448,7 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_protocols"] = lambda *a: page_protocols(*a)
     menu.pages["lab_assumptions"] = page_assumptions
     menu.pages["lab_asymmetry"] = page_asymmetry
+    menu.pages["lab_benchmark"] = page_benchmark
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 

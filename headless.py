@@ -168,10 +168,23 @@ def run_audit_asymmetry(args) -> int:
     return 0
 
 
+def run_benchmark(args) -> int:
+    import benchmark
+    flies = args.flies if getattr(args, "flies", None) else (1, 8, 16)
+    seconds = getattr(args, "seconds", None) or 5.0
+    res = benchmark.run_benchmark(fly_counts=tuple(flies), seconds=seconds)
+    print(benchmark.format_benchmark_report(res))
+    out_p = benchmark.save_benchmark_results(res, getattr(args, "out", None))
+    print(f"Results written to {out_p}")
+    return 0
+
+
 def main(args) -> int:
     prepare()
     log.info("headless run")
     try:
+        if getattr(args, "benchmark", False):
+            return run_benchmark(args)
         if getattr(args, "audit_asymmetry", False):
             return run_audit_asymmetry(args)
         if args.validate:
@@ -183,6 +196,7 @@ def main(args) -> int:
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print("nothing to do: use --validate or --protocol FILE or --audit-asymmetry", file=sys.stderr)
+    print("nothing to do: use --validate or --protocol FILE or --audit-asymmetry or --benchmark", file=sys.stderr)
     return 2
+
 
