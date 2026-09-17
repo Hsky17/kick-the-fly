@@ -192,7 +192,8 @@ def main(args) -> int:
         if args.protocol:
             from kickthefly.lab import protocol
 
-            return protocol.run_file(Path(args.protocol), Path(args.out) if args.out else None, workers=args.workers)
+            return protocol.run_file(Path(args.protocol), Path(args.out) if args.out else None, workers=args.workers,
+                                     nwb=bool(getattr(args, "nwb", False)))
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

@@ -383,6 +383,7 @@ class Brain:
         self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
         self.recorder = None                         # recorder.Recorder while recording spikes for export
         self.body_id = getattr(g, "body_id", None)
+        self.region = np.asarray(getattr(g, "region", np.full(g.n, "unassigned"))).astype(str)
         self.stethoscope_indices: np.ndarray | None = None
         self.stethoscope_spikes = 0
 
@@ -415,6 +416,9 @@ class Brain:
             old = self._pending.get((region, side))
             if old is None or steps > old[1]:
                 self._pending[(region, side)] = [rows, steps]
+        rec = self.recorder                          # a Lab recording keeps every stimulus with its timing
+        if rec is not None:
+            rec.log_event("stimulus", region, side or "both", s)
         if region in TOUCH and self.spill > 0:       # more pain neurons: the rest of the body's sensors fire too
             self.poke("body_extra", None, s * self.spill)
 
@@ -2073,7 +2077,7 @@ class Game:
                  "metadata."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
 
-    def start_recording(self, groups: list[tuple[str, str]], seconds: float) -> None:
+    def start_recording(self, groups: list[tuple[str, str]], seconds: float, nwb: bool = False) -> None:
         from kickthefly.lab import lab
         from kickthefly.lab import recorder
 
@@ -2086,8 +2090,9 @@ class Game:
                 self.menu.flash(str(e), menu_ui.BAD)
                 return
         rec = recorder.Recorder(br, named).start()
-        self.recording = dict(rec=rec, until=br.steps + int(seconds / 0.005), seconds=seconds, slot=self.flies[self.focus])
-        self.note(f"RECORD   {len(rec.rows):,} neurons for {seconds:g} s")
+        self.recording = dict(rec=rec, until=br.steps + int(seconds / 0.005), seconds=seconds,
+                              slot=self.flies[self.focus], nwb=bool(nwb))
+        self.note(f"RECORD   {len(rec.rows):,} neurons for {seconds:g} s{' (+NWB)' if nwb else ''}")
         self.menu.close()
 
     def stop_recording(self, wait: bool = False) -> None:
@@ -2102,7 +2107,13 @@ class Game:
 
         def save():
             try:
-                rec.save(stem, dict(recorded_live=True, requested_seconds=job["seconds"]), game=self)
+                extra = dict(recorded_live=True, requested_seconds=job["seconds"])
+                rec.save(stem, extra, game=self)
+                if job.get("nwb"):
+                    from kickthefly.lab import nwbexport
+
+                    nwbexport.write(rec, stem.with_name(stem.name + ".nwb"),
+                                    recorder.metadata(rec.brain, self, extra), game=self)
                 self.last_export = str(stem.parent)
                 self.saved_msg = (f"recording saved to {stem.parent.name} in exports", time.perf_counter())
             except Exception as e:
@@ -2167,6 +2178,8 @@ class Game:
         rec = getattr(self, "recording", None)
         if rec is not None and (rec["slot"].brain.steps >= rec["until"] or rec["slot"] not in self.flies):
             self.stop_recording()
+        elif rec is not None:
+            self.sample_kinematics(rec)
         training = self.flies[self.focus] if (self.train is not None or self.challenge is not None) else None
         fast = self.train_active_speed if self.train is not None else getattr(self.challenge, "speed", 1.0)
         for slot in self.flies:
@@ -2175,6 +2188,15 @@ class Game:
                 slot.brain.speed = want
             if steps:
                 slot.brain.request_steps(steps)
+
+    def sample_kinematics(self, job: dict) -> None:
+        """Where the recorded fly is, in game units (2D pixels, 3D metres), sampled once per frame."""
+        fly = job["slot"].fly
+        pos = np.asarray(fly.p, float).mean(axis=0)
+        prev = np.asarray(fly.prev, float).mean(axis=0)
+        speed = float(np.linalg.norm(pos - prev)) * 60.0        # the ragdoll integrates in fixed 1/60 s ticks
+        x, y, z = (pos[0], pos[1], 0.0) if len(pos) == 2 else (pos[0], pos[1], pos[2])
+        job["rec"].log_kinematics(x, y, z, speed, float(fly.health), str(fly.action), ARENAS[self.arena_i])
 
     def time_action(self, action: str) -> None:
         c = self.clock
@@ -3610,6 +3632,7 @@ class Game:
     def hit(self, slot: "FlySlot", i: int, strength: float) -> None:
         key = particle_region(i)
         slot.pending_hits[key] = max(slot.pending_hits.get(key, 0.0), strength)
+        self.record_event("hit", key[0], TOOLS[self.tool][0], strength, slot)
 
     def damage(self, slot: "FlySlot", amount: float, source: str) -> None:
         if amount > slot.pending_damage:
@@ -3649,14 +3672,29 @@ class Game:
                               self.clock.now, random.uniform(0.35, 0.8), random.uniform(3, 7)])
 
     def note(self, text: str, source: str | None = None) -> None:
-        self.log.append((self.clock.now, text, source or reaction_source(text)))
+        src = source or reaction_source(text)
+        self.log.append((self.clock.now, text, src))
         self.log = self.log[-7:]
+        self.record_event("note", text.split()[0] if text.split() else "note", text.strip(), 0.0,
+                          extra=dict(source=src))
+
+    def record_event(self, kind: str, label: str, detail: str = "", value: float = 0.0, slot=None,
+                     extra: dict | None = None) -> None:
+        """Log a tool use, hit, reaction, arena or surgery change into a running Lab recording (else a no-op)."""
+        job = getattr(self, "recording", None)
+        if job is None:
+            return
+        if slot is not None and slot is not job["slot"]:          # only the fly being recorded
+            return
+        detail = detail if not extra else f"{detail} [{extra.get('source', '')}]".strip()
+        job["rec"].log_event(kind, label, detail, value)
 
     # --- tools ---
     def use_tool(self, pos, now: float) -> None:
         if self.cfg["brain.autopilot"]:
             return
         name = TOOLS[self.tool][0]
+        self.record_event("tool", name, f"x={pos[0]:.0f} y={pos[1]:.0f}")
         if name in ("hand", "flick", "swatter", "zapper"):
             slot, _ = self._nearest_fly(pos, 60)
             if slot is not None and slot.fly.frozen_at is not None and slot.fly.shattered_at is None:
@@ -5185,6 +5223,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--validate", action="store_true", help="run the validation suite (implies --headless)")
     ap.add_argument("--protocol", metavar="FILE", help="run a YAML protocol file (implies --headless)")
     ap.add_argument("--out", metavar="PATH", help="where headless results go")
+    ap.add_argument("--nwb", action="store_true", help="also write each recording as NWB (needs pynwb)")
     ap.add_argument("--workers", type=int, help="worker processes for headless runs (default: up to 4)")
     ap.add_argument("--seeds", help="validation seeds, e.g. 1000-1009")
     ap.add_argument("--autopilot", "--spectator", dest="autopilot", action="store_true", help="spectator mode: hands-off simulation with auto-orbiting brain view")

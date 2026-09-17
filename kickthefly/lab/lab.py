@@ -824,6 +824,8 @@ def page_export(m: ui.Menu, surf, rect, mouse) -> None:
     m.text(surf, "RECORD AND EXPORT", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
     m.text(surf, "Records spike times from the fly your brain panel shows, live, while you play. Files: spikes and rates "
                  "as CSV and npz, plus a metadata JSON.", (rect.x + 24, rect.y + 48), ui.LABEL, m.f_small)
+    if not hasattr(st, "rec_nwb"):
+        st.rec_nwb = True
     y = rect.y + 84
     options = list(RECORD_GROUPS)
     insp = getattr(host, "inspect", None)
@@ -841,11 +843,28 @@ def page_export(m: ui.Menu, surf, rect, mouse) -> None:
     m.text(surf, "Duration", (rect.x + 24, y + 15), ui.TEXT, m.f_text, "midleft")
     m.slider(surf, (rect.x + 140, y, 360, 30), st.rec_seconds, 1, 60, 1, "{:.0f} s",
              lambda v: setattr(st, "rec_seconds", int(v)), lambda: None, id="rec_seconds")
-    y += 50
+    y += 46
+    from kickthefly.lab import nwbexport
+
+    why = nwbexport.available()
+    m.toggle(surf, (rect.x + 24, y, 90, 30), st.rec_nwb and not why,
+             lambda v: setattr(st, "rec_nwb", bool(v)), id="rec_nwb", enabled=not why)
+    m.text(surf, "Also write NWB (Neurodata Without Borders)", (rect.x + 130, y + 15),
+           ui.LABEL if why else ui.TEXT, m.f_text, "midleft")
+    m._register(pygame.Rect(rect.x + 24, y, rect.w - 48, 30), "label", id=("nwbtip",),
+                tip=why or "One .nwb file with spike times, per-neuron and per-region rates, stimuli, tool events, "
+                           "the fly's movement, surgery, arena and the learned KC->MBON weights before and after, "
+                           "plus the full metadata and the MaleCNS v1.0 citation. Opens in pynwb, the NWB inspector "
+                           "and NWB Explorer. CSV and npz are always written as the quick option.")
+    if why:
+        m.text(surf, why, (rect.x + 24, y + 34), ui.AMBER, m.f_small)
+        y += 20
+    y += 44
     rec = getattr(host, "recording", None)
     if rec is None:
         m.button(surf, (rect.x + 24, y, 260, 44), "Start recording and resume", lambda: host.start_recording(
-            [(lbl, s) for lbl, s in options if s in st.rec_pick], st.rec_seconds), style="primary", id="rec_start",
+            [(lbl, s) for lbl, s in options if s in st.rec_pick], st.rec_seconds,
+            nwb=bool(st.rec_nwb) and not why), style="primary", id="rec_start",
             enabled=bool(st.rec_pick), tip="Closes the menu; the recording stops by itself after the duration.")
     else:
         m.button(surf, (rect.x + 24, y, 200, 44), "Stop and save", host.stop_recording, style="danger", id="rec_stop")

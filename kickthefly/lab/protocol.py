@@ -12,6 +12,7 @@ Two kinds of protocol:
     warmup_s: 3                  # extra calm time after the standard warm-up, before t = 0
     duration_s: 4
     params: {noise_std: 0.05}    # optional Lab model parameters (lab.py names)
+    nwb: true                    # also write each fly's recording as NWB (needs pynwb)
     surgery: {"type:DNp01": -1}  # optional: neuron spec -> -1 silence / +1 stimulate
     control: true                # with surgery: also run each seed unperturbed (default true)
     stimuli:
@@ -35,7 +36,8 @@ assay group ("dnp01", "mn9", "adn", "jo_ce", "mn_front"...), "type:A,B", "prefix
 or "rows:1,2,3".
 
 Output (a new folder per run): per seed the recorder's CSV, npz and metadata files (recorder.py), plus summary.json with
-mean firing per recording group, and, with surgery, the paired comparison against the unperturbed controls.
+mean firing per recording group, and, with surgery, the paired comparison against the unperturbed controls. With
+`nwb: true` (or --nwb on the command line) each fly's recording is also written as one NWB file (nwbexport.py).
 """
 from __future__ import annotations
 
@@ -46,7 +48,7 @@ from pathlib import Path
 import numpy as np
 
 TOP_KEYS = {"name", "description", "seed", "seeds", "flies", "warmup_s", "duration_s", "params", "surgery", "control",
-            "stimuli", "recordings", "assay", "assay_options", "workers"}
+            "stimuli", "recordings", "assay", "assay_options", "workers", "nwb"}
 STIM_KEYS = {"at_s", "for_s", "target", "strength", "recruit", "mode", "amp", "side"}
 
 
@@ -88,6 +90,8 @@ def check(data, where: str = "protocol") -> dict:
     for key in ("params", "surgery", "assay_options"):
         if key in p and not isinstance(p[key], dict):
             raise ProtocolError(f"{where}: {key} must be a mapping")
+    if "nwb" in p and not isinstance(p["nwb"], bool):
+        raise ProtocolError(f"{where}: nwb must be true or false")
     bad = set(p.get("params", {})) - set(lab.DEFAULTS)
     if bad:
         raise ProtocolError(f"{where}: unknown params {sorted(bad)}; allowed: {sorted(lab.DEFAULTS)}")
@@ -162,8 +166,16 @@ def run_seed(p: dict, seed: int, surgery: dict | None, folder: Path, tag: str) -
         br._step()
     rec.stop()
     stem = folder / f"{tag}-seed{seed}"
-    rec.save(stem, dict(protocol=p["name"], protocol_spec={k: v for k, v in p.items() if k != "stimuli_rows"},
-                        condition=tag, surgery=surgery))
+    extra = dict(protocol=p["name"], protocol_spec={k: v for k, v in p.items() if k != "stimuli_rows"},
+                 condition=tag, surgery=surgery)
+    rec.save(stem, extra)
+    if p.get("nwb"):
+        from kickthefly.lab import nwbexport
+
+        reason = nwbexport.available()
+        if reason:
+            raise ProtocolError(reason)
+        nwbexport.write(rec, stem.with_name(stem.name + ".nwb"), recorder.metadata(br, None, extra))
     a = rec.arrays()
     out = {}
     for name, rows in groups.items():
@@ -232,10 +244,18 @@ def find(path: Path) -> Path:
     raise FileNotFoundError(f"protocol file {path} not found (bundled: {', '.join(f.name for f in lab.protocol_files())})")
 
 
-def run_file(path: Path, out: Path | None = None, workers: int | None = None) -> int:
+def run_file(path: Path, out: Path | None = None, workers: int | None = None, nwb: bool = False) -> int:
     path = find(path)
     try:
         p = load(path)
+        if nwb:
+            p["nwb"] = True
+        if p.get("nwb"):
+            from kickthefly.lab import nwbexport
+
+            reason = nwbexport.available()
+            if reason:
+                raise ProtocolError(reason)
     except ProtocolError as e:
         print(f"error: {e}")
         return 2

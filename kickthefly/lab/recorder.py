@@ -1,11 +1,18 @@
 """Recording and export: spike times and firing rates to CSV and npz, always with a metadata JSON.
 
 A Recorder attaches to one brain and keeps every spike of the neurons it watches (row indices into the connectome),
-cheaply, on the brain's own thread. Saving writes, next to each other:
+cheaply, on the brain's own thread. Alongside the spikes it keeps the run's context: every stimulus the brain was
+given (Brain.poke), every tool use, hit, reaction, arena and surgery change the game logged, where the fly was and
+how it was doing, and the learned KC -> MBON weights as they were when recording started. CSV and npz are the quick
+export; nwbexport.py writes the same run as one NWB file.
+
+Saving writes, next to each other:
   <name>-spikes.csv      time_ms, row, body_id, type, instance, group       one line per spike
   <name>-rates.csv       row, body_id, type, instance, group, spikes, rate_hz
   <name>-group-rates.csv time_ms, one column per group: spikes/s per neuron in 50 ms bins
   <name>.npz             the same data as arrays (spike_steps, spike_rows, rows, body_ids, types, ...)
+  <name>-events.csv      time_ms, kind (stimulus | tool | hit | note), label, detail, value
+  <name>-kinematics.csv  time_ms, x, y, z, speed, health, action, arena
   <name>-metadata.json   app version, seed, parameters, thresholds, connectome version, brain pack, surgery, what was
                          recorded and when
 
@@ -98,13 +105,43 @@ class Recorder:
         self.start_step = int(brain.steps)
         self.end_step = self.start_step
         self.started = time.time()
+        self.started_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         self.active = False
+        # run context, each entry stamped with the brain step so it lines up with the spikes
+        self.events: list[tuple[int, str, str, str, float]] = []      # step, kind, label, detail, value
+        self.kinematics: list[tuple[int, float, float, float, float, float, str, str]] = []
+        self.kc_mbon_before: np.ndarray | None = None
+        self.arena = ""
 
     def start(self) -> "Recorder":
         self.start_step = self.end_step = int(self.brain.steps)
         self.active = True
+        mem = getattr(self.brain, "memory", None)
+        if mem is not None:
+            with mem.lock:
+                self.kc_mbon_before = np.asarray(mem.w, np.float32).copy()
         self.brain.recorder = self
         return self
+
+    # --- context the brain and the game hand in while a recording runs --------------------------------------------
+    def log_event(self, kind: str, label: str, detail: str = "", value: float = 0.0) -> None:
+        """A stimulus, tool use, hit, reaction, arena or surgery change, at the brain step it happened on."""
+        if not self.active:
+            return
+        with self.lock:
+            if len(self.events) < 200_000:                      # a runaway log never eats the recording
+                self.events.append((int(self.brain.steps), kind, str(label), str(detail), float(value)))
+
+    def log_kinematics(self, x: float, y: float, z: float, speed: float, health: float, action: str,
+                       arena: str) -> None:
+        """Where the fly is and how it is doing, sampled by the game loop (never by the brain thread)."""
+        if not self.active:
+            return
+        self.arena = arena
+        with self.lock:
+            if len(self.kinematics) < 200_000:
+                self.kinematics.append((int(self.brain.steps), float(x), float(y), float(z), float(speed),
+                                        float(health), str(action), str(arena)))
 
     def stop(self) -> None:
         self.active = False
@@ -129,6 +166,47 @@ class Recorder:
             st = np.concatenate(self.steps) if self.steps else np.zeros(0, np.int32)
             n_steps = self.end_step - self.start_step
         return dict(spike_steps=st, spike_index=idx, n_steps=n_steps)
+
+    def context(self) -> dict:
+        """The run's events, kinematics and learned KC -> MBON weights, with times relative to the recording."""
+        with self.lock:
+            events = [(s - self.start_step, k, lb, d, v) for s, k, lb, d, v in self.events]
+            kin = [(s - self.start_step, *rest) for s, *rest in self.kinematics]
+        mem = getattr(self.brain, "memory", None)
+        before = self.kc_mbon_before
+        after = None
+        if mem is not None:
+            with mem.lock:
+                after = np.asarray(mem.w, np.float32).copy()
+                baseline = np.asarray(mem.w0, np.float32).copy()
+                kc_rows = np.asarray(mem.kc, np.int64)[mem.syn_kc]
+                mbon_rows = np.asarray(mem.mbon, np.int64)[mem.syn_mbon]
+                punish = np.asarray(mem.punish_syn, bool).copy()
+        else:
+            baseline = kc_rows = mbon_rows = punish = None
+        return dict(events=events, kinematics=kin, kc_mbon_before=before, kc_mbon_after=after,
+                    kc_mbon_connectome=baseline, kc_rows=kc_rows, mbon_rows=mbon_rows, punish_compartment=punish)
+
+    def region_of_rows(self) -> np.ndarray:
+        """The dataset's neuropil region label for each recorded neuron ('unassigned' where the dataset has none)."""
+        region = getattr(self.brain, "region", None)
+        if region is None or not len(self.rows):
+            return np.full(len(self.rows), "unassigned")
+        return np.asarray(region)[self.rows].astype(str)
+
+    def per_region_rates(self, st: np.ndarray, idx: np.ndarray, n_steps: int) -> dict[str, np.ndarray]:
+        """Spikes/s per neuron in 50 ms bins for each dataset region the recorded neurons fall in."""
+        if not len(self.rows):
+            return {}
+        names = self.region_of_rows()
+        n_bins = max(1, int(np.ceil(n_steps / BIN_STEPS)))
+        out = {}
+        for name in sorted(set(names.tolist())):
+            members = np.flatnonzero(names == name)
+            mask = np.isin(idx, members)
+            c = np.bincount(st[mask] // BIN_STEPS, minlength=n_bins)[:n_bins]
+            out[name] = c / len(members) / (BIN_STEPS * 0.005)
+        return out
 
     def save(self, stem: Path, meta_extra: dict | None = None, game=None) -> list[Path]:
         br = self.brain
@@ -171,6 +249,24 @@ class Recorder:
             for b in range(n_bins):
                 w.writerow([f"{b * BIN_STEPS * 5.0:.0f}"] + [f"{binned[g][b]:.3f}" for g in binned])
         out.append(p)
+        ctx = self.context()
+        if ctx["events"]:
+            p = stem.with_name(stem.name + "-events.csv")
+            with open(p, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(["time_ms", "kind", "label", "detail", "value"])
+                for st_, kind, label, detail, value in ctx["events"]:
+                    w.writerow([f"{st_ * 5.0:.1f}", kind, label, detail, f"{value:.4f}"])
+            out.append(p)
+        if ctx["kinematics"]:
+            p = stem.with_name(stem.name + "-kinematics.csv")
+            with open(p, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(["time_ms", "x", "y", "z", "speed", "health", "action", "arena"])
+                for st_, x, y, z, sp, hp, act, arena in ctx["kinematics"]:
+                    w.writerow([f"{st_ * 5.0:.1f}", f"{x:.3f}", f"{y:.3f}", f"{z:.3f}", f"{sp:.3f}", f"{hp:.1f}",
+                                act, arena])
+            out.append(p)
         p = stem.with_name(stem.name + ".npz")
         np.savez_compressed(p, spike_steps=st, spike_rows=rows[idx] if len(idx) else np.zeros(0, np.int64),
                             rows=rows, body_ids=body_ids, types=types.astype(str), instances=inst.astype(str),
@@ -182,6 +278,8 @@ class Recorder:
                                                       seconds=n_steps * 0.005, neurons=int(len(rows)),
                                                       spikes=int(len(idx)),
                                                       groups={g: int(len(r)) for g, r in self.groups.items()},
+                                                      events=len(ctx["events"]),
+                                                      kinematics_samples=len(ctx["kinematics"]),
                                                       files=[q.name for q in out])))
         meta.update(meta_extra or {})
         p = stem.with_name(stem.name + "-metadata.json")

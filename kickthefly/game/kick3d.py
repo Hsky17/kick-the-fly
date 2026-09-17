@@ -856,6 +856,7 @@ class Game3D(k2.Game):
             return
         name = TOOLS[self.tool][0]
         eye, d = self.aim()
+        self.record_event("tool", name, f"eye=({eye[0]:.2f},{eye[1]:.2f},{eye[2]:.2f})")
         if name in ("hand", "flick", "swatter", "zapper"):
             slot, i, _ = self._nearest_fly3d(eye, d, REACH, 0.35)
             if slot is not None and slot.fly.frozen_at is not None and slot.fly.shattered_at is None:

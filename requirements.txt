@@ -5,3 +5,9 @@ pygame>=2.6
 pillow>=10
 moderngl>=5.10
 pyyaml>=6
+
+# Optional. NWB export (Lab > Record and export, or --nwb) needs pynwb; without it that one checkbox is greyed out
+# with the reason and the CSV/npz export still works. It is not bundled in the exe or the AppImage.
+#   pip install pynwb
+# Dev extra, for checking an exported file against NWB best practices:
+#   pip install nwbinspector
