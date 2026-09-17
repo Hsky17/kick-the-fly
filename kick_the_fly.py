@@ -367,6 +367,19 @@ class Brain:
         self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
         self.recorder = None                         # recorder.Recorder while recording spikes for export
         self.body_id = getattr(g, "body_id", None)
+        self.stethoscope_indices: np.ndarray | None = None
+        self.stethoscope_spikes = 0
+
+    def set_stethoscope_indices(self, indices: np.ndarray | None) -> None:
+        with self._lock:
+            self.stethoscope_indices = indices
+            self.stethoscope_spikes = 0
+
+    def take_stethoscope_spikes(self) -> int:
+        with self._lock:
+            s = self.stethoscope_spikes
+            self.stethoscope_spikes = 0
+            return s
 
     @property
     def dead(self) -> bool:
@@ -445,6 +458,8 @@ class Brain:
 
         if self.recorder is not None:
             self.recorder.push(self.steps, spikes)
+        if self.stethoscope_indices is not None and len(self.stethoscope_indices) > 0:
+            self.stethoscope_spikes += int(np.count_nonzero(spikes[self.stethoscope_indices]))
         on = np.flatnonzero(spikes)
         G = len(self.names)
         counts = np.zeros(G)
@@ -1616,16 +1631,63 @@ class Sound:
         c2 = np.sin(2 * np.pi * 1100 * t2) * np.exp(-t2 * 80) + noise(0.06) * np.exp(-t2 * 100) * 0.5
         pause = np.zeros(int(R * 0.02))
         fx["shutter"] = self._snd(np.concatenate([c1, pause, c2]), 0.6)
+
+        # Extracellular biphasic action potential clicks (~1.5 to 15 ms) for brain stethoscope sonification
+        t_spk = t(0.002)
+        spk1 = -np.sin(2 * np.pi * 950 * t_spk) * np.exp(-t_spk * 2500) + 0.15 * noise(0.002) * np.exp(-t_spk * 2000)
+        fx["spike_click1"] = self._snd(spk1, 0.45)
+
+        t_spk2 = t(0.005)
+        s1 = -np.sin(2 * np.pi * 950 * t_spk2) * np.exp(-t_spk2 * 2500)
+        t_shift = np.maximum(t_spk2 - 0.0018, 0)
+        s2 = -np.sin(2 * np.pi * 880 * t_shift) * np.exp(-t_shift * 2500) * (t_spk2 >= 0.0018)
+        fx["spike_click2"] = self._snd(s1 + 0.85 * s2 + 0.1 * noise(0.005) * np.exp(-t_spk2 * 1500), 0.5)
+
+        t_spk3 = t(0.009)
+        s_burst = np.zeros_like(t_spk3)
+        for dt_s, f_hz, amp in [(0.0, 950, 1.0), (0.0021, 1020, 0.9), (0.0045, 890, 0.8)]:
+            sub_t = np.maximum(t_spk3 - dt_s, 0)
+            s_burst += -np.sin(2 * np.pi * f_hz * sub_t) * np.exp(-sub_t * 2400) * (t_spk3 >= dt_s) * amp
+        fx["spike_click3"] = self._snd(s_burst + 0.1 * noise(0.009) * np.exp(-t_spk3 * 1000), 0.55)
+
+        t_many = t(0.015)
+        s_many = np.zeros_like(t_many)
+        for dt_s, f_hz in zip([0.0, 0.0015, 0.0032, 0.0051, 0.0078, 0.0102], [950, 1100, 850, 1050, 920, 980]):
+            sub_t = np.maximum(t_many - dt_s, 0)
+            s_many += -np.sin(2 * np.pi * f_hz * sub_t) * np.exp(-sub_t * 2200) * (t_many >= dt_s) * 0.6
+        fx["spike_click_many"] = self._snd(s_many + 0.12 * noise(0.015) * np.exp(-t_many * 500), 0.6)
+
         return fx
 
     def configure(self, cfg) -> None:
         self.master, self.sfx, self.buzz = cfg["audio.master"], cfg["audio.sfx"], cfg["audio.buzz"]
+        self.stethoscope_vol = cfg.get("audio.stethoscope_vol", 0.5)
         if cfg["audio.mute"] != self.muted:
             self.muted = cfg["audio.mute"]
             for slot in list(self.loops):
                 self.loop(slot, None)
         for slot, (name, ch) in list(self.loops.items()):
             ch.set_volume(self._vol(slot, 1.0))
+
+    def play_spike_click(self, n_spikes: int) -> None:
+        if not self.ok or self.muted or n_spikes <= 0:
+            return
+        vol = float(min(1.0, self.master * getattr(self, "stethoscope_vol", 0.5)))
+        if vol <= 0.001:
+            return
+        if n_spikes == 1:
+            snd_name = "spike_click1"
+        elif n_spikes <= 4:
+            snd_name = "spike_click2"
+        elif n_spikes <= 12:
+            snd_name = "spike_click3"
+        else:
+            snd_name = "spike_click_many"
+        snd = self.fx.get(snd_name)
+        if snd:
+            ch = snd.play()
+            if ch:
+                ch.set_volume(vol)
 
     def _vol(self, slot: str | None, vol: float) -> float:
         return float(min(1.0, vol * self.master * (self.buzz if slot == "wings" else self.sfx)))
@@ -1682,6 +1744,7 @@ HELP = (
     ("E", "change arena: room, fan, flypaper, pool, lamp"),
     ("P", "pain neurons: normal, more, max"),
     ("I", "immortal mode"),
+    ("K", "brain stethoscope (spike sonification clicks)"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
     ("N", "spawn another fly, up to 16, each with its own brain"),
@@ -1795,6 +1858,8 @@ class Game:
         c = self.cfg
         if key.startswith("audio."):
             self.sound.configure(c)
+            if hasattr(self, "flies") and len(self.flies) > 0:
+                self.update_stethoscope_target()
         elif key == "brain.pain_level":
             self.pain_level = c[key]
             for slot in self.flies:
@@ -2413,8 +2478,26 @@ class Game:
         self._text(surf, "LIVE CONNECTOME", (22, 16), INK, self.f_head)
         v = self.view
         pulse = 1.0 if self.calm_fx else 0.5 + 0.5 * math.sin(now * 6)
-        self._text(surf, f"{v.firing:,} neurons firing above normal", (230, 20), (150, 215, 240), self.f_bold)
-        self._text(surf, f"{v.hot_firing:,} pain neurons", (520, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
+        self._text(surf, f"{v.firing:,} firing", (195, 20), (150, 215, 240), self.f_bold)
+        self._text(surf, f"{v.hot_firing:,} pain", (325, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
+
+        # Stethoscope buttons:
+        steth_target_btn = pygame.Rect(rect.right - 690, 15, 145, 22)
+        steth_tgt_lbl = self.stethoscope_target_label()
+        if len(steth_tgt_lbl) > 13:
+            steth_tgt_lbl = steth_tgt_lbl[:12] + "…"
+        pygame.draw.rect(surf, (24, 28, 38), steth_target_btn, border_radius=4)
+        pygame.draw.rect(surf, BORDER, steth_target_btn, 1, border_radius=4)
+        self._text(surf, f"Probe: {steth_tgt_lbl} ▾", steth_target_btn.center, (170, 205, 235), self.f_small, "center")
+        self.big_steth_target_button = steth_target_btn
+
+        steth_btn = pygame.Rect(rect.right - 535, 15, 125, 22)
+        steth_active = bool(self.cfg["audio.stethoscope_enabled"])
+        pygame.draw.rect(surf, (30, 65, 40) if steth_active else (24, 28, 38), steth_btn, border_radius=4)
+        pygame.draw.rect(surf, (80, 220, 120) if steth_active else BORDER, steth_btn, 1, border_radius=4)
+        steth_txt = f"Steth: {'ON' if steth_active else 'OFF'} (K)"
+        self._text(surf, steth_txt, steth_btn.center, (140, 255, 170) if steth_active else TEXT, self.f_small, "center")
+        self.big_steth_button = steth_btn
 
         # Camera presets & status:
         self.big_preset_buttons = []
@@ -2444,7 +2527,7 @@ class Game:
         self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
 
         # Mode toggle button:
-        mode_btn = pygame.Rect(rect.right - 400, 15, 132, 22)
+        mode_btn = pygame.Rect(rect.right - 400, 15, 130, 22)
         mode_label = "Mode: Per-Region" if v.view_mode == "region" else "Mode: Per-Neuron"
         mode_active = (v.view_mode == "region")
         pygame.draw.rect(surf, (50, 75, 110) if mode_active else (24, 28, 38), mode_btn, border_radius=4)
@@ -2494,6 +2577,8 @@ class Game:
             self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
             self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
                        (24, ly + 20), DIM, self.f_small)
+        self._text(surf, "Stethoscope: K toggle  |  clicks sonify spikes in probe target [GAME RULE: synthetic sonification, not an LFP]",
+                   (PLAY_W - 24, ly + 20), (140, 180, 200), self.f_small, "topright")
 
     def _draw_region_neuron_list(self, surf, rect: pygame.Rect, now: float) -> None:
         rname = self.selected_region
@@ -3181,6 +3266,87 @@ class Game:
             self.inspect_buttons.append((r, mode))
 
     # --- sound, saving, help ---------------------------------------------------------------
+    def update_stethoscope_target(self) -> None:
+        if not self.cfg["audio.stethoscope_enabled"]:
+            for slot in getattr(self, "flies", []):
+                slot.brain.set_stethoscope_indices(None)
+            return
+
+        target = self.cfg["audio.stethoscope_target"]
+        indices = None
+
+        # 1. Selected region in big brain view
+        if getattr(self, "selected_region", None):
+            rname = self.selected_region
+            v = self.view
+            if hasattr(v, "region_to_id") and rname in v.region_to_id:
+                rid = v.region_to_id[rname]
+                indices = np.flatnonzero(v.region_id == rid)
+        # 2. Inspected neuron in brain view
+        elif getattr(self, "inspect", None) is not None:
+            info = self.inspect
+            i = info.get("i") if isinstance(info, dict) else None
+            if i is not None:
+                indices = np.array([i], dtype=np.int32)
+        # 3. Target setting
+        if indices is None:
+            v = self.view
+            br = self.brain
+            if target == "antennal_lobe":
+                if hasattr(v, "region_to_id") and "antennal_lobe" in v.region_to_id:
+                    indices = np.flatnonzero(v.region_id == v.region_to_id["antennal_lobe"])
+                else:
+                    indices = br.sense.get(("smell", None), np.array([], np.int32))
+            elif target == "mushroom_body":
+                if hasattr(v, "region_to_id") and "mushroom_body" in v.region_to_id:
+                    indices = np.flatnonzero(v.region_id == v.region_to_id["mushroom_body"])
+                else:
+                    indices = br.kc
+            elif target == "central_complex":
+                if hasattr(v, "region_to_id") and "central_complex" in v.region_to_id:
+                    indices = np.flatnonzero(v.region_id == v.region_to_id["central_complex"])
+            elif target == "optic_lobes":
+                if hasattr(v, "region_to_id") and "optic_lobes" in v.region_to_id:
+                    indices = np.flatnonzero(v.region_id == v.region_to_id["optic_lobes"])
+            elif target == "motor":
+                indices = np.flatnonzero(np.isin(br.superclass, ("descending_neuron", "motor")))
+            elif target == "whole_brain":
+                indices = np.arange(br.n, dtype=np.int32)
+
+        idx_arr = indices if (indices is not None and len(indices) > 0) else None
+        for slot in getattr(self, "flies", []):
+            slot.brain.set_stethoscope_indices(idx_arr)
+
+    def stethoscope_target_label(self) -> str:
+        if getattr(self, "selected_region", None):
+            return self.selected_region.replace("_", " ").title()
+        if getattr(self, "inspect", None) is not None:
+            info = self.inspect
+            t = info.get("type", "Neuron") if isinstance(info, dict) else str(info)
+            return t
+        tgt = self.cfg["audio.stethoscope_target"]
+        return tgt.replace("_", " ").title()
+
+    def toggle_stethoscope(self) -> None:
+        val = not bool(self.cfg["audio.stethoscope_enabled"])
+        self.cfg.set("audio.stethoscope_enabled", val)
+        self.cfg.save()
+        self.update_stethoscope_target()
+        status = "ON" if val else "OFF"
+        tgt = self.stethoscope_target_label()
+        self.note(f"STETHOSCOPE {status} ({tgt})", source="rule")
+
+    def cycle_stethoscope_target(self) -> None:
+        targets = ("mushroom_body", "antennal_lobe", "central_complex", "optic_lobes", "motor", "whole_brain")
+        cur = self.cfg["audio.stethoscope_target"]
+        nxt = targets[(targets.index(cur) + 1) % len(targets)] if cur in targets else targets[0]
+        self.cfg.set("audio.stethoscope_target", nxt)
+        self.cfg.save()
+        self.selected_region = None
+        self.update_stethoscope_target()
+        tgt = self.stethoscope_target_label()
+        self.note(f"STETHOSCOPE TARGET {tgt}", source="rule")
+
     def _sound_update(self, now: float) -> None:
         snd, fly = self.sound, self.fly
         flying = fly.flying and now < fly.escape_until
@@ -3192,6 +3358,10 @@ class Game:
         snd.loop("tool", tool, 0.6)
         arena = ARENAS[self.arena_i]
         snd.loop("arena", "whoosh" if arena == "fan" else "hum" if arena == "lamp" else None, 0.5)
+        if self.cfg["audio.stethoscope_enabled"]:
+            spikes_count = self.brain.take_stethoscope_spikes()
+            if spikes_count > 0:
+                snd.play_spike_click(spikes_count)
 
     def capture(self) -> None:
         small = pygame.transform.smoothscale(self.screen, GIF_SIZE)
@@ -4515,6 +4685,8 @@ class Game:
         elif action == "photo_mode":
             self.photo_mode = not getattr(self, "photo_mode", False)
             self.note(f"PHOTO MODE {'on (clean preview)' if self.photo_mode else 'off'}", source="rule")
+        elif action == "stethoscope":
+            self.toggle_stethoscope()
         elif action == "immortal":
             self.set_setting("brain.immortal", not self.immortal)
             self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
@@ -4618,11 +4790,23 @@ class Game:
                         if nr.collidepoint(ev.pos):
                             self.inspect = self._neuron_info(nid)
                             self.selected_region = None
+                            self.update_stethoscope_target()
                             self.sound.play("click")
                             return True
                     if getattr(self, "region_modal_rect", None) and not self.region_modal_rect.collidepoint(ev.pos):
                         self.selected_region = None
+                        self.update_stethoscope_target()
                         return True
+                    return True
+
+                # Stethoscope buttons:
+                if getattr(self, "big_steth_button", None) and self.big_steth_button.collidepoint(ev.pos):
+                    self.toggle_stethoscope()
+                    self.sound.play("click")
+                    return True
+                if getattr(self, "big_steth_target_button", None) and self.big_steth_target_button.collidepoint(ev.pos):
+                    self.cycle_stethoscope_target()
+                    self.sound.play("click")
                     return True
 
                 # Mode toggle:
@@ -4638,6 +4822,7 @@ class Game:
                         if rr.collidepoint(ev.pos):
                             self.selected_region = rname
                             self.region_page = 0
+                            self.update_stethoscope_target()
                             self.sound.play("click")
                             return True
 

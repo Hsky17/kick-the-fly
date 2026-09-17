@@ -82,6 +82,16 @@ SETTINGS: tuple[Setting, ...] = (
     S("audio.sfx", "Audio", "Sound effects volume", "float", 1.0,
       "Hits, tools, splashes, menus and every other sound.", lo=0, hi=1, step=0.05, fmt="{:.0%}"),
     S("audio.mute", "Audio", "Mute", "bool", False, "Silence everything. Hotkey M."),
+    S("audio.stethoscope_enabled", "Audio", "Brain stethoscope", "bool", False,
+      "Spike sonification: play subtle audio clicks for spikes in the probed region or group. Hotkey K.", tag=GAME_RULE),
+    S("audio.stethoscope_vol", "Audio", "Stethoscope volume", "float", 0.5,
+      "Volume of the brain stethoscope spike sonification. Synthetic sonification, not an extracellular LFP recording.",
+      lo=0.0, hi=1.0, step=0.05, fmt="{:.0%}", tag=GAME_RULE),
+    S("audio.stethoscope_target", "Audio", "Stethoscope target", "choice", "mushroom_body",
+      "Neuropil region or neuron group to monitor with the stethoscope probe.",
+      options=("mushroom_body", "antennal_lobe", "central_complex", "optic_lobes", "motor", "whole_brain"),
+      labels=("Mushroom body", "Antennal lobe", "Central complex", "Optic lobes", "Motor neurons", "Whole brain"),
+      tag=GAME_RULE),
     # --- Brain
     S("brain.mode", "Brain", "Mode", "choice", "play",
       "Play is the game with challenges and scores. Lab adds the research tools: validation results, repeated "
@@ -147,6 +157,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("time_step", "Single step (paused)", "."),
     ("autopilot", "Autopilot / spectator", "y"),
     ("photo_mode", "Photo mode / free camera", "f10"),
+    ("stethoscope", "Brain stethoscope", "k"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound
