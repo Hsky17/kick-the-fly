@@ -1431,11 +1431,11 @@ REACTION_SOURCE = {
     "DODGE": "real", "FLY AWAY": "real", "TAKE OFF": "real", "RUN": "real", "KICK": "real", "BACK UP": "real",
     "WALK": "real", "TURN": "real", "SHOOT": "real", "GROOM": "real", "PROBOSCIS": "real",
     "EATING": "rule", "TO LIGHT": "rule", "AVOID": "rule", "APPROACH": "rule", "FLEE": "rule", "WRAPPED": "rule",
-    "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule",
+    "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule", "AUTOPILOT": "rule",
 }
 POPUP_SOURCE = {"DODGE!": "real", "YIKES!": "real", "NOPE!": "rule", "RUN AWAY!": "rule", "YUM!": "rule",
                 "SWEET!": "rule", "NOM NOM": "rule", "K.O.!": "rule", "BROKE FREE!": "rule", "FLY WINS!": "rule",
-                "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule"}
+                "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule", "AUTOPILOT": "rule", "SPECTATOR": "rule"}
 SOURCE_TIP = {"real": "REAL: triggered by the connectome sim's own neurons firing above a threshold.",
               "rule": "RULE: a game rule, not something the connectome sim produced."}
 
@@ -2395,7 +2395,18 @@ class Game:
             self._text(surf, key_label, btn_rect.center, INK if active else TEXT, self.f_small, "center")
             self.big_preset_buttons.append((btn_rect, name))
             bx += 64
+        if self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_orbit"] and not getattr(self, "big_drag", None):
+            t = time.perf_counter()
+            dt = t - getattr(self, "_last_big_orbit", t)
+            self._last_big_orbit = t
+            if 0 < dt < 0.2:
+                self.view.orbit(dt * 12.0, 0.0)
+        else:
+            self._last_big_orbit = time.perf_counter()
+
         cam_info = f"View: {v.preset.upper()} (yaw {v.yaw:+.0f}° pitch {v.pitch:+.0f}° zoom {v.zoom:.1f}x)"
+        if self.cfg["brain.autopilot"]:
+            cam_info += " [AUTOPILOT ORBIT]" if self.cfg["brain.autopilot_orbit"] else " [AUTOPILOT]"
         self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
 
         # Mode toggle button:
@@ -2530,7 +2541,7 @@ class Game:
     def _threats(self, slot: "FlySlot", now: float, mouse) -> list:
         out = []
         name = TOOLS[self.tool][0]
-        if not self._overlay_open() and mouse[0] < PLAY_W and mouse[1] < FLOOR and name not in ("hand", "sugar"):
+        if not self.cfg["brain.autopilot"] and not self._overlay_open() and mouse[0] < PLAY_W and mouse[1] < FLOOR and name not in ("hand", "sugar"):
             out.append(("cursor", np.array(mouse, float), CURSOR_SIZE.get(name, 16)))
         for sw in self.swats:
             ph = (now - sw[1]) / 0.55
@@ -3292,6 +3303,8 @@ class Game:
 
     # --- tools ---
     def use_tool(self, pos, now: float) -> None:
+        if self.cfg["brain.autopilot"]:
+            return
         name = TOOLS[self.tool][0]
         if name in ("hand", "flick", "swatter", "zapper"):
             slot, _ = self._nearest_fly(pos, 60)
@@ -3994,7 +4007,7 @@ class Game:
                 draw_source_chip(arena, (pu[0], y + txt.get_height()), pu[5], self.f_small, alpha=a)
         self._draw_toolbar(arena)
         self._draw_hud(arena, now)
-        if not self._overlay_open() and TOOLS[self.tool][0] != "hand" and mouse[0] < PLAY_W and mouse[1] < FLOOR:
+        if not (self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]) and not self._overlay_open() and TOOLS[self.tool][0] != "hand" and mouse[0] < PLAY_W and mouse[1] < FLOOR:
             gfxdraw.aacircle(arena, mouse[0], mouse[1], 10, (255, 255, 255))
             pygame.draw.line(arena, (255, 255, 255), (mouse[0] - 14, mouse[1]), (mouse[0] + 14, mouse[1]))
             pygame.draw.line(arena, (255, 255, 255), (mouse[0], mouse[1] - 14), (mouse[0], mouse[1] + 14))
@@ -4085,6 +4098,12 @@ class Game:
         return rect
 
     def _draw_hud(self, surf, now: float) -> None:
+        if self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]:
+            badge = self.f_small.render("AUTOPILOT / SPECTATOR   (Y: exit)", True, (130, 160, 190))
+            box = badge.get_rect(midtop=(PLAY_W // 2, 14)).inflate(16, 6)
+            pygame.draw.rect(surf, (10, 12, 18, 160), box, border_radius=6)
+            surf.blit(badge, badge.get_rect(center=box.center))
+            return
         fly = self.fly
         card = pygame.Surface((236, 62), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 170), card.get_rect(), border_radius=10)
@@ -4171,6 +4190,9 @@ class Game:
                    AMBER if self.pain_level else TEXT, self.f_small)
 
     def _draw_toolbar(self, surf) -> None:
+        if self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]:
+            self.tool_rects = []
+            return
         bw, gap = 80, 6
         x0 = (PLAY_W - bw * len(TOOLS) - gap * (len(TOOLS) - 1)) // 2
         self.tool_rects = []
@@ -4433,6 +4455,10 @@ class Game:
             self.new_fly()
         elif action == "big_view":
             self.big_view = not self.big_view
+        elif action == "autopilot":
+            new_val = not self.cfg["brain.autopilot"]
+            self.set_setting("brain.autopilot", new_val)
+            self.note(f"AUTOPILOT {'on: spectator mode' if new_val else 'off'}", source="rule")
         elif action == "immortal":
             self.set_setting("brain.immortal", not self.immortal)
             self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
@@ -4698,6 +4724,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--out", metavar="PATH", help="where headless results go")
     ap.add_argument("--workers", type=int, help="worker processes for headless runs (default: up to 4)")
     ap.add_argument("--seeds", help="validation seeds, e.g. 1000-1009")
+    ap.add_argument("--autopilot", "--spectator", dest="autopilot", action="store_true", help="spectator mode: hands-off simulation with auto-orbiting brain view")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
@@ -4722,6 +4749,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return headless.main(args)
     cfg = config.Config.load(p.config_file)
+    if args.autopilot:
+        cfg["brain.autopilot"] = True
     seed = args.seed if args.seed is not None else cfg["brain.seed"]
     crash.info["seed"] = str(seed)
     smoke, shot = args.smoke_s, args.shot
@@ -4785,6 +4814,8 @@ def main(argv: list[str] | None = None) -> int:
     brain = state["brain"]
     brain.start()
     game = Game(screen, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
+    if cfg["brain.autopilot"]:
+        game.big_view = True
     running = True
     t_game = time.perf_counter()
     while running:

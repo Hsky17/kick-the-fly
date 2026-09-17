@@ -668,6 +668,8 @@ class Game3D(k2.Game):
 
     # --- tools --------------------------------------------------------------------------------------------------------
     def use_tool3d(self, now: float) -> None:
+        if self.cfg["brain.autopilot"]:
+            return
         name = TOOLS[self.tool][0]
         eye, d = self.aim()
         if name in ("hand", "flick", "swatter", "zapper"):
@@ -890,7 +892,7 @@ class Game3D(k2.Game):
     # --- the fly's senses ------------------------------------------------------------------------------------------------
     def _threats(self, slot: "k2.FlySlot", now: float, mouse=None) -> list:
         out = []
-        if not self._overlay_open():
+        if not self.cfg["brain.autopilot"] and not self._overlay_open():
             eye = self.player.eye
             out.append(("player", eye - (0, 0.35, 0), 0.28))
             name = TOOLS[self.tool][0]
@@ -1052,6 +1054,8 @@ class Game3D(k2.Game):
 
     def _kick(self, now: float) -> None:
         """Your legs are a 0.28 m cylinder: walking into a fly shoves it, and walking into it fast is a kick."""
+        if self.cfg["brain.autopilot"]:
+            return
         pl = self.player
         for slot in self.flies:
             fly = slot.fly
@@ -2040,7 +2044,7 @@ class Game3D(k2.Game):
             hud.blit(txt, (x, y))
             if source and self.cfg.tags_on():
                 k2.draw_source_chip(hud, (sp[0], y + txt.get_height()), source, self.f_small, alpha=a)
-        if not self._overlay_open():
+        if not self._overlay_open() and not (self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]):
             cx, cy = k2.PLAY_W // 2, self.hud_h // 2
             eye, d = self.aim()
             _, i, _ = self._nearest_fly3d(eye, d, REACH, 0.25)
@@ -2052,7 +2056,7 @@ class Game3D(k2.Game):
         self._draw_hud(hud, now)
         if self.duel:
             self._draw_duel(hud, now)
-        if not self.look and not self._overlay_open() and self.player_dead_at is None and not self.menu.open:
+        if not self.look and not self._overlay_open() and self.player_dead_at is None and not self.menu.open and not (self.cfg["brain.autopilot"] and self.cfg["brain.autopilot_hide_hud"]):
             msg = self.f_bold.render(f"click the room (or press {self.cfg.keys['free_mouse'].title()}) to look around   "
                                      "·   Esc: menu", True, INK_ON)
             box = msg.get_rect(center=(k2.PLAY_W // 2, self.hud_h // 2 + 60)).inflate(24, 12)
@@ -2386,6 +2390,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     brain.start()
     hud = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
     game = Game3D(hud, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
+    if cfg["brain.autopilot"]:
+        game.big_view = True
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()

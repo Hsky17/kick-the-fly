@@ -97,6 +97,12 @@ SETTINGS: tuple[Setting, ...] = (
     S("brain.science_popups", "Brain", "Real-science popups", "bool", True,
       "Show a short note the first time the fly does something real flies do too. Only behaviors that pass this "
       "game's validation tests get one."),
+    S("brain.autopilot", "Brain", "Autopilot / spectator", "bool", False,
+      "Hands-off mode where only environmental inputs reach the fly. Hotkey Y.", tag=GAME_RULE),
+    S("brain.autopilot_orbit", "Brain", "Autopilot brain orbit", "bool", True,
+      "Slowly orbit the brain view in spectator mode.", tag=GAME_RULE),
+    S("brain.autopilot_hide_hud", "Brain", "Autopilot hide HUD", "bool", True,
+      "Hide HUD in spectator mode for demo or screensaver use.", tag=GAME_RULE),
     # --- Controls
     S("controls.mouse_sensitivity", "Controls", "Mouse sensitivity", "float", 1.0,
       "How far the view turns when you move the mouse.", lo=0.1, hi=5.0, step=0.1, only="3d", fmt="{:.1f}"),
@@ -127,6 +133,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("reset", "Reset / respawn", "r"), ("help", "Controls help", "h"),
     ("time_pause", "Pause / resume time", "z"), ("time_slower", "Slower", "["), ("time_faster", "Faster", "]"),
     ("time_step", "Single step (paused)", "."),
+    ("autopilot", "Autopilot / spectator", "y"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789"}           # the pause menu and the tool keys can't be rebound
@@ -164,6 +171,9 @@ class Config:
     # --- values -----------------------------------------------------------------------------------------------------
     def __getitem__(self, key: str):
         return self.values[key]
+
+    def get(self, key: str, default=None):
+        return self.values.get(key, default)
 
     def set(self, key: str, value) -> bool:
         """Validate and store. Returns True if the stored value changed."""
