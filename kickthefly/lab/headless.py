@@ -79,6 +79,25 @@ def run_threshold_sweep(args) -> int:
     return 0
 
 
+def run_signflip(args) -> int:
+    """--signflip-test: which validated behaviors survive flipping uncertain neurotransmitter signs."""
+    from kickthefly.lab import recorder, robustness, validation
+
+    seeds = parse_seeds(args.seeds, validation.SEEDS)
+    t0 = time.time()
+    res = robustness.signflip_trials(
+        cutoff=getattr(args, "flip_confidence", None) or robustness.DEFAULT_CUTOFF,
+        share=getattr(args, "flip_share", None) or robustness.DEFAULT_SHARE,
+        trials=getattr(args, "trials", None) or robustness.DEFAULT_TRIALS,
+        seeds=seeds, workers=args.workers,
+        progress=lambda d, n, label: print(f"  {d}/{n} {label} ({time.time() - t0:.0f}s)", flush=True))
+    folder = Path(args.out) if args.out else recorder.exports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-signflip"
+    robustness.save(res, folder)
+    print(robustness.summary(res))
+    print(f"results written to {folder}")
+    return 0
+
+
 def audit_asymmetry(seconds: float = 5.0, seed: int = 0, mirror: bool = False) -> dict:
     """Audit bilateral asymmetry between left and right hemibrains:
     - Measures baseline turning bias with no input over a calm run
@@ -206,6 +225,8 @@ def main(args) -> int:
             return run_audit_asymmetry(args)
         if getattr(args, "threshold_sweep", False):
             return run_threshold_sweep(args)
+        if getattr(args, "signflip_test", False):
+            return run_signflip(args)
         if args.validate:
             return run_validate(args)
         if args.protocol:
@@ -216,8 +237,8 @@ def main(args) -> int:
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print("nothing to do: use --validate, --protocol FILE, --audit-asymmetry, --benchmark or --threshold-sweep",
-          file=sys.stderr)
+    print("nothing to do: use --validate, --protocol FILE, --audit-asymmetry, --benchmark, --threshold-sweep or "
+          "--signflip-test", file=sys.stderr)
     return 2
 
 

@@ -201,6 +201,17 @@ ASSUMPTIONS = (
      "and 2,828 neurons' entire input go; the four validated behaviors were re-run at 1, 4, 5, 6, 8 and 10.",
      "kickthefly/sim/wiring.py · kickthefly/lab/robustness.py · Lab > Connectome robustness"),
 
+    ("Synapse sign from predicted neurotransmitters",
+     "DATASET",
+     "Each neuron's synapses are excitatory or inhibitory according to the transmitter MaleCNS v1.0 gives it: "
+     "acetylcholine +1, GABA, glutamate and histamine -1, everything else 0. 85,484 of the 166,700 neurons have a "
+     "measured transmitter; the rest are a machine-learning prediction with a confidence, and 4,366 signed neurons "
+     "come with no confidence at all.",
+     "A wrong prediction puts the wrong sign on every synapse that neuron makes. Lab > Connectome robustness > Sign "
+     "flips flips the least certain ones over randomized trials and reports which validated behaviors survive: in "
+     "this release the looming and antennal grooming pathways survive and the sugar -> MN9 pathway does not.",
+     "kickthefly/sim/connectome/loader.py:NT_SIGN · kickthefly/sim/wiring.py · Lab > Connectome robustness"),
+
     ("Left/Right asymmetry as EM reconstruction artifact risk",
      "DATASET",
      "Asymmetries in synaptic weights or firing between left and right hemibrains reflect both biology and reconstruction noise.",

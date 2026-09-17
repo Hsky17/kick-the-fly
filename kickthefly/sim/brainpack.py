@@ -108,6 +108,56 @@ def regions(g) -> np.ndarray:
     return out.astype(str)
 
 
+NEUROTRANSMITTERS = "body-neurotransmitters-male-cns-v1.0.feather"
+
+
+def neurotransmitters(g) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(nt, confidence, source) per graph row, from the dataset's own neurotransmitter predictions.
+
+    `nt` is the transmitter the loader signed each neuron's synapses with (consensus_nt, or predicted_nt where the
+    consensus is 'unclear'). `source` says where it came from and `confidence` is the dataset's number for exactly
+    that call:
+
+      ground_truth   1.0      the dataset has a measured transmitter for this body
+      consensus_nt   the per-body predicted_nt_confidence when the per-body prediction agrees with the consensus,
+                     else the cell type's celltype_predicted_nt_confidence when that one does
+      predicted_nt   the per-body predicted_nt_confidence
+      missing/unknown NaN     no row for this body, or neither prediction matches the consensus
+
+    Confidence is the model's, not an error bar on biology: a neuron the dataset is 95% sure about can still be
+    wrong. What the Lab does with it (flip everything below a cutoff) is this game's choice.
+    """
+    import pyarrow.feather as feather
+
+    n = g.n
+    nt = np.array(["" if v is None else str(v) for v in getattr(g, "nt", np.full(n, ""))])
+    source = np.array([str(v) for v in getattr(g, "nt_source", np.full(n, "missing"))])
+    conf = np.full(n, np.nan, np.float32)
+    path = DATA_DIR / NEUROTRANSMITTERS
+    if not path.exists():
+        return nt, conf, source
+    t = feather.read_table(path, columns=["body", "predicted_nt", "predicted_nt_confidence", "ground_truth",
+                                          "celltype_predicted_nt", "celltype_predicted_nt_confidence"])
+    body = t["body"].to_numpy()
+    order = np.argsort(body)
+    sorted_body = body[order]
+    bids = np.asarray(g.body_ids, np.int64)
+    pos = np.searchsorted(sorted_body, bids)
+    has = (pos < len(sorted_body)) & (sorted_body[np.minimum(pos, len(sorted_body) - 1)] == bids)
+    idx = order[pos[has]]
+    pred = np.array([("" if v is None else str(v)) for v in t["predicted_nt"].to_pylist()], dtype=object)[idx]
+    ct = np.array([("" if v is None else str(v)) for v in t["celltype_predicted_nt"].to_pylist()], dtype=object)[idx]
+    truth = np.array([v is not None for v in t["ground_truth"].to_pylist()])[idx]
+    pconf = t["predicted_nt_confidence"].to_numpy()[idx]
+    cconf = t["celltype_predicted_nt_confidence"].to_numpy()[idx]
+    here = nt[has]
+    c = np.where(pred == here, pconf, np.where(ct == here, cconf, np.nan))
+    c = np.where(truth, 1.0, c)
+    conf[has] = c.astype(np.float32)
+    source[has] = np.where(truth, "ground_truth", source[has])
+    return nt, conf, source
+
+
 def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
     from kickthefly.sim.connectome.loader import load_graph
 
@@ -128,14 +178,17 @@ def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
     mbon = np.flatnonzero(np.char.startswith(types, "MBON"))
     dan_mbon = g.weights.tocsr()[dan][:, mbon].toarray().astype(np.int16)        # [DAN, MBON] synapse counts
     reg = regions(g)
+    nt, nt_conf, nt_source = neurotransmitters(g)
     np.savez_compressed(
-        out, indptr=signed.indptr.astype(np.int32), indices=signed.indices.astype(np.int32),
+        out, nt=nt, nt_conf=nt_conf, nt_source=nt_source,
+        indptr=signed.indptr.astype(np.int32), indices=signed.indices.astype(np.int32),
         data=signed.data.astype(np.int16), inv=inv, type=types, superclass=labels(g.superclass),
         instance=labels(g.instance), soma=soma, dan=dan.astype(np.int32), mbon=mbon.astype(np.int32), dan_mbon=dan_mbon,
         subclass=subclasses(g), body_id=np.asarray(g.body_ids, np.int64), region=reg,
     )
     print(f"[brainpack] wrote {out} ({out.stat().st_size / 1e6:.1f} MB, {g.n:,} neurons, {signed.nnz:,} synapse pairs, "
-          f"{int((~np.isnan(soma[:, 0])).sum()):,} cell bodies)")
+          f"{int((~np.isnan(soma[:, 0])).sum()):,} cell bodies, "
+          f"{int(np.count_nonzero(nt_source == 'ground_truth')):,} measured transmitters)")
     return out
 
 
@@ -165,6 +218,11 @@ def load(path: Path):
     g.subclass = z["subclass"] if "subclass" in z else np.full(n, "", dtype="<U1")
     g.body_id = z["body_id"] if "body_id" in z else None
     g.region = z["region"] if "region" in z else regions(g)
+    # packs from before 2.7 have no transmitter predictions: the Lab's sign-flip and inhibition controls then say
+    # the pack needs rebuilding instead of guessing one.
+    g.nt = z["nt"] if "nt" in z else None
+    g.nt_conf = z["nt_conf"] if "nt_conf" in z else None
+    g.nt_source = z["nt_source"] if "nt_source" in z else None
     return g, W, z["soma"]
 
 

@@ -7,7 +7,8 @@ which of them still pass:
                      the threshold at which each validated behavior breaks. A behavior that survives a high
                      threshold does not rest on weak, possibly spurious contacts.
   signflip_trials    flip the sign of neurons whose neurotransmitter prediction the dataset is least sure about,
-                     over repeated randomized trials, and report how often each behavior survives.
+                     over repeated randomized trials, and report how often each behavior survives, with a survival
+                     rate and its 95% Wilson interval and the unperturbed run of the same seeds as the control.
 
 Both use the validation suite's own pass criteria (validation.py), unchanged, so "breaks" means the same thing here
 as on the validation dashboard. The runs are lockstep and seeded, so the same sweep gives the same answer twice.
@@ -92,6 +93,99 @@ def threshold_sweep(thresholds=DEFAULT_THRESHOLDS, seeds=None, include=DEFAULT_T
                 pack_min_synapses=MIN_PACK_SYNAPSES, steps=steps, breaks=breaks)
 
 
+# --- sign flips --------------------------------------------------------------------------------------------------
+# The pathway behaviors by default: each trial re-runs them over every seed, and the T-maze costs about ten times as
+# much per seed, so including it turns a two-minute stress test into half an hour. The Lab screen offers it anyway.
+FLIP_TESTS = ("looming_escape", "sugar_feeding", "antenna_grooming_circuit")
+DEFAULT_TRIALS = 5
+DEFAULT_CUTOFF = 0.7
+DEFAULT_SHARE = 0.5
+
+
+def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval for k of n trials; it behaves at 0/n and n/n, where a normal interval does not."""
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    d = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def signflip_trials(cutoff: float = DEFAULT_CUTOFF, share: float = DEFAULT_SHARE, trials: int = DEFAULT_TRIALS,
+                    seeds=None, include=FLIP_TESTS, workers: int | None = None, progress=None,
+                    trial_seed: int = 0) -> dict:
+    """Flip the sign of uncertain neurons, repeatedly, and report which behaviors survive it.
+
+    Each trial flips a different random half (or `share`) of the neurons whose transmitter prediction the dataset is
+    less than `cutoff` sure about, then re-runs the behaviors with the validation suite's own pass criteria. The
+    unperturbed run of the same seeds is the control.
+    """
+    from kickthefly.core import simcore
+    from kickthefly.lab import labstats, validation
+    from kickthefly.sim import wiring as wiring_mod
+
+    seeds = tuple(seeds) if seeds else validation.SEEDS
+    g = simcore.pack()[0]
+    stats = wiring_mod.confidence_stats(g, cutoff)
+    t0 = time.time()
+    total = trials + 1
+
+    def sub(i, label):
+        def p(done, n, _label):
+            if progress:
+                progress(i, total, f"{label}: {done}/{n}")
+        return p
+
+    control = run_behaviors(Wiring(), seeds, include, workers, sub(0, "unperturbed control"))
+    runs = []
+    for t in range(trials):
+        rows = wiring_mod.random_flip(g, cutoff, share, trial_seed + t)
+        res = run_behaviors(Wiring(flip_rows=rows), seeds, include, workers, sub(t + 1, f"trial {t + 1}"))
+        runs.append(dict(trial=t + 1, flipped=len(rows), behaviors=res))
+    per_behavior = {}
+    for test_id in include:
+        passed = [r for r in runs if r["behaviors"].get(test_id, {}).get("passed")]
+        effects = [r["behaviors"][test_id]["effect"] for r in runs if test_id in r["behaviors"]]
+        lo, hi = _wilson(len(passed), len(runs))
+        ci = labstats.mean_ci(effects)
+        base = control.get(test_id, {})
+        per_behavior[test_id] = dict(
+            name=base.get("name", test_id), metric=base.get("metric", ""),
+            control_effect=base.get("effect"), control_passed=base.get("passed"),
+            survived=len(passed), trials=len(runs), survival=len(passed) / max(1, len(runs)),
+            survival_ci=[lo, hi], effect_mean=ci["mean"], effect_ci=[ci["lo"], ci["hi"]], effect_sd=ci["sd"],
+            effects=effects,
+            verdict=("survives" if len(passed) == len(runs) else
+                     "breaks" if len(passed) == 0 else "sometimes breaks"))
+    return dict(kind="signflip_trials", created=time.strftime("%Y-%m-%d %H:%M:%S"),
+                seconds=round(time.time() - t0, 1), seeds=list(seeds), cutoff=cutoff, share=share,
+                trials=trials, trial_seed=trial_seed, candidates=stats, control=control, runs=runs,
+                behaviors=per_behavior)
+
+
+def flips_csv(res: dict, path: Path) -> Path:
+    import csv
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["behavior", "trial", "neurons_flipped", "metric", "effect", "control_effect", "p_value",
+                    "passed"])
+        for run in res["runs"]:
+            for test_id, b in run["behaviors"].items():
+                ctrl = res["control"].get(test_id, {})
+                w.writerow([test_id, run["trial"], run["flipped"], b["metric"], f"{b['effect']:.4f}",
+                            f"{ctrl.get('effect', float('nan')):.4f}", f"{b['p_value']:.5f}",
+                            "pass" if b["passed"] else "fail"])
+        for test_id, b in res["control"].items():
+            w.writerow([test_id, 0, 0, b["metric"], f"{b['effect']:.4f}", f"{b['effect']:.4f}",
+                        f"{b['p_value']:.5f}", "pass" if b["passed"] else "fail"])
+    return path
+
+
 def sweep_csv(res: dict, path: Path) -> Path:
     """One row per behavior and threshold: what the effect was and whether it still passed."""
     import csv
@@ -112,7 +206,22 @@ def sweep_csv(res: dict, path: Path) -> Path:
     return path
 
 
+def flip_summary(res: dict) -> str:
+    c = res["candidates"]
+    lines = [f"Sign-flip stress test: {res['trials']} trials, each flipping {res['share']:.0%} of the "
+             f"{c['candidates']:,} neurons whose transmitter the dataset is under {res['cutoff']:.2f} sure of "
+             f"({c['unknown_confidence']:,} of them have no confidence at all), seeds {res['seeds'][0]}-"
+             f"{res['seeds'][-1]}, {res['seconds']}s"]
+    for test_id, b in res["behaviors"].items():
+        lines.append(f"  {b['name']}: {b['verdict']} ({b['survived']}/{b['trials']} trials, "
+                     f"95% CI {b['survival_ci'][0]:.0%}-{b['survival_ci'][1]:.0%}; effect "
+                     f"{b['effect_mean']:.2f} vs {b['control_effect']:.2f} unperturbed)")
+    return "\n".join(lines)
+
+
 def summary(res: dict) -> str:
+    if res.get("kind") == "signflip_trials":
+        return flip_summary(res)
     lines = [f"Minimum-synapse threshold sweep, seeds {res['seeds']}, {res['seconds']}s",
              f"(the brain pack already drops connections below {res['pack_min_synapses']} synapses, so thresholds "
              f"of 1-{res['pack_min_synapses']} change nothing)"]
@@ -128,4 +237,6 @@ def save(res: dict, folder: Path) -> Path:
     (folder / f"{res['kind']}.json").write_text(json.dumps(res, indent=1, default=str), encoding="utf-8")
     if res["kind"] == "threshold_sweep":
         sweep_csv(res, folder / "threshold_sweep.csv")
+    elif res["kind"] == "signflip_trials":
+        flips_csv(res, folder / "signflip_trials.csv")
     return folder

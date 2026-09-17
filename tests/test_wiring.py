@@ -93,3 +93,84 @@ def test_wiring_label_and_dict():
     w = Wiring(min_synapses=5)
     assert not w.is_identity and "drop <5" in w.label()
     assert w.as_dict()["min_synapses"] == 5
+
+
+# --- sign flips ----------------------------------------------------------------------------------------------------
+@needs_pack
+def test_transmitters_come_from_the_dataset():
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring
+
+    g = simcore.pack()[0]
+    nt, conf, source = wiring.transmitters(g)
+    assert len(nt) == g.n
+    assert set(source) <= {"ground_truth", "consensus_nt", "predicted_nt", "missing", "unknown"}
+    measured = source == "ground_truth"
+    assert measured.sum() > 50_000
+    assert np.all(conf[measured] == 1.0), "a measured transmitter is not a prediction"
+    ok = ~np.isnan(conf)
+    assert np.all((conf[ok] >= 0) & (conf[ok] <= 1))
+    assert set(nt) >= {"acetylcholine", "gaba", "glutamate", "histamine"}
+
+
+@needs_pack
+def test_flip_candidates_respect_the_cutoff_and_never_include_measured_neurons():
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring
+
+    g = simcore.pack()[0]
+    nt, conf, source = wiring.transmitters(g)
+    low = wiring.flip_candidates(g, 0.7)
+    high = wiring.flip_candidates(g, 0.9)
+    assert set(low.tolist()) <= set(high.tolist()), "raising the cutoff can only add candidates"
+    assert np.all(np.isin(nt[low], list(wiring.SIGN_OF))), "only neurons whose transmitter gives a sign"
+    assert np.all(np.isnan(conf[low]) | (conf[low] < 0.7))
+    assert not np.any(source[low] == "ground_truth")
+    st = wiring.confidence_stats(g, 0.7)
+    assert st["candidates"] == len(low) and st["unknown_confidence"] <= st["candidates"]
+
+
+@needs_pack
+def test_a_flip_negates_exactly_that_neuron_and_reverses():
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring
+    from kickthefly.sim.wiring import Wiring
+
+    br = simcore.new_brain(seed=5, warmup=0)
+    g = br.graph
+    row = int(wiring.flip_candidates(g, 0.7)[0])
+    pre = wiring.edge_pre()
+    mine = pre == row
+    before = br.sim.W_csr.data.copy()
+    assert np.any(mine) and np.any(before[mine] != 0)
+
+    wiring.apply(br, Wiring(flip_rows=(row,)))
+    assert np.allclose(br.sim.W_csr.data[mine], -before[mine])
+    assert np.array_equal(br.sim.W_csr.data[~mine], before[~mine])
+    wiring.clear(br)
+    assert np.array_equal(br.sim.W_csr.data, before)
+
+
+@needs_pack
+def test_random_flip_is_seeded_and_scales_with_share():
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring
+
+    g = simcore.pack()[0]
+    a = wiring.random_flip(g, 0.7, 0.5, 1)
+    assert a == wiring.random_flip(g, 0.7, 0.5, 1)
+    assert a != wiring.random_flip(g, 0.7, 0.5, 2)
+    everything = wiring.random_flip(g, 0.7, 1.0, 1)
+    assert len(everything) == len(wiring.flip_candidates(g, 0.7))
+    assert 0.3 < len(a) / len(everything) < 0.7
+
+
+def test_wilson_interval_behaves_at_the_edges():
+    from kickthefly.lab.robustness import _wilson
+
+    lo, hi = _wilson(0, 5)
+    assert lo == 0.0 and 0.3 < hi < 0.6
+    lo, hi = _wilson(5, 5)
+    assert hi == 1.0 and 0.4 < lo < 0.7
+    lo, hi = _wilson(50, 100)
+    assert lo < 0.5 < hi and hi - lo < 0.25

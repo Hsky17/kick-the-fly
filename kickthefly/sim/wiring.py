@@ -129,6 +129,66 @@ def threshold_stats(n: int) -> dict:
     )
 
 
+# --- neurotransmitter predictions and their confidence -----------------------------------------------------------
+def transmitters(g) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(nt, confidence, source) per neuron, as the brain pack stored them (see brainpack.neurotransmitters)."""
+    nt = getattr(g, "nt", None)
+    if nt is None:
+        raise ValueError("this brain pack predates the neurotransmitter arrays; rebuild it with "
+                         "`python -m kickthefly.sim.brainpack build`")
+    n = len(nt)
+    conf = getattr(g, "nt_conf", None)
+    source = getattr(g, "nt_source", None)
+    return (np.asarray(nt).astype(str),
+            np.full(n, np.nan, np.float32) if conf is None else np.asarray(conf, np.float32),
+            np.full(n, "unknown") if source is None else np.asarray(source).astype(str))
+
+
+def signed_neurons(g) -> np.ndarray:
+    """Neurons whose transmitter gives their synapses a sign. Flipping any other neuron would change nothing:
+    dopamine, octopamine, serotonin and 'unclear' contacts carry sign 0 and are not in the matrix at all."""
+    nt, _, _ = transmitters(g)
+    return np.isin(nt, list(SIGN_OF))
+
+
+def flip_candidates(g, max_conf: float) -> np.ndarray:
+    """Signed neurons the dataset is less than `max_conf` sure about, plus those it gives no confidence for.
+
+    A neuron with no confidence is the least certain of all, so it belongs in the set; the Lab screen reports it
+    separately so the two are never confused.
+    """
+    _, conf, _ = transmitters(g)
+    unknown = np.isnan(conf)
+    return np.flatnonzero(signed_neurons(g) & (unknown | (conf < float(max_conf))))
+
+
+def confidence_stats(g, max_conf: float) -> dict:
+    nt, conf, source = transmitters(g)
+    signed = signed_neurons(g)
+    cand = flip_candidates(g, max_conf)
+    unknown = int(np.count_nonzero(signed & np.isnan(conf)))
+    return dict(cutoff=float(max_conf), neurons=int(len(nt)), signed=int(signed.sum()),
+                candidates=int(len(cand)), unknown_confidence=unknown,
+                measured=int(np.count_nonzero(source == "ground_truth")),
+                excitatory=int(np.count_nonzero(nt == "acetylcholine")),
+                inhibitory=int(np.count_nonzero(np.isin(nt, INHIBITORY))),
+                median_confidence=float(np.nanmedian(conf[signed])) if signed.any() else float("nan"))
+
+
+def random_flip(g, max_conf: float, share: float, seed: int) -> tuple[int, ...]:
+    """One trial's flip set: each candidate flipped independently with probability `share`.
+
+    Which of the uncertain neurons are actually wrong is not knowable, so a trial samples a possible world rather
+    than flipping all of them; running many trials is what makes the answer mean something. The sampling is this
+    game's choice, the candidate set is the dataset's.
+    """
+    cand = flip_candidates(g, max_conf)
+    if share >= 1.0:
+        return tuple(int(x) for x in cand)
+    rng = np.random.default_rng(seed)
+    return tuple(int(x) for x in cand[rng.random(len(cand)) < share])
+
+
 def _inhibitory_edges(g) -> np.ndarray:
     """Entries of W whose presynaptic neuron the dataset calls inhibitory (GABA or glutamate)."""
     nt = getattr(g, "nt", None)

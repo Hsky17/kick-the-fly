@@ -1831,6 +1831,7 @@ class Game:
         from kickthefly.sim.wiring import Wiring
         self.wiring = Wiring()                        # Lab: changes to the connectome itself, off by default
         self.wiring_busy = ""
+        self._flipped_set: frozenset = frozenset()    # rows the inspector marks as sign-flipped
         self._next_seed = 1
         self._spawning = False
         self._new_slot: FlySlot | None = None
@@ -2368,6 +2369,7 @@ class Game:
             return
         self.wiring = w
         self.wiring_busy = w.label()
+        self._flipped_set = frozenset(w.flip_rows)
 
         def work():
             try:
@@ -3355,7 +3357,7 @@ class Game:
             r = 8 + 3 * math.sin(now * 8)
             gfxdraw.aacircle(surf, int(me[0]), int(me[1]), int(r), (255, 255, 255))
             gfxdraw.aacircle(surf, int(me[0]), int(me[1]), int(r + 4), (255, 255, 255, 120))
-        card = pygame.Rect(rect.right - 318, rect.y + 10, 308, 300)
+        card = pygame.Rect(rect.right - 318, rect.y + 10, 308, 348)
         bg = pygame.Surface(card.size, pygame.SRCALPHA)
         pygame.draw.rect(bg, (8, 10, 16, 225), bg.get_rect(), border_radius=10)
         surf.blit(bg, card)
@@ -3368,7 +3370,20 @@ class Game:
         self._text(surf, f"firing {rate:5.1f} spikes/s   (calm {calm:4.1f})", (x, y + 44),
                    (255, 170, 90) if rate > calm + 2 else TEXT, self.f_small)
         self._text(surf, f"{info['n_in']} input partners, {info['n_out']} output partners", (x, y + 60), LABEL, self.f_small)
-        yy = y + 80
+        yy = y + 76
+        nt, conf, src = self.transmitter_of(i)
+        if nt:
+            sign = {"acetylcholine": "excitatory (+)", "gaba": "inhibitory (-)", "glutamate": "inhibitory (-)",
+                    "histamine": "inhibitory (-)"}.get(nt, "no sign in this model (0)")
+            flipped = i in getattr(self, "_flipped_set", ())
+            how = {"ground_truth": "measured", "consensus_nt": "predicted (consensus)",
+                   "predicted_nt": "predicted (per body)"}.get(src, src or "unknown")
+            conf_txt = "no confidence given" if conf != conf else f"{conf:.0%} confident"
+            self._text(surf, f"{nt}: {sign}", (x, yy), (255, 140, 140) if flipped else TEXT, self.f_small)
+            self._text(surf, f"{how}, {conf_txt}" + ("   SIGN FLIPPED IN LAB" if flipped else ""), (x, yy + 14),
+                       (255, 140, 140) if flipped else LABEL, self.f_small)
+            yy += 34
+        yy += 4
         for title, lst, col in (("strongest inputs (% of its input)", info["ins"], (110, 200, 255)),
                                 ("strongest outputs (% of target's input)", info["outs"], (255, 160, 80))):
             self._text(surf, title, (x, yy), col, self.f_small)
@@ -3383,11 +3398,43 @@ class Game:
         self.inspect_buttons = []
         t = info["type"]
         for k, (label, mode) in enumerate((("SILENCE TYPE", -1), ("STIMULATE", 1), ("CLEAR", 0))):
-            r = pygame.Rect(card.x + 12 + k * 98, card.bottom - 34, 90, 24)
+            r = pygame.Rect(card.x + 12 + k * 98, card.bottom - 62, 90, 24)
             active = self.type_ops.get(t, 0) == mode and mode != 0
             pygame.draw.rect(surf, (60, 110, 200) if (active and mode < 0) else (230, 130, 50) if active else (40, 46, 58), r, border_radius=6)
             self._text(surf, label, r.center, INK, self.f_small, "center")
             self.inspect_buttons.append((r, mode))
+        self.inspect_flip_button = None
+        if self.cfg.lab and nt in ("acetylcholine", "gaba", "glutamate", "histamine"):
+            r = pygame.Rect(card.x + 12, card.bottom - 32, 188, 24)
+            on = i in self._flipped_set
+            pygame.draw.rect(surf, (190, 70, 70) if on else (40, 46, 58), r, border_radius=6)
+            self._text(surf, "UNFLIP THIS NEURON" if on else "FLIP THIS NEURON'S SIGN", r.center, INK, self.f_small,
+                       "center")
+            self.inspect_flip_button = (r, i)
+            self._text(surf, "Lab: sign flip", (card.right - 12, card.bottom - 26), DIM, self.f_small, "topright")
+
+    def flip_neuron(self, i: int) -> None:
+        """Flip (or unflip) one neuron's excitatory/inhibitory sign, from the inspector."""
+        rows = set(self.wiring.flip_rows)
+        rows.symmetric_difference_update({int(i)})
+        nt, conf, _ = self.transmitter_of(i)
+        self.set_wiring(self.wiring.with_rows(sorted(rows)), note=False)
+        self.note(f"WIRING   {self.types_of(i)} sign {'flipped' if int(i) in rows else 'restored'} "
+                  f"({nt}, {'no confidence' if conf != conf else f'{conf:.0%} confident'})")
+
+    def types_of(self, i: int) -> str:
+        return str(self.brain.types[i]) or "untyped"
+
+    def transmitter_of(self, i: int) -> tuple[str, float, str]:
+        """(transmitter, the dataset's confidence in it, where it came from) for one neuron, from the brain pack."""
+        g = self.graph
+        nt = getattr(g, "nt", None)
+        if nt is None or i is None or i >= len(nt):
+            return "", float("nan"), ""
+        conf = getattr(g, "nt_conf", None)
+        src = getattr(g, "nt_source", None)
+        return (str(nt[i]), float(conf[i]) if conf is not None else float("nan"),
+                str(src[i]) if src is not None else "")
 
     # --- sound, saving, help ---------------------------------------------------------------
     def update_stethoscope_target(self) -> None:
@@ -5143,6 +5190,10 @@ class Game:
                 self.big_drag = None
                 if btn == 1 and math.hypot(ev.pos[0] - start_pos[0], ev.pos[1] - start_pos[1]) < 6:
                     if self.inspect is not None:
+                        flip = getattr(self, "inspect_flip_button", None)
+                        if flip is not None and flip[0].collidepoint(ev.pos):
+                            self.flip_neuron(flip[1])
+                            return True
                         for r, mode in getattr(self, "inspect_buttons", []):
                             if r.collidepoint(ev.pos):
                                 self.type_ops[self.inspect["type"]] = mode
@@ -5273,6 +5324,13 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--threshold-sweep", dest="threshold_sweep", action="store_true",
                     help="re-run the validated behaviors at a range of minimum-synapse thresholds and exit")
     ap.add_argument("--thresholds", type=int, nargs="+", help="minimum-synapse thresholds for --threshold-sweep")
+    ap.add_argument("--signflip-test", dest="signflip_test", action="store_true",
+                    help="flip low-confidence neurotransmitter signs over N trials and report which behaviors survive")
+    ap.add_argument("--flip-confidence", dest="flip_confidence", type=float,
+                    help="confidence cutoff for --signflip-test (default 0.7)")
+    ap.add_argument("--flip-share", dest="flip_share", type=float,
+                    help="share of the candidates each trial flips (default 0.5)")
+    ap.add_argument("--trials", type=int, help="randomized trials for --signflip-test (default 5)")
     ap.add_argument("--flies", type=int, nargs="+", help="flies count list for benchmark (default: 1 8 16)")
     ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
@@ -5295,7 +5353,8 @@ def main(argv: list[str] | None = None) -> int:
     for n in p.notes:
         log.info(n)
     if (args.headless or args.validate or args.protocol or getattr(args, "audit_asymmetry", False)
-            or getattr(args, "benchmark", False) or getattr(args, "threshold_sweep", False)):
+            or getattr(args, "benchmark", False) or getattr(args, "threshold_sweep", False)
+            or getattr(args, "signflip_test", False)):
         from kickthefly.lab import headless
 
         return headless.main(args)
