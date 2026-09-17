@@ -1,0 +1,12 @@
+# The build check CI runs on the exe and the AppImage: loads the brain pack, runs 1 s of sim and drives the looming
+# detectors. Quick (a few seconds after the brain loads).
+name: smoke
+seed: 1
+flies: 1
+warmup_s: 0.5
+duration_s: 1.0
+stimuli:
+  - {at_s: 0.3, for_s: 0.5, target: loom, mode: drive, amp: 0.5}
+recordings:
+  - {name: giant_fiber, neurons: dnp01}
+  - {name: looming_detectors, neurons: loom}

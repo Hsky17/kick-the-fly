@@ -1,0 +1,15 @@
+# Looming detectors LPLC2/LC4 driven like a looming object and the giant fiber DNp01 recorded. The surgery silences
+# the looming detectors themselves, so the same stimulus should no longer reach DNp01.
+# Each seed also runs unperturbed as its control.
+name: looming-giant-fiber
+seed: 100
+flies: 5
+warmup_s: 2
+duration_s: 3
+surgery: {"type:LPLC2,LC4": -1}
+stimuli:
+  - {at_s: 1.0, for_s: 1.0, target: loom, strength: 0.9, recruit: 0.6}
+recordings:
+  - {name: giant_fiber, neurons: dnp01}
+  - {name: looming_detectors, neurons: loom}
+  - {name: descending, neurons: "superclass:descending_neuron"}

@@ -131,7 +131,15 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_params"] = page_params
     menu.pages["lab_assays"] = lambda *a: page_assays(*a)
     menu.pages["lab_validation"] = lambda *a: page_validation(*a)
+    menu.pages["lab_export"] = lambda *a: page_export(*a)
+    menu.pages["lab_protocols"] = lambda *a: page_protocols(*a)
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
+
+
+def short(path, n: int = 70) -> str:
+    """A long path shortened in the middle so it fits on one line."""
+    t = str(path)
+    return t if len(t) <= n else t[: n // 2 - 2] + "…" + t[-(n // 2 - 1):]
 
 
 # --- charts ----------------------------------------------------------------------------------------------------------
@@ -452,3 +460,149 @@ def start_validation(m: ui.Menu) -> None:
     st.validation_job = job
 
 
+
+
+# --- record and export ------------------------------------------------------------------------------------------------
+RECORD_GROUPS = (
+    ("Giant fiber DNp01", "dnp01"), ("Looming detectors LPLC2, LC4", "loom"), ("Touch neurons", "touch"),
+    ("Reaction descending neurons", "reaction_dns"), ("All descending neurons", "superclass:descending_neuron"),
+    ("Proboscis motor neuron MN9", "mn9"), ("Grooming command aDN1/aDN2", "adn"), ("Antennal JO-C/E", "jo_ce"),
+    ("Sugar-pathway taste neurons", "sweet"), ("Kenyon cells", "prefix:KC"), ("Mushroom body output neurons", "prefix:MBON"),
+    ("Reward dopamine PAM", "reward"), ("Punishment dopamine PPL1", "punish"), ("Leg motor neurons", "mn_legs"),
+    ("Whole brain (large files)", "whole brain"),
+)
+
+
+def resolve_group(br, spec: str):
+    import numpy as np
+
+    import assays
+    import kick_the_fly as k
+    import simcore
+
+    g = assays.groups(br)
+    if spec in g:
+        return g[spec]
+    if spec == "touch":
+        return np.concatenate([simcore.rows_of(br, n) for n in k.TOUCH])
+    if spec == "reaction_dns":
+        return np.concatenate([simcore.rows_of(br, n) for n, *_ in k.MOTOR])
+    return simcore.rows_of(br, spec)
+
+
+def page_export(m: ui.Menu, surf, rect, mouse) -> None:
+    import recorder
+
+    st, host = _state(m), m.host
+    if not hasattr(st, "rec_pick"):
+        st.rec_pick, st.rec_seconds = {"dnp01", "loom", "reaction_dns"}, 10
+    m.text(surf, "RECORD AND EXPORT", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
+    m.text(surf, "Records spike times from the fly your brain panel shows, live, while you play. Files: spikes and rates "
+                 "as CSV and npz, plus a metadata JSON.", (rect.x + 24, rect.y + 48), ui.LABEL, m.f_small)
+    y = rect.y + 84
+    options = list(RECORD_GROUPS)
+    insp = getattr(host, "inspect", None)
+    if insp:
+        options.append((f"Inspected type {insp['type']}", "type:" + insp["type"]))
+    col_w = (rect.w - 48) // 2
+    for i, (label, spec) in enumerate(options):
+        x = rect.x + 24 + (i % 2) * col_w
+        yy = y + (i // 2) * 38
+        on = spec in st.rec_pick
+        m.toggle(surf, (x, yy, 90, 30), on, lambda v, s=spec: (st.rec_pick.add(s) if v else st.rec_pick.discard(s)),
+                 id=("rec", spec))
+        m.text(surf, label, (x + 100, yy + 15), ui.TEXT, m.f_text, "midleft")
+    y += ((len(options) + 1) // 2) * 38 + 12
+    m.text(surf, "Duration", (rect.x + 24, y + 15), ui.TEXT, m.f_text, "midleft")
+    m.slider(surf, (rect.x + 140, y, 360, 30), st.rec_seconds, 1, 60, 1, "{:.0f} s",
+             lambda v: setattr(st, "rec_seconds", int(v)), lambda: None, id="rec_seconds")
+    y += 50
+    rec = getattr(host, "recording", None)
+    if rec is None:
+        m.button(surf, (rect.x + 24, y, 260, 44), "Start recording and resume", lambda: host.start_recording(
+            [(lbl, s) for lbl, s in options if s in st.rec_pick], st.rec_seconds), style="primary", id="rec_start",
+            enabled=bool(st.rec_pick), tip="Closes the menu; the recording stops by itself after the duration.")
+    else:
+        m.button(surf, (rect.x + 24, y, 200, 44), "Stop and save", host.stop_recording, style="danger", id="rec_stop")
+    m.text(surf, f"Saved to {short(recorder.exports_dir(), 110)}", (rect.x + 24, y + 56), ui.LABEL, m.f_small)
+    last = getattr(host, "last_export", None)
+    if last:
+        m.text(surf, f"Last: {short(last, 110)}", (rect.x + 24, y + 76), ui.GOOD, m.f_small)
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("export", "back"))
+
+
+# --- protocols --------------------------------------------------------------------------------------------------------
+def protocol_files() -> list:
+    import sys
+    from pathlib import Path
+
+    import paths
+
+    user = paths.get().data_dir / "protocols"
+    roots = [user, Path(getattr(sys, "_MEIPASS", "")) / "protocols", Path(__file__).resolve().parent / "protocols"]
+    seen, out = set(), []
+    for root in roots:
+        if str(root) and root.is_dir():
+            for f in sorted(root.glob("*.y*ml")):
+                if f.name not in seen:
+                    seen.add(f.name)
+                    out.append(f)
+    return out
+
+
+def page_protocols(m: ui.Menu, surf, rect, mouse) -> None:
+    import threading
+
+    import labjobs
+    import paths
+    import protocol
+
+    st = _state(m)
+    m.text(surf, "PROTOCOLS", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
+    m.text(surf, f"YAML experiment files. Put your own in {short(paths.get().data_dir / 'protocols', 60)}. Headless: "
+                 "KickTheFly --headless --protocol FILE", (rect.x + 24, rect.y + 48), ui.LABEL, m.f_small)
+    job = getattr(st, "proto_job", None)
+    busy = job is not None and job["thread"].is_alive()
+    y = rect.y + 84
+    for f in protocol_files()[:12]:
+        try:
+            p = protocol.load(f)
+            desc = (f"assay {p['assay']}, " if "assay" in p else f"{len(p['stimuli'])} stimuli, {len(p['recordings'])} "
+                    f"recordings, ") + f"{len(p['seeds'])} fly(s)" + (", with surgery + control" if p.get("surgery") else "")
+            err = None
+        except Exception as e:
+            desc, err, p = str(e), True, None
+        row = pygame.Rect(rect.x + 24, y, rect.w - 48, 42)
+        pygame.draw.rect(surf, (26, 30, 40), row, border_radius=8)
+        m.text(surf, f.name, (row.x + 12, row.y + 4), ui.INK, m.f_bold)
+        m.text(surf, desc[:120], (row.x + 12, row.y + 23), ui.BAD if err else ui.LABEL, m.f_small)
+
+        def start(p=p):
+            j = dict(done=0, total=1, folder=None, error=None, name=p["name"])
+
+            def work():
+                try:
+                    j["folder"] = protocol.run(p, workers=labjobs.default_workers(),
+                                               progress=lambda d, n: j.update(done=d, total=n))
+                except Exception as e:
+                    j["error"] = f"{type(e).__name__}: {e}"
+
+            j["thread"] = threading.Thread(target=work, name="protocol", daemon=True)
+            j["thread"].start()
+            st.proto_job = j
+
+        m.button(surf, (row.right - 110, row.y + 6, 96, 30), "Run", start, id=("proto", f.name),
+                 enabled=not err and not busy, font=m.f_small)
+        y += 50
+    if job is not None:
+        if busy:
+            frac = job["done"] / max(1, job["total"])
+            pygame.draw.rect(surf, (30, 36, 48), (rect.x + 24, rect.bottom - 100, rect.w - 220, 12), border_radius=6)
+            pygame.draw.rect(surf, ui.AMBER, (rect.x + 24, rect.bottom - 100, max(8, int((rect.w - 220) * frac)), 12),
+                             border_radius=6)
+            m.text(surf, f"running {job['name']}: {job['done']}/{job['total']}", (rect.x + 24, rect.bottom - 84), ui.TEXT, m.f_small)
+        elif job["error"]:
+            m.text(surf, job["error"], (rect.x + 24, rect.bottom - 90), ui.BAD, m.f_small)
+        elif job["folder"]:
+            m.text(surf, f"Done: {short(job['folder'], 110)}", (rect.x + 24, rect.bottom - 90), ui.GOOD, m.f_small)
+    m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("proto", "back"))

@@ -1530,6 +1530,8 @@ class Game:
         import validation
         self.menu.pages["challenges"] = challenges.page_challenges
         self.challenge = None
+        self.recording: dict | None = None
+        self.last_export: str | None = None
         self.science_card: tuple[dict, float] | None = None
         self.science_seen = self._load_seen()
         results, self.validation_source = validation.load_results()
@@ -1758,8 +1760,62 @@ class Game:
                 ("Assays and repeated trials", "lab_assays", "T-maze conditioning, looming escape and sugar response over "
                  "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
-                ("Record and export", "lab_export", "Spike times and firing rates to CSV and npz with metadata."),
+                ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
+                 "metadata."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
+
+    def start_recording(self, groups: list[tuple[str, str]], seconds: float) -> None:
+        import lab
+        import recorder
+
+        br = self.brain
+        named = {}
+        for label, spec in groups:
+            try:
+                named[label] = lab.resolve_group(br, spec)
+            except ValueError as e:
+                self.menu.flash(str(e), menu_ui.BAD)
+                return
+        rec = recorder.Recorder(br, named).start()
+        self.recording = dict(rec=rec, until=br.steps + int(seconds / 0.005), seconds=seconds, slot=self.flies[self.focus])
+        self.note(f"RECORD   {len(rec.rows):,} neurons for {seconds:g} s")
+        self.menu.close()
+
+    def stop_recording(self, wait: bool = False) -> None:
+        import recorder
+
+        job, self.recording = self.recording, None
+        if job is None:
+            return
+        rec = job["rec"]
+        rec.stop()
+        stem = recorder.exports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-recording" / "recording"
+
+        def save():
+            try:
+                rec.save(stem, dict(recorded_live=True, requested_seconds=job["seconds"]), game=self)
+                self.last_export = str(stem.parent)
+                self.saved_msg = (f"recording saved to {stem.parent.name} in exports", time.perf_counter())
+            except Exception as e:
+                log.exception("saving the recording failed")
+                self.saved_msg = (f"recording failed: {e}", time.perf_counter())
+
+        if wait:
+            save()
+        else:
+            threading.Thread(target=save, name="save-recording", daemon=True).start()
+
+    def draw_recording(self, surf, x: int, y: int) -> None:
+        job = getattr(self, "recording", None)
+        if job is None:
+            return
+        rec = job["rec"]
+        img = self.f_bold.render(f"REC  {rec.seconds:4.1f} / {job['seconds']:g} s", True, INK)
+        box = img.get_rect(midtop=(x, y)).inflate(28, 10)
+        pygame.draw.rect(surf, (140, 30, 30), box, border_radius=8)
+        pygame.draw.circle(surf, (255, 90, 80) if self.calm_fx or int(time.perf_counter() * 2) % 2 else (180, 60, 60),
+                           (box.x + 12, box.centery), 5)
+        surf.blit(img, img.get_rect(center=(box.centerx + 6, box.centery)))
 
     def refresh_validation(self) -> None:
         import validation
@@ -1799,6 +1855,9 @@ class Game:
         self.poll_load()
         base = self.clock.brain_speed()
         steps = self.clock.take_brain_steps()
+        rec = getattr(self, "recording", None)
+        if rec is not None and (rec["slot"].brain.steps >= rec["until"] or rec["slot"] not in self.flies):
+            self.stop_recording()
         training = self.flies[self.focus] if (self.train is not None or self.challenge is not None) else None
         fast = self.train_active_speed if self.train is not None else getattr(self.challenge, "speed", 1.0)
         for slot in self.flies:
@@ -3663,6 +3722,7 @@ class Game:
         scr.blit(arena, shake)
         self._draw_brain(now)
         self.draw_time_indicator(scr, PLAY_W // 2, 92)
+        self.draw_recording(scr, PLAY_W // 2, 130)
         if self.menu.open:
             self.menu.draw(scr, pygame.mouse.get_pos(), now)
 
@@ -4387,6 +4447,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def shutdown(game) -> None:
+    if getattr(game, "recording", None) is not None:
+        game.stop_recording(wait=True)
     if game.challenge is not None:                   # puts back any memory a challenge borrowed before saving
         game.challenge.end()
     for slot in game.flies:

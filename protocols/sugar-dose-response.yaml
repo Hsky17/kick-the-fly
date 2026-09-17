@@ -1,0 +1,5 @@
+# MN9 dose-response to the sugar-pathway gustatory neurons (assays.py).
+name: sugar-dose-response
+assay: sugar
+seed: 4000
+flies: 6

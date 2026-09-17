@@ -2076,6 +2076,7 @@ class Game3D(k2.Game):
             self.challenge.draw(hud, now, self.mouse_logical)
         self.draw_science_card(hud, now)
         self.draw_time_indicator(hud, k2.PLAY_W // 2, 92)
+        self.draw_recording(hud, k2.PLAY_W // 2, 130)
         if self.menu.open:
             self.menu.draw(hud, self.mouse_logical, now)
 

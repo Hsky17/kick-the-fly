@@ -4,3 +4,4 @@ pyarrow>=16
 pygame>=2.6
 pillow>=10
 moderngl>=5.10
+pyyaml>=6

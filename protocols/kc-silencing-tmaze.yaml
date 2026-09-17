@@ -1,0 +1,6 @@
+# T-maze conditioning with the mushroom body's Kenyon cells silenced, against same-seed unperturbed controls.
+name: kc-silencing-tmaze
+assay: tmaze
+seed: 3000
+flies: 6
+surgery: {"prefix:KC": -1}
