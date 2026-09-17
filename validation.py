@@ -87,6 +87,10 @@ TESTS = (
               "the connectome's real KC -> MBON synapses; this tests that they produce odor-specific memory."),
 )
 BY_ID = {t["id"]: t for t in TESTS}
+# The held-out results of this release (README "Validation"). tests/test_validation.py and --strict flag any change,
+# in either direction, so a regression (or a newly reproduced behavior) never goes unnoticed.
+EXPECTED = {"looming_escape": True, "mdn_backward": False, "sugar_feeding": True, "antenna_grooming_circuit": True,
+            "adn_grooming_motor": False, "mb_conditioning": True}
 
 
 def _ratio(base: float, driven: float) -> float:

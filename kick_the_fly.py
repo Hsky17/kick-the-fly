@@ -4256,6 +4256,13 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--seed", type=int, help="random seed for the brains and the game")
     ap.add_argument("--smoke", nargs="+", metavar="ARG", help="build check: SECONDS [SCREENSHOT.png]")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--headless", action="store_true", help="no window: run --validate or --protocol and exit")
+    ap.add_argument("--validate", action="store_true", help="run the validation suite (implies --headless)")
+    ap.add_argument("--protocol", metavar="FILE", help="run a YAML protocol file (implies --headless)")
+    ap.add_argument("--out", metavar="PATH", help="where headless results go")
+    ap.add_argument("--workers", type=int, help="worker processes for headless runs (default: up to 4)")
+    ap.add_argument("--seeds", help="validation seeds, e.g. 1000-1009")
+    ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
         log.warning("ignoring unknown arguments: %s", " ".join(unknown))
@@ -4274,6 +4281,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Kick the Fly %s on %s", __version__, crash.os_description())
     for n in p.notes:
         log.info(n)
+    if args.headless or args.validate or args.protocol:
+        import headless
+
+        return headless.main(args)
     cfg = config.Config.load(p.config_file)
     seed = args.seed if args.seed is not None else cfg["brain.seed"]
     crash.info["seed"] = str(seed)
