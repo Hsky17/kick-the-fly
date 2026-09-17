@@ -1,7 +1,8 @@
 """Compact brain pack for Kick the Fly: everything the game needs from the connectome in one ~40 MB file.
 
 Holds the signed synapse matrix [post, pre] as int16 counts plus each neuron's 1 / total input synapses, the
-neuron type, superclass and instance labels, each neuron's cell-body position, and the dopamine-neuron ->
+neuron type, superclass, subclass and instance labels, FlyEM body IDs, each neuron's cell-body position, and the
+dopamine-neuron ->
 mushroom body output neuron synapse counts (dopamine synapses have no sign, so the signed matrix drops them; the
 game's learning needs to know which dopamine neurons reach which output neurons). The game rebuilds the
 simulator's rate-normalized matrix from it in about a second, so a packaged build skips the 1.1 GB download.
@@ -38,6 +39,19 @@ def soma_positions(g) -> np.ndarray:
     return pos
 
 
+def subclasses(g) -> np.ndarray:
+    """Annotation `subclass` per graph row (e.g. fl/ml/hl for front/middle/hind leg motor neurons), "" where none."""
+    import pyarrow.feather as feather
+
+    t = feather.read_table(DATA_DIR / ANNOTATIONS, columns=["bodyId", "subclass"])
+    out = np.full(g.n, "", dtype=object)
+    for b, v in zip(t["bodyId"].to_numpy(), t["subclass"].to_pylist()):
+        r = g.index.get(int(b), -1)
+        if r >= 0 and v is not None:
+            out[r] = str(v)
+    return out.astype(str)
+
+
 def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
     from connectome.loader import load_graph
 
@@ -61,6 +75,7 @@ def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
         out, indptr=signed.indptr.astype(np.int32), indices=signed.indices.astype(np.int32),
         data=signed.data.astype(np.int16), inv=inv, type=types, superclass=labels(g.superclass),
         instance=labels(g.instance), soma=soma, dan=dan.astype(np.int32), mbon=mbon.astype(np.int32), dan_mbon=dan_mbon,
+        subclass=subclasses(g), body_id=np.asarray(g.body_ids, np.int64),
     )
     print(f"[brainpack] wrote {out} ({out.stat().st_size / 1e6:.1f} MB, {g.n:,} neurons, {signed.nnz:,} synapse pairs, "
           f"{int((~np.isnan(soma[:, 0])).sum()):,} cell bodies)")
@@ -89,6 +104,9 @@ def load(path: Path):
     g = SimpleNamespace(n=n, type=z["type"], superclass=z["superclass"], instance=np.where(inst == "", None, inst))
     if "dan_mbon" in z:
         g.dan, g.mbon, g.dan_mbon = z["dan"], z["mbon"], z["dan_mbon"]
+    # packs from before 2.6 have neither: leg motor neuron groups and body IDs in exports are then unavailable
+    g.subclass = z["subclass"] if "subclass" in z else np.full(n, "", dtype="<U1")
+    g.body_id = z["body_id"] if "body_id" in z else None
     return g, W, z["soma"]
 
 

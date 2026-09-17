@@ -638,7 +638,17 @@ class Game3D(k2.Game):
         return self.player.to_world(local)
 
     def _overlay_open(self) -> bool:
-        return self.report is not None or self.big_view or self.surgery_open or self.help_open or self.training_open
+        ch = getattr(self, "challenge", None)
+        return (self.report is not None or self.big_view or self.surgery_open or self.help_open or self.training_open
+                or (ch is not None and ch.overlay))
+
+    def sneak_distance(self, slot) -> float:
+        """Your body or the tool in your hand, whichever is closer to the fly's head, in fly lengths (0.55 m)."""
+        head = slot.fly.p[HEAD]
+        d = float(np.linalg.norm((self.player.eye - head)[[0, 2]]))          # your body: distance along the floor
+        if TOOLS[self.tool][0] not in ("hand", "sugar"):
+            d = min(d, float(np.linalg.norm(self.tool_tip() - head)))
+        return d / 0.55
 
     def _above_head(self):
         return self.fly.p[HEAD] + (0, 0.45, 0)
@@ -967,6 +977,7 @@ class Game3D(k2.Game):
                 fly.yaw_target = angle_to(fly.away_from(eye))
                 fly.walk_until, fly.back_until, fly.run = now + 1.2, 0.0, True
             self.note(f"AVOID    remembers the {slot.scent_now} ({slot.fear_now:.2f})")
+            self.on_reaction("AVOID", slot)
             self.popup(fly.p[HEAD] + (0, 0.4, 0), "NOPE!", (255, 220, 120))
         elif slot.scent_now == "sugar" and slot.like_now > k2.LIKE_ACT and now >= fly.walk_until:
             slot.avoid_ready = now + 1.5
@@ -1203,6 +1214,7 @@ class Game3D(k2.Game):
             fly.eating_until = now + 0.4
             s["left"] -= 1 / 240
             slot.brain.poke("taste", None, 0.5)
+            slot.brain.poke("sweet", None, 0.5, recruit=0.6)          # the sugar-pathway taste neurons (assays.py)
             slot.brain.poke("reward", None, 0.4)
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
@@ -1292,6 +1304,8 @@ class Game3D(k2.Game):
             self.player.eye_h += (0.3 - self.player.eye_h) * 0.05       # you slump to the floor
         for slot in self.flies:                                         # for drawing between ticks in slow motion
             slot.fly.p_tick = slot.fly.p.copy()
+        if self.challenge is not None:
+            self.challenge.update(now)
         self._environment(now)
         self._kick(now)
         for slot in list(self.flies):
@@ -1414,6 +1428,7 @@ class Game3D(k2.Game):
                 fly.last_hit = np.asarray(slot.threat_x, float).copy()
                 fly.escape(now)
                 self.note(f"DODGE    giant fiber DNp01 x{lv['escape']:.1f}")
+                self.on_reaction("DODGE", slot)
                 self.popup(fly.p[HEAD] + (0, 0.4, 0), "DODGE!", (170, 255, 200))
                 self.sound.play("dodge")
             elif lv["jump"] > THRESH["jump"] and now >= fly.escape_ready and free and can_fly:
@@ -1440,6 +1455,7 @@ class Game3D(k2.Game):
                 fly.walk_until, fly.run = now + 1.2, False
                 self.note(f"WALK     DNp09 x{lv['walk']:.1f}")
             self._memory_behavior(slot, now, free, can_fly)
+            self.readouts(slot, now)
             if self.duel and slot is self.flies[self.focus]:
                 duel_free, duel_can_fly = free, can_fly
             lamp_idle = free and now >= fly.escape_until and now >= fly.stun_until and now >= fly.walk_until
@@ -1602,6 +1618,9 @@ class Game3D(k2.Game):
         side = side / (np.linalg.norm(side) or 1)
         up = np.cross(side, fwd)
         Rb = np.stack([fwd, up, side], 1)
+        if now < getattr(fly, "proboscis_until", 0.0):          # proboscis out while MN9 responds to sugar
+            tip = p[HEAD] + fwd * 0.1 - up * 0.16
+            rd.add("cylinder", segment(p[HEAD] - up * 0.06, tip, 0.012), (0.5, 0.36, 0.22))
         fa = p[THX] - p[ABD]
         fa = fa / (np.linalg.norm(fa) or 1)
         Ra = np.stack([fa, np.cross(side, fa), side], 1)
@@ -2053,6 +2072,9 @@ class Game3D(k2.Game):
             self._draw_brain(now)
         else:
             self.view_rect = pygame.Rect(0, 0, 0, 0)
+        if self.challenge is not None:
+            self.challenge.draw(hud, now, self.mouse_logical)
+        self.draw_science_card(hud, now)
         self.draw_time_indicator(hud, k2.PLAY_W // 2, 92)
         if self.menu.open:
             self.menu.draw(hud, self.mouse_logical, now)
@@ -2112,6 +2134,13 @@ class Game3D(k2.Game):
                 self.use_tool3d(now)
                 return True
             pos = ev.pos
+            if self.science_card is not None and self.science_rect().collidepoint(pos):
+                self.science_card = None
+                return True
+            if self.challenge is not None and any(b.rect.collidepoint(pos) for b in self.challenge.buttons):
+                return self.challenge.click(pos)
+            if self.challenge is not None and self.challenge.overlay:
+                return self.challenge.click(pos)
             if self.player_dead_at is None and not self._overlay_open() and pos[0] < k2.PLAY_W and not any(r.collidepoint(pos) for r in getattr(self, "tool_rects", [])):
                 self.set_look(True)
                 return True

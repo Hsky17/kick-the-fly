@@ -196,13 +196,15 @@ POPS = (  # population name, superclasses
     ("nerve cord", ("vnc_intrinsic", "vnc_tbc")),
     ("motor neurons", ("vnc_motor", "cb_motor", "vnc_efferent", "cb_efferent", "efferent_ascending", "efferent_descending")),
 )
+# groom (aDN1/aDN2): over 60 s calm its level never passed 3.6x (two seeds: 2.96, 3.63); fan-strength wind on the antennal
+# JO-C/E neurons took it to 5.2-5.6x.
 # x calm baseline. Probed over 60 s with no touch the maxima were jump 2.6, run 1.8, kick 1.7; typical hits reach
 # jump 4.6 (head), run 2.9-3.8 (body), kick 2.0-2.8 (legs). walk/back/turn sit between their spontaneous p99 and
 # p99.9 so the fly wanders on its own every so often.
 # DNg02 (29 wing-power DNs) rests at ~7 spikes/s; over 30 s of play its level never passed 1.64x (p99.9 1.60), so 1.58x
 # takes off now and then.
 # DNp01, the giant fiber: over 60 s calm its level never passed 2.64x; driving the looming detectors took it to 7-12x.
-THRESH = {"jump": 3.0, "run": 2.4, "kick": 2.0, "walk": 3.0, "back": 3.8, "turn": 2.1, "fly": 1.58, "escape": 4.0, "fire": 3.0}
+THRESH = {"groom": 4.0, "jump": 3.0, "run": 2.4, "kick": 2.0, "walk": 3.0, "back": 3.8, "turn": 2.1, "fly": 1.58, "escape": 4.0, "fire": 3.0}
 PAIN_WEIGHTS = np.array([0.55, 0.25, 0.55, 0.20, 0.30])   # touch, thermal, chemical, DN alarm, body relay; cap 100
 PAIN_LEVELS = (  # name, share of a region's neurons a light touch recruits, how hard the rest of the body's sensors join
     ("normal", 0.3, 0.0), ("more", 0.6, 0.5), ("max", 1.0, 1.0),
@@ -257,6 +259,10 @@ class Brain:
             if side:
                 m &= sides == f"_{side}"
             add_detail(name, m)
+        # readouts for validated behaviors (validation.py): antennal grooming command neurons aDN1/aDN2 (the dataset's
+        # DNg62 and DNge078, "Hampel 2015: aDN1/aDN2") and the proboscis motor neuron MN9
+        add_detail("groom", is_dn & np.isin(types, ("DNg62", "DNge078")))
+        add_detail("proboscis", np.isin(types, ("MN9",)))
         # the rest of the body's sensory neurons (campaniform sensilla, hair plates, chordotonal organs, unnamed SN*):
         # only counted and driven when the pain setting asks for more neurons
         body_extra = add_detail("body_extra", np.isin(sc, ("vnc_sensory", "vnc_sensory_tbc", "sensory_ascending",
@@ -274,7 +280,12 @@ class Brain:
         for k, name in enumerate(TOOL_NAMES):        # each tool's scent: its own 5 of the 53 olfactory glomeruli
             self.sense[("scent", name)] = orn[np.isin(glom, order[k * 5:(k + 1) * 5])]
         self.sense[("scent", "player")] = orn[np.isin(glom, order[len(TOOL_NAMES) * 5:])]   # you: the last 3 glomeruli
+        import assays
+        odor_order = np.random.default_rng(assays.ODOR_GLOMERULI_SEED).permutation(np.unique(glom))
+        self.sense[("scent", "odor_a")] = orn[np.isin(glom, odor_order[:6])]      # T-maze odors (game rule: which
+        self.sense[("scent", "odor_b")] = orn[np.isin(glom, odor_order[6:12])]    # glomeruli each one activates)
         self.types, self.superclass = types, sc
+        self.subclass = np.asarray(getattr(g, "subclass", np.full(g.n, ""))).astype(str)
         self.instance = np.array([i or "" for i in g.instance])
         self.override = np.zeros(g.n, np.float32)    # brain surgery: per-neuron silencing / stimulating current
         self.surgery = False
@@ -312,11 +323,15 @@ class Brain:
         self._gain = sim.gain
         self.steps_per_s = 0.0
         self.steps = 0
+        g_assay = assays.groups(self)                # sugar- and bitter-pathway taste neurons, from the wiring
+        self.sense[("sweet", None)], self.sense[("bitter", None)] = g_assay["sweet"], g_assay["bitter"]
         self.speed = 1.0                             # x real time: >1 training, <1 slow motion, 0 paused
         self.step_requests = 0                       # brain steps owed while paused (single-step)
         self.step_lock = threading.Lock()            # held for each step, so save states never see half a step
         self.meter_reset = False
         self.memory = None                           # memory.Memory: learning on the real KC -> MBON synapses
+        self.recorder = None                         # recorder.Recorder while recording spikes for export
+        self.body_id = getattr(g, "body_id", None)
 
     @property
     def dead(self) -> bool:
@@ -393,6 +408,8 @@ class Brain:
         for _, (rows, _) in active:
             self._cur[rows] = 0
 
+        if self.recorder is not None:
+            self.recorder.push(self.steps, spikes)
         on = np.flatnonzero(spikes)
         G = len(self.names)
         counts = np.zeros(G)
@@ -1004,6 +1021,14 @@ def draw_puddle(surf: pygame.Surface, fly: Fly, now: float) -> None:
         gfxdraw.aacircle(surf, int(bx), int(FLOOR - 6 - 10 * ph), int(2 + 3 * ph), (200, 200, 160, int(200 * (1 - ph))))
 
 
+def draw_proboscis(surf: pygame.Surface, fly: Fly, now: float) -> None:
+    if now < getattr(fly, "proboscis_until", 0.0) and not fly.dead:
+        head, abd = fly.p[HEAD], fly.p[ABD]
+        fwd = (head - abd) / max(1.0, float(np.hypot(*(head - abd))))
+        tip = head + fwd * 14 + np.array([0.0, 22.0])
+        thick_line(surf, head + (0, 8), tip, 4, (130, 95, 60))
+
+
 def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
     if fly.dissolved_at is not None:
         draw_puddle(surf, fly, now)
@@ -1011,6 +1036,7 @@ def draw_fly(surf: pygame.Surface, fly: Fly, now: float) -> None:
     if fly.shattered_at is not None:
         return                                        # the shards are drawn by the game
     _draw_fly_body(surf, fly, now)
+    draw_proboscis(surf, fly, now)
     p = fly.p
     if fly.wrapped:                                   # spider silk
         axis = p[HEAD] - p[ABD]
@@ -1500,6 +1526,15 @@ class Game:
         import lab
         lab.install(self.menu)
         self.menu.pages["load_state"] = page_load_state
+        import challenges
+        import validation
+        self.menu.pages["challenges"] = challenges.page_challenges
+        self.challenge = None
+        self.science_card: tuple[dict, float] | None = None
+        self.science_seen = self._load_seen()
+        results, self.validation_source = validation.load_results()
+        W = brain.sim.W_csr
+        self.science_events = validation.passing_events(results, brain.n, int(W.nnz))
         self.lab_params: dict[str, float] = dict(lab.DEFAULTS)
         self.want_quit = False
         self.train_active_speed = 1.0
@@ -1630,6 +1665,8 @@ class Game:
             self.want_quit = True
         elif name == "lab":
             self.menu.show("lab")
+        elif name == "challenges":
+            self.menu.show("challenges")
         elif name == "save_state":
             self.save_state()
         elif name == "load_state":
@@ -1641,14 +1678,104 @@ class Game:
         else:
             self.menu.flash("coming soon", menu_ui.AMBER)
 
+    # --- challenges and real-science popups -------------------------------------------------------------------------
+    def start_challenge(self, key: str) -> None:
+        import challenges
+
+        if self.challenge is not None:
+            self.challenge.end()
+        if self.train is not None:
+            self.stop_training()
+        self.training_open = self.surgery_open = self.big_view = self.help_open = False
+        self.challenge = challenges.CLASSES[key](self)
+        if self.menu.open:
+            self.menu.close()
+
+    def sneak_distance(self, slot) -> float:
+        """How far your cursor is from the fly's head, in fly lengths (the 3D game measures your body and tool)."""
+        return float(np.hypot(*(np.asarray(self.mouse, float) - slot.fly.p[HEAD]))) / 92.0
+
+    def on_reaction(self, kind: str, slot) -> None:
+        """A reaction happened (DODGE, AVOID, GROOM, PROBOSCIS): challenges and the real-science popup hear about it."""
+        if self.challenge is not None:
+            self.challenge.on_reaction(kind, slot)
+            return                                    # popups are for normal play only
+        if self.cfg.lab or not self.cfg["brain.science_popups"] or kind in self.science_seen:
+            return
+        test = self.science_events.get(kind)
+        if test is None:
+            return
+        self.science_seen.add(kind)
+        self.science_card = (test, self.clock.now)
+        try:
+            p = paths.get().data_dir / "science_seen.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            p.write_text(json.dumps(sorted(self.science_seen)), encoding="utf-8")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _load_seen() -> set:
+        import json
+        try:
+            return set(json.loads((paths.get().data_dir / "science_seen.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return set()
+
+    def science_rect(self) -> pygame.Rect:
+        return pygame.Rect(PLAY_W // 2 - 300, H - 250, 600, 104)
+
+    def draw_science_card(self, surf, now: float) -> None:
+        if self.science_card is None:
+            return
+        test, t0 = self.science_card
+        if now - t0 > 12.0 or self.cfg.lab:
+            self.science_card = None
+            return
+        r = self.science_rect()
+        card = pygame.Surface(r.size, pygame.SRCALPHA)
+        pygame.draw.rect(card, (12, 30, 22, 235), card.get_rect(), border_radius=14)
+        pygame.draw.rect(card, (90, 200, 120, 255), card.get_rect(), 2, border_radius=14)
+        surf.blit(card, r)
+        menu_ui.draw_check(surf, (r.x + 30, r.y + 30), 22, (90, 220, 130))
+        self._text(surf, "Real flies do this too", (r.x + 54, r.y + 14), (170, 240, 190), self.f_head)
+        words, lines, line = test["play"].split(), [], ""
+        for w_ in words:
+            if self.f_text.size(line + " " + w_)[0] > r.w - 80 and line:
+                lines.append(line)
+                line = w_
+            else:
+                line = (line + " " + w_).strip()
+        lines.append(line)
+        for i, ln in enumerate(lines[:2]):
+            self._text(surf, ln, (r.x + 54, r.y + 46 + i * 20), TEXT, self.f_text)
+        self._text(surf, "click to dismiss", (r.right - 14, r.y + 12), DIM, self.f_small, "topright")
+
     def lab_pages(self) -> list[tuple[str, str, str]]:
         """(label, menu page, tooltip) for the Lab hub; later features add their pages to the menu."""
         return [("Validation", "lab_validation", "Which published fly behaviors this sim reproduces, with numbers."),
-                ("Assays", "lab_assays", "T-maze conditioning, looming escape and sugar response with standard metrics."),
-                ("Repeated trials", "lab_trials", "Run an assay over many seeds with mean, 95% CI and a control."),
+                ("Assays and repeated trials", "lab_assays", "T-maze conditioning, looming escape and sugar response over "
+                 "many flies: standard metrics, mean and 95% CI, and a same-seed control for any surgery."),
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Spike times and firing rates to CSV and npz with metadata."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
+
+    def refresh_validation(self) -> None:
+        import validation
+
+        results, self.validation_source = validation.load_results()
+        self.science_events = validation.passing_events(results, self.brain.n, int(self.brain.sim.W_csr.nnz))
+
+    def export_lab_result(self, res: dict) -> None:
+        import recorder
+
+        try:
+            path = recorder.export_result(res, self)
+            self.menu.flash(f"Exported to {path}", menu_ui.GOOD, 6)
+        except Exception as e:
+            log.exception("export failed")
+            self.menu.flash(f"Export failed: {e}", menu_ui.BAD, 6)
 
     def set_lab_param(self, name: str, value: float) -> None:
         import lab
@@ -1672,9 +1799,10 @@ class Game:
         self.poll_load()
         base = self.clock.brain_speed()
         steps = self.clock.take_brain_steps()
-        training = self.flies[self.focus] if self.train is not None else None
+        training = self.flies[self.focus] if (self.train is not None or self.challenge is not None) else None
+        fast = self.train_active_speed if self.train is not None else getattr(self.challenge, "speed", 1.0)
         for slot in self.flies:
-            want = base * (self.train_active_speed if slot is training else 1.0)
+            want = base * (fast if slot is training else 1.0)
             if slot.brain.speed != want:
                 slot.brain.speed = want
             if steps:
@@ -1950,6 +2078,7 @@ class Game:
         except while a panel is open or mid-training/duel, where switching brains under the player would be
         confusing or apply an action to the wrong fly."""
         if len(self.flies) <= 1 or getattr(self, "duel", False) or self._overlay_open() or self.train is not None \
+                or getattr(self, "challenge", None) is not None \
                 or all(s.fly.dead for s in self.flies):
             return
         you = self._you_pos()
@@ -2036,6 +2165,9 @@ class Game:
     def _overlay_open(self) -> bool:
         if getattr(self, "training_open", False):
             return True
+        ch = getattr(self, "challenge", None)
+        if ch is not None and ch.overlay:
+            return True
         return self.report is not None or self.big_view or self.surgery_open or self.help_open
 
     def _threats(self, slot: "FlySlot", now: float, mouse) -> list:
@@ -2117,7 +2249,8 @@ class Game:
                 slot.fear_now, slot.like_now = mem.memory_of(slot.scent_now) if slot.scent_now else mem.memory_of("sugar")
             else:
                 slot.fear_now = slot.like_now = 0.0
-        if mem.dirty and slot.persist_memory and now - self.last_save > 30:
+        borrowed = getattr(self.challenge, "borrows_memory", False)
+        if mem.dirty and slot.persist_memory and not borrowed and now - self.last_save > 30:
             self.last_save = now
             threading.Thread(target=mem.save, daemon=True).start()
 
@@ -2332,6 +2465,33 @@ class Game:
             return
 
 
+    def readouts(self, slot: "FlySlot", now: float) -> None:
+        """Validated readouts with no body animation of their own (validation.py):
+        GROOM      aDN1/aDN2 (DNg62, DNge078) above THRESH["groom"] x calm while its antennal JO-C/E neurons are
+                   active (wind in the fan arena)
+        PROBOSCIS  while eating sugar, MN9 fires at least assays.PER_RATIO x its rate from before the fly started eating"""
+        import assays
+
+        br, fly = slot.brain, slot.fly
+        lvl = br.level("groom")
+        antennae = br.level("wind") > 2.0             # the JO-C/E antennal neurons the validated pathway starts from
+        if antennae and lvl > THRESH["groom"] and now >= getattr(slot, "groom_ready", 0.0):
+            slot.groom_ready = now + 4.0
+            self.note(f"GROOM    aDN1/aDN2 x{lvl:.1f}")
+            self.on_reaction("GROOM", slot)
+        mn9 = br.hz("proboscis")
+        if now < fly.eating_until:
+            slot.mn9_bout = getattr(slot, "mn9_bout", []) + [mn9]
+            if len(slot.mn9_bout) == 60:                       # one second into an eating bout
+                ratio = float(np.mean(slot.mn9_bout)) / max(getattr(slot, "mn9_calm", mn9), 1.0)
+                if ratio >= assays.PER_RATIO:
+                    fly.proboscis_until = now + 1.5
+                    self.note(f"PROBOSCIS MN9 x{ratio:.1f}")
+                    self.on_reaction("PROBOSCIS", slot)
+        else:
+            slot.mn9_bout = []
+            slot.mn9_calm = getattr(slot, "mn9_calm", mn9) + (mn9 - getattr(slot, "mn9_calm", mn9)) * 0.02
+
     def _memory_behavior(self, slot: "FlySlot", now: float, free: bool, can_fly: bool) -> None:
         fly = slot.fly
         if not slot.scent_now or not free or now < slot.avoid_ready or fly.frozen_at is not None or now < fly.stun_until:
@@ -2346,6 +2506,7 @@ class Game:
                 fly.facing = 1 if fly.p[THX, 0] >= mx else -1
                 fly.walk_until, fly.back_until, fly.run = now + 1.2, 0.0, True
             self.note(f"AVOID    remembers the {slot.scent_now} ({slot.fear_now:.2f})")
+            self.on_reaction("AVOID", slot)
             self.popup(fly.p[HEAD] + (0, -60), "NOPE!", (255, 220, 120))
         elif slot.scent_now == "sugar" and slot.like_now > LIKE_ACT and now >= fly.walk_until:
             slot.avoid_ready = now + 1.5
@@ -3025,6 +3186,7 @@ class Game:
             fly.eating_until = now + 0.4
             s["left"] -= 1 / 240
             slot.brain.poke("taste", None, 0.5)
+            slot.brain.poke("sweet", None, 0.5, recruit=0.6)          # the sugar-pathway taste neurons (assays.py)
             slot.brain.poke("reward", None, 0.4)
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
@@ -3114,6 +3276,8 @@ class Game:
     def update(self, now: float, mouse) -> None:
         for slot in self.flies:
             slot.fly.p_tick = slot.fly.p.copy()
+        if self.challenge is not None:
+            self.challenge.update(now)
         self.frame += 1
         self.mouse = mouse
         self._poll_spawn()
@@ -3233,6 +3397,7 @@ class Game:
                 fly.last_hit_x = slot.threat_x
                 fly.escape(now)
                 self.note(f"DODGE    giant fiber DNp01 x{lv['escape']:.1f}")
+                self.on_reaction("DODGE", slot)
                 self.popup(fly.p[HEAD] + (0, -60), "DODGE!", (170, 255, 200))
                 self.sound.play("dodge")
             elif lv["jump"] > THRESH["jump"] and now >= fly.escape_ready and free and can_fly:
@@ -3258,6 +3423,7 @@ class Game:
                 fly.walk_until, fly.run = now + 1.2, False
                 self.note(f"WALK     DNp09 x{lv['walk']:.1f}")
             self._memory_behavior(slot, now, free, can_fly)
+            self.readouts(slot, now)
             lamp_idle = free and now >= fly.escape_until and now >= fly.stun_until and now >= fly.walk_until
             if ARENAS[self.arena_i] == "lamp" and lamp_idle and now >= slot.photo_ready:
                 slot.photo_ready = now + random.uniform(3.0, 6.0)   # drawn to the light (game rule)
@@ -3485,6 +3651,9 @@ class Game:
             self._draw_surgery(arena)
         if self.help_open:
             self._draw_help(arena)
+        if self.challenge is not None:
+            self.challenge.draw(arena, now, pygame.mouse.get_pos())
+        self.draw_science_card(arena, now)
 
         shake = (0, 0)
         if now < self.shake_until:
@@ -3934,6 +4103,11 @@ class Game:
                 self.do_action(action, now)
             return True
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+            if self.science_card is not None and self.science_rect().collidepoint(ev.pos):
+                self.science_card = None
+                return True
+            if self.challenge is not None and self.challenge.click(ev.pos):
+                return True
             if self.help_open:
                 self.help_open = False
                 return True
@@ -4202,6 +4376,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def shutdown(game) -> None:
+    if game.challenge is not None:                   # puts back any memory a challenge borrowed before saving
+        game.challenge.end()
     for slot in game.flies:
         slot.brain.stop()
         if slot.persist_memory and slot.brain.memory is not None:
@@ -4212,6 +4388,8 @@ def shutdown(game) -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()                 # Lab worker processes in the exe and AppImage start here
     try:
         sys.exit(main())
     except SystemExit:

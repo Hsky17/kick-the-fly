@@ -228,6 +228,27 @@ class Menu:
         surf.blit(img, r)
         return r
 
+    def wrapped(self, surf, s, pos, width: int, color=TEXT, font=None, max_lines: int = 3) -> int:
+        """Word-wrapped text; returns the y below it."""
+        font = font or self.f_small
+        lines, line = [], ""
+        for word in str(s).split():
+            trial = (line + " " + word).strip()
+            if font.size(trial)[0] > width and line:
+                lines.append(line)
+                line = word
+            else:
+                line = trial
+        lines.append(line)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines[-1] = lines[-1][:-1] + "…"
+        y = pos[1]
+        for ln in lines:
+            self.text(surf, ln, (pos[0], y), color, font)
+            y += font.get_linesize()
+        return y
+
     def button(self, surf, rect, label, click, *, id=None, style="normal", enabled=True, tip=None, active=False,
                font=None) -> bool:
         rect = pygame.Rect(rect)
@@ -342,10 +363,22 @@ class Menu:
         rect = pygame.Rect((W - pw) // 2, (H - ph) // 2, pw, ph)
         pygame.draw.rect(surf, PANEL, rect, border_radius=16)
         pygame.draw.rect(surf, BORDER, rect, 1, border_radius=16)
-        if self.screen in self.pages:
-            page(self, surf, rect, mouse)
-        else:
-            page(surf, rect)
+        try:
+            if self.screen in self.pages:
+                page(self, surf, rect, mouse)
+            else:
+                page(surf, rect)
+        except Exception as e:                      # a broken page shows an error instead of crashing the game
+            from crash import log
+            if getattr(self, "_page_error", None) != (self.screen, str(e)):
+                self._page_error = (self.screen, str(e))
+                log.exception("menu page %s failed", self.screen)
+            self.clip = None
+            surf.set_clip(None)
+            self.text(surf, f"This screen hit an error: {type(e).__name__}: {e}", (rect.centerx, rect.centery),
+                      BAD, self.f_small, "center")
+            self.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", self.back, style="primary",
+                        id=("error", "back"))
         if self.message and time.perf_counter() < self.message[1]:
             self.text(surf, self.message[0], (rect.centerx, rect.bottom + 10), self.message[2], self.f_small, "midtop")
         if self.tip is not None:
