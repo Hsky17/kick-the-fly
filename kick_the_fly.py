@@ -583,6 +583,22 @@ VIEW_X, VIEW_Y, VIEW_ZCUT = (0.0, 96000.0), (2000.0, 54000.0), 60000.0   # front
 VIEW_SIZES = {"panel": (356, 193), "big": (860, 466)}
 
 
+REGION_COLORS = {
+    "Antennal Lobe": (255, 130, 40),
+    "Mushroom Body": (255, 215, 0),
+    "Central Complex": (50, 220, 100),
+    "Optic Lobe": (0, 180, 255),
+    "Central Brain": (160, 100, 240),
+    "Gnathal (GNG)": (0, 210, 190),
+    "VNC (T1)": (255, 90, 90),
+    "VNC (T2)": (230, 60, 140),
+    "VNC (T3)": (180, 50, 200),
+    "VNC (Abdomen)": (240, 110, 180),
+    "VNC (Other)": (140, 140, 190),
+    "unassigned": (110, 115, 125),
+}
+
+
 class BrainView:
     """Front view of the brain that lights up with the live sim.
 
@@ -603,7 +619,7 @@ class BrainView:
                 "blue-yellow": ((1.0, 0.8, 0.08), (0.18, 0.42, 1.0)),
                 "high-contrast": ((1.0, 0.12, 0.85), (0.92, 0.92, 0.92))}
 
-    def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1):
+    def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1, regions: np.ndarray | None = None):
         rng = np.random.default_rng(seed)
         n = len(soma)
         has = ~np.isnan(soma[:, 0])
@@ -655,10 +671,26 @@ class BrainView:
         self.pan_x, self.pan_y = 0.0, 0.0
         self.zoom = 1.0
         self.preset = "front"
+        if regions is not None:
+            self.regions = np.asarray(regions, dtype=str)
+        else:
+            self.regions = np.full(n, "unassigned", dtype=str)
+        self.region_names = list(REGION_COLORS.keys())
+        self.region_to_id = {name: i for i, name in enumerate(self.region_names)}
+        self.region_id = np.array([self.region_to_id.get(r, self.region_to_id["unassigned"]) for r in self.regions], dtype=np.int32)
+        self.region_counts = np.bincount(self.region_id, minlength=len(self.region_names))
+        self.region_rates = np.zeros(len(self.region_names), np.float32)
+        palette_rgb = np.array([REGION_COLORS[name] for name in self.region_names], dtype=np.float32) / 255.0
+        self.col_region = (0.15 + 0.85 * palette_rgb[self.region_id]).astype(np.float32)
+        self.view_mode = "neuron"  # "neuron" | "region"
         self.calm = np.full(n, 0.025, np.float32)                   # per-neuron calm rate, spikes per step
         self.firing = self.hot_firing = 0
         self._cache_front = (self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"])
         self._preset_cache = {"front": self._cache_front}
+
+    def toggle_view_mode(self) -> str:
+        self.view_mode = "region" if self.view_mode == "neuron" else "neuron"
+        return self.view_mode
 
     def set_camera(self, yaw: float, pitch: float, pan_x: float = 0.0, pan_y: float = 0.0, zoom: float = 1.0, preset: str | None = None) -> None:
         self.yaw = float(yaw)
@@ -754,13 +786,30 @@ class BrainView:
         act = (2.2 * excess).astype(np.float32)
         firing = act > 0.05
         self.firing, self.hot_firing = int(firing.sum()), int((firing & self.hot_mask).sum())
+
+        rates_hz = rates * 200.0
+        self.region_rates = np.bincount(self.region_id, weights=rates_hz, minlength=len(self.region_names)) / np.maximum(self.region_counts, 1)
+
+        w, h = VIEW_SIZES[key]
+        if self.view_mode == "region":
+            reg_heat = self.region_rates[self.region_id]
+            heat_act = np.clip((reg_heat - 2.0) / 4.0, 0.0, 3.0).astype(np.float32) * 1.5 + 0.4 * act
+            light = (self.M[key] @ (heat_act[:, None] * self.col_region * 1.8)) * self.gain[key]
+            base_col = (self.M[key] @ (self.col_region * 0.45))
+            img = (255 * (1 - np.exp(-(base_col + light)))).astype(np.uint8)
+            surf = pygame.image.frombuffer(img.tobytes(), (w, h), "RGB").copy()
+            hot = (255 * (1 - np.exp(-0.7 * light))).astype(np.uint8)
+            glow = pygame.image.frombuffer(hot.tobytes(), (w, h), "RGB")
+            glow = pygame.transform.smoothscale(pygame.transform.smoothscale(glow, (w // 6, h // 6)), (w, h))
+            surf.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            return surf
+
         light = (self.M[key] @ (act[:, None] * self.tint)) * self.gain[key]
         if len(spiked) and self.sparkle:              # sparkles: firing neurons that spiked on the latest step
             s = spiked[act[spiked] > 2.0]
             pix = self.spark_pix[key][s]
             s, pix = s[pix >= 0], pix[pix >= 0]
             np.add.at(light, pix, np.where(self.hot_mask[s, None], self.hot * 3.0, np.float32(0.7)))
-        w, h = VIEW_SIZES[key]
         img = (255 * (1 - np.exp(-(self.base[key] + light)))).astype(np.uint8)
         surf = pygame.image.frombuffer(img.tobytes(), (w, h), "RGB").copy()
         hot = (255 * (1 - np.exp(-0.7 * light))).astype(np.uint8)          # bloom from the firing only
@@ -2349,17 +2398,125 @@ class Game:
         cam_info = f"View: {v.preset.upper()} (yaw {v.yaw:+.0f}° pitch {v.pitch:+.0f}° zoom {v.zoom:.1f}x)"
         self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
 
+        # Mode toggle button:
+        mode_btn = pygame.Rect(rect.right - 400, 15, 132, 22)
+        mode_label = "Mode: Per-Region" if v.view_mode == "region" else "Mode: Per-Neuron"
+        mode_active = (v.view_mode == "region")
+        pygame.draw.rect(surf, (50, 75, 110) if mode_active else (24, 28, 38), mode_btn, border_radius=4)
+        pygame.draw.rect(surf, ACCENT if mode_active else BORDER, mode_btn, 1, border_radius=4)
+        self._text(surf, mode_label, mode_btn.center, INK if mode_active else TEXT, self.f_small, "center")
+        self.big_mode_button = mode_btn
+
+        self.big_region_buttons = []
+        if v.view_mode == "region":
+            leg_w, leg_h = 206, 316
+            leg_rect = pygame.Rect(rect.right - leg_w - 6, rect.y + 6, leg_w, leg_h)
+            card = pygame.Surface((leg_w, leg_h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (10, 12, 18, 220), card.get_rect(), border_radius=8)
+            pygame.draw.rect(card, BORDER, card.get_rect(), 1, border_radius=8)
+            surf.blit(card, leg_rect)
+            self._text(surf, "NEUROPIL REGIONS", (leg_rect.x + 8, leg_rect.y + 6), INK, self.f_bold)
+            self._text(surf, "click to view neuron list", (leg_rect.x + 8, leg_rect.y + 22), DIM, self.f_small)
+
+            for idx, rname in enumerate(v.region_names):
+                ry = leg_rect.y + 38 + idx * 22
+                row_r = pygame.Rect(leg_rect.x + 4, ry, leg_w - 8, 20)
+                col = REGION_COLORS.get(rname, (180, 180, 180))
+                pygame.draw.circle(surf, col, (row_r.x + 8, row_r.centery), 4)
+                rate = v.region_rates[idx]
+                rshort = rname if len(rname) <= 14 else rname[:13] + "…"
+                self._text(surf, rshort, (row_r.x + 18, ry + 2), TEXT, self.f_small)
+                self._text(surf, f"{rate:4.1f} Hz", (row_r.right - 4, ry + 2), (160, 220, 255), self.f_small, "topright")
+                self.big_region_buttons.append((row_r, rname))
+
+        if getattr(self, "selected_region", None):
+            self._draw_region_neuron_list(surf, rect, now)
+
         self._text(surf, "click neuron to inspect  |  drag orbit  |  Shift+drag pan  |  wheel zoom  |  B to close",
                    (PLAY_W - 22, 40), LABEL, self.f_small, "topright")
         ly = rect.bottom + 12
-        hot_c, cool_c = self.view.legend
-        aacircle(surf, (30, ly + 7), 5, hot_c)
-        r = self._text(surf, "pain-sensing neurons firing", (42, ly), TEXT, self.f_small)
-        aacircle(surf, (r.right + 22, ly + 7), 5, cool_c)
-        r = self._text(surf, "other neurons firing", (r.right + 34, ly), TEXT, self.f_small)
-        self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
-        self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
-                   (24, ly + 20), DIM, self.f_small)
+        if v.view_mode == "region":
+            self._text(surf, "click a region above to browse neurons  |  colors: dataset region labels  |  glow: live region activity heat",
+                       (30, ly), TEXT, self.f_small)
+            self._text(surf, "Neurons without region annotations in MaleCNS v1.0 are kept in an explicit 'unassigned' bucket.",
+                       (30, ly + 20), DIM, self.f_small)
+        else:
+            hot_c, cool_c = self.view.legend
+            aacircle(surf, (30, ly + 7), 5, hot_c)
+            r = self._text(surf, "pain-sensing neurons firing", (42, ly), TEXT, self.f_small)
+            aacircle(surf, (r.right + 22, ly + 7), 5, cool_c)
+            r = self._text(surf, "other neurons firing", (r.right + 34, ly), TEXT, self.f_small)
+            self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
+            self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
+                       (24, ly + 20), DIM, self.f_small)
+
+    def _draw_region_neuron_list(self, surf, rect: pygame.Rect, now: float) -> None:
+        rname = self.selected_region
+        v = self.view
+        br = self.brain
+        if rname not in v.region_to_id:
+            self.selected_region = None
+            return
+        rid = v.region_to_id[rname]
+        indices = np.flatnonzero(v.region_id == rid)
+        rates = br.sim.activity.rates() * 200.0
+
+        mw, mh = min(600, rect.w - 30), min(420, rect.h - 30)
+        mrect = pygame.Rect(rect.centerx - mw // 2, rect.centery - mh // 2, mw, mh)
+        self.region_modal_rect = mrect
+        modal = pygame.Surface((mw, mh), pygame.SRCALPHA)
+        pygame.draw.rect(modal, (10, 14, 22, 252), modal.get_rect(), border_radius=10)
+        pygame.draw.rect(modal, ACCENT, modal.get_rect(), 1, border_radius=10)
+        surf.blit(modal, mrect)
+
+        col = REGION_COLORS.get(rname, (200, 200, 200))
+        pygame.draw.circle(surf, col, (mrect.x + 20, mrect.y + 20), 6)
+        self._text(surf, f"{rname.upper()} ({len(indices):,} neurons, mean: {v.region_rates[rid]:.1f} Hz)",
+                   (mrect.x + 34, mrect.y + 12), INK, self.f_bold)
+
+        close_r = pygame.Rect(mrect.right - 80, mrect.y + 10, 70, 22)
+        pygame.draw.rect(surf, (40, 44, 56), close_r, border_radius=4)
+        pygame.draw.rect(surf, BORDER, close_r, 1, border_radius=4)
+        self._text(surf, "Close", close_r.center, TEXT, self.f_small, "center")
+        self.region_close_button = close_r
+
+        page = getattr(self, "region_page", 0)
+        per_page = 11
+        max_page = max(0, (len(indices) - 1) // per_page)
+        page = min(page, max_page)
+        self.region_page = page
+
+        prev_r = pygame.Rect(mrect.x + 20, mrect.bottom - 34, 64, 22)
+        next_r = pygame.Rect(mrect.x + 94, mrect.bottom - 34, 64, 22)
+        pygame.draw.rect(surf, (35, 40, 52), prev_r, border_radius=4)
+        pygame.draw.rect(surf, (35, 40, 52), next_r, border_radius=4)
+        self._text(surf, "Prev", prev_r.center, TEXT if page > 0 else DIM, self.f_small, "center")
+        self._text(surf, "Next", next_r.center, TEXT if page < max_page else DIM, self.f_small, "center")
+        self.region_prev_btn, self.region_next_btn = prev_r, next_r
+        self._text(surf, f"Page {page + 1} / {max_page + 1}", (mrect.right - 20, mrect.bottom - 28), LABEL, self.f_small, "topright")
+
+        y = mrect.y + 44
+        self._text(surf, "Neuron ID", (mrect.x + 20, y), LABEL, self.f_small)
+        self._text(surf, "Type", (mrect.x + 130, y), LABEL, self.f_small)
+        self._text(surf, "Instance", (mrect.x + 290, y), LABEL, self.f_small)
+        self._text(surf, "Rate", (mrect.right - 30, y), LABEL, self.f_small, "topright")
+        pygame.draw.line(surf, (40, 45, 58), (mrect.x + 15, y + 16), (mrect.right - 15, y + 16))
+
+        self.region_neuron_buttons = []
+        start_i = page * per_page
+        for row_k, idx in enumerate(indices[start_i:start_i + per_page]):
+            ry = y + 22 + row_k * 24
+            row_rect = pygame.Rect(mrect.x + 15, ry - 2, mrect.w - 30, 22)
+            bg = (24, 28, 40) if row_k % 2 == 0 else (18, 22, 32)
+            pygame.draw.rect(surf, bg, row_rect, border_radius=3)
+            ntype = br.types[idx] or "untyped"
+            ninst = br.instance[idx] or "-"
+            nrate = rates[idx]
+            self._text(surf, f"#{idx}", (row_rect.x + 6, ry + 2), (180, 210, 240), self.f_small)
+            self._text(surf, ntype[:18], (row_rect.x + 115, ry + 2), TEXT, self.f_small)
+            self._text(surf, ninst[:20], (row_rect.x + 275, ry + 2), DIM, self.f_small)
+            self._text(surf, f"{nrate:5.1f} Hz", (row_rect.right - 6, ry + 2), (140, 220, 180), self.f_small, "topright")
+            self.region_neuron_buttons.append((row_rect, int(idx)))
 
     # --- seeing, smelling, learning ---------------------------------------------
     def _overlay_open(self) -> bool:
@@ -4364,6 +4521,44 @@ class Game:
                 self.big_view = not self.big_view
                 return True
             if self.big_view:
+                # Region neuron list modal interaction:
+                if getattr(self, "selected_region", None):
+                    if getattr(self, "region_close_button", None) and self.region_close_button.collidepoint(ev.pos):
+                        self.selected_region = None
+                        return True
+                    if getattr(self, "region_prev_btn", None) and self.region_prev_btn.collidepoint(ev.pos):
+                        self.region_page = max(0, getattr(self, "region_page", 0) - 1)
+                        return True
+                    if getattr(self, "region_next_btn", None) and self.region_next_btn.collidepoint(ev.pos):
+                        self.region_page = getattr(self, "region_page", 0) + 1
+                        return True
+                    for nr, nid in getattr(self, "region_neuron_buttons", []):
+                        if nr.collidepoint(ev.pos):
+                            self.inspect = self._neuron_info(nid)
+                            self.selected_region = None
+                            self.sound.play("click")
+                            return True
+                    if getattr(self, "region_modal_rect", None) and not self.region_modal_rect.collidepoint(ev.pos):
+                        self.selected_region = None
+                        return True
+                    return True
+
+                # Mode toggle:
+                if getattr(self, "big_mode_button", None) and self.big_mode_button.collidepoint(ev.pos):
+                    mode = self.view.toggle_view_mode()
+                    self.note(f"VIEW     {'per-region heatmap' if mode == 'region' else 'per-neuron'}")
+                    self.sound.play("click")
+                    return True
+
+                # Region list click-through:
+                if self.view.view_mode == "region":
+                    for rr, rname in getattr(self, "big_region_buttons", []):
+                        if rr.collidepoint(ev.pos):
+                            self.selected_region = rname
+                            self.region_page = 0
+                            self.sound.play("click")
+                            return True
+
                 for r, preset_name in getattr(self, "big_preset_buttons", []):
                     if r.collidepoint(ev.pos):
                         self.view.set_preset(preset_name)
@@ -4474,7 +4669,7 @@ def load_brain(out: dict) -> None:
         out["stage"] = "placing neurons"
         pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
         pain_mask = np.isin(brain.det_id, pain_groups) | (brain.pop_id == [n for n, _ in POPS].index("ascending"))
-        out["view"] = BrainView(soma, weights, pain_mask)
+        out["view"] = BrainView(soma, weights, pain_mask, regions=getattr(g, "region", None))
         if getattr(g, "dan_mbon", None) is not None:
             import memory
             out["stage"] = "loading the fly's memory"

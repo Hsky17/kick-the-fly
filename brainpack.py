@@ -52,6 +52,54 @@ def subclasses(g) -> np.ndarray:
     return out.astype(str)
 
 
+def regions(g) -> np.ndarray:
+    """Dataset neuropil region annotations per graph row, 'unassigned' where none."""
+    import pyarrow.feather as feather
+
+    out = np.full(g.n, "unassigned", dtype=object)
+    path = DATA_DIR / ANNOTATIONS
+    if not path.exists():
+        return out.astype(str)
+    t = feather.read_table(path, columns=["bodyId", "class", "somaNeuromere", "superclass"])
+    bids = t["bodyId"].to_numpy()
+    classes = t["class"].to_pylist()
+    neuromeres = t["somaNeuromere"].to_pylist()
+    superclasses = t["superclass"].to_pylist()
+    if getattr(g, "index", None) is not None:
+        b_to_idx = g.index
+    elif getattr(g, "body_id", None) is not None:
+        b_to_idx = {int(b): i for i, b in enumerate(g.body_id)}
+    else:
+        b_to_idx = {}
+
+    for b, cls, nm, sc in zip(bids, classes, neuromeres, superclasses):
+        idx = b_to_idx.get(int(b), -1)
+        if idx < 0:
+            continue
+        reg = None
+        if cls in ("ALPN", "ALLN", "ALIN", "ALON"):
+            reg = "Antennal Lobe"
+        elif cls in ("Kenyon_Cell", "MBON"):
+            reg = "Mushroom Body"
+        elif cls == "CX":
+            reg = "Central Complex"
+        elif cls in ("visual", "ol_bilateral") or (sc and (sc.startswith("ol_") or sc.startswith("visual_"))):
+            reg = "Optic Lobe"
+        elif nm in ("T1", "T2", "T3"):
+            reg = f"VNC ({nm})"
+        elif nm and nm.startswith("A") and nm[1:].isdigit():
+            reg = "VNC (Abdomen)"
+        elif nm in ("GNG", "LB", "MX", "MD"):
+            reg = "Gnathal (GNG)"
+        elif nm in ("CG", "DC", "TC"):
+            reg = "Central Brain"
+        elif sc and sc.startswith("vnc_"):
+            reg = "VNC (Other)"
+        if reg:
+            out[idx] = reg
+    return out.astype(str)
+
+
 def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
     from connectome.loader import load_graph
 
@@ -71,11 +119,12 @@ def build(out: Path = DATA_DIR / PACK_NAME) -> Path:
     dan = np.flatnonzero(np.char.startswith(types, "PAM") | np.char.startswith(types, "PPL1"))
     mbon = np.flatnonzero(np.char.startswith(types, "MBON"))
     dan_mbon = g.weights.tocsr()[dan][:, mbon].toarray().astype(np.int16)        # [DAN, MBON] synapse counts
+    reg = regions(g)
     np.savez_compressed(
         out, indptr=signed.indptr.astype(np.int32), indices=signed.indices.astype(np.int32),
         data=signed.data.astype(np.int16), inv=inv, type=types, superclass=labels(g.superclass),
         instance=labels(g.instance), soma=soma, dan=dan.astype(np.int32), mbon=mbon.astype(np.int32), dan_mbon=dan_mbon,
-        subclass=subclasses(g), body_id=np.asarray(g.body_ids, np.int64),
+        subclass=subclasses(g), body_id=np.asarray(g.body_ids, np.int64), region=reg,
     )
     print(f"[brainpack] wrote {out} ({out.stat().st_size / 1e6:.1f} MB, {g.n:,} neurons, {signed.nnz:,} synapse pairs, "
           f"{int((~np.isnan(soma[:, 0])).sum()):,} cell bodies)")
@@ -107,6 +156,7 @@ def load(path: Path):
     # packs from before 2.6 have neither: leg motor neuron groups and body IDs in exports are then unavailable
     g.subclass = z["subclass"] if "subclass" in z else np.full(n, "", dtype="<U1")
     g.body_id = z["body_id"] if "body_id" in z else None
+    g.region = z["region"] if "region" in z else regions(g)
     return g, W, z["soma"]
 
 
