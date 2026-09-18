@@ -4,7 +4,7 @@ A kick-the-buddy game where the buddy is a real fruit fly brain: the
 **MaleCNS v1.0** connectome ([Google Research blog](https://research.google/blog/a-connectomics-milestone-mapping-the-complete-male-fruit-fly-brain/)),
 all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, zap, freeze and feed it to a spider. Or reward it with sugar.
 
-**It's first person:** walk around a 3D living room and use your tools on the fly up close. Walk into it and you kick it. The original 2D version is still there with `--2d`.
+**It's first person:** walk around a 3D living room and use your tools on the fly up close. Walk into it and you kick it. Or take it outside: an **open field** with wind and sun, and an **orchard** where it flies to fruit and feeds. The original 2D version is still there with `--2d`.
 
 **Play or Lab:** Play is the game, with challenges and scores. Lab mode adds research tools: a validation dashboard showing which published fly behaviors this simulation reproduces (and which it doesn't), repeated trials with statistics, data export and protocol files that also run headless.
 
@@ -46,6 +46,10 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - **pool:** it floats, gets wet wings, and can drown
   - **lamp:** it's drawn to the light and singes itself on the bulb
   - **escaperoom:** multi-hazard gauntlet combining fan wind, flypaper strip, and hot lamp overhead; reach the sugar dish to stop the speedrun timer and generate a tamper-evident verification code (`KTF-<SEED>-<TIME>-<SIG>`).
+  - **open field** (3D): 30 m by 30 m of grass, rocks and open sky. A steady wind drives its real wind-sensing antennal neurons and the sun drives its photoreceptors; wind direction and strength and the sun's position are Lab parameters. Wind also reaches its head-touch escape neurons, so in a breeze it keeps flying off, and outdoors an escape really goes somewhere: fly out of sight (26 m from you, or 15 m up) and it's **lost**. **J** calls it back.
+  - **orchard** (3D): a grove of 24 fruit trees. The fly flies to a ripe fruit, lands and feeds, which drives the same real taste and PAM reward neurons sugar does and heals it. Each fruit holds a few feeds and shrinks and browns as it's eaten, then drops; it grows back after about 75 s, staggered, with a cap per tree. Some fruit are fermented and act like the alcohol tool. The fruit, the trees and the flying to them are **game rules**: the fly doesn't forage through its own circuitry. With several flies they end up competing for fruit, but only through the looming and touch neurons they already have; nothing about competing is scripted.
+
+  Open field and orchard need the 3D game; the 2D game stays indoors and says so. The arena you pick is saved in `config.toml` (Settings > Brain > Arena, or **E**), in save states and in every export's metadata.
 - **Sound:** every sound is generated in code. The wing buzz follows its flight neurons. **M** mutes.
 - **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
 - **Slow motion and save states:** pause time, slow everything to 0.1x, step it 1/60 s at a time, and save or load the whole simulation (see Time controls).
@@ -188,7 +192,8 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | O | brain surgery |
 | T | training: teach it to fear or like a smell (saved between sessions) |
 | X | 1v1 duel: the fly gets a blaster and can kill you (R respawns you) |
-| E | arena: room, fan, flypaper, pool, lamp |
+| E | arena: room, fan, flypaper, pool, lamp, escape room, open field, orchard (the last two 3D only) |
+| J | outdoors: call back a fly that flew out of sight |
 | P / I | pain neurons / immortal mode |
 | K | brain stethoscope (spike sonification clicks in big brain view / body parts) |
 | L | time-lapse record (2x-20x speedup to MP4/GIF; toggle on/off) |
@@ -206,7 +211,7 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | . | single step while paused (1/60 s of the room and the matching brain steps) |
 | H | controls help |
 
-Command line: `--2d`, `--fullscreen`, `--backend wayland|x11`, `--seed N`, and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`.
+Command line: `--2d`, `--fullscreen`, `--backend wayland|x11`, `--seed N`, `--arena NAME` (room, fan, flypaper, pool, lamp, escaperoom, field, orchard), `--flies N` (start with N flies), and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--nwb`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`, `--threshold-sweep`, `--signflip-test`, `--critical-path TARGET`, `--benchmark`.
 
 ## Settings
 
@@ -214,7 +219,7 @@ Esc > Settings. Changes apply right away and are saved to `config.toml`; hover a
 
 - **Graphics:** fullscreen, resolution scale (3D drawn smaller and stretched, for weak GPUs), FPS cap, VSync (restart), display backend (Linux only, restart), brain panel style, menu size, UI scale.
 - **Audio:** master, wing buzz and sound effects volume, brain stethoscope (spike sonification clicks, hotkey K), mute.
-- **Brain:** Play/Lab mode, pain neurons, immortal, sim speed, random seed (applies on R), real vs rule tags, real-science popups. Brain settings are tagged **Connectome** (changes how the simulation runs) or **Game rule** (a rule the game adds on top).
+- **Brain:** Play/Lab mode, arena, pain neurons, immortal, sim speed, random seed (applies on R), real vs rule tags, real-science popups. Brain settings are tagged **Connectome** (changes how the simulation runs) or **Game rule** (a rule the game adds on top).
 - **Controls:** mouse sensitivity, invert Y, field of view, key bindings.
 - **Accessibility:** colorblind-safe brain view colors (blue/yellow) and a high-contrast palette, reduced flashing (no screen shake, flashes, sparkles, scanning band or blinking), larger text.
 
@@ -238,13 +243,15 @@ In Play mode a short **"Real flies do this too"** card appears the first time th
 - **Optogenetics laser:** in-world aimable beam activating or silencing selected cell types directly in real time for rapid perturbation experiments.
 - **Classroom mode & lecture protocols:** self-contained teaching modules with guided steps, hypothesis prompts, and bundled interactive YAML lecture protocols (`protocols/lecture_*.yaml`).
 - **Parameters:** the LIF model's parameters (noise, tonic drive, target rate, sensory gain, gain adaptation; tagged MODEL) and the game-rule thresholds that turn neuron firing into moves, live. Validation results, exports and save states record when anything is changed from the defaults.
-- **Record and export:** pick neuron groups and a duration and record the fly you're looking at while you play: spike times and firing rates as CSV and npz, with a metadata JSON (app version, seed, parameters, thresholds, connectome version, brain pack checksum, surgery).
+- **Record and export:** pick neuron groups and a duration and record the fly you're looking at while you play: spike times and firing rates as CSV and npz, with a metadata JSON (app version, seed, parameters, thresholds, connectome version, brain pack checksum, surgery, arena and its weather/fruit settings). Tick **NWB** to also get one Neurodata Without Borders file (units with spike times and connectome labels, per-group and per-region rates, stimuli, tool events, the fly's movement, surgery, arena, KC->MBON weights before and after, full metadata and the MaleCNS v1.0 / CC BY 4.0 citation). NWB needs `pip install pynwb`; it isn't bundled in the exe or AppImage, and the checkbox says so when it's missing.
+- **Critical path finder:** pick a validated behavior or an assay and it silences each candidate cell type in turn (a shortlist ranked by how much of the readout's input they supply within two synapses), re-runs it over the validation seeds against same-seed unperturbed controls, and ranks the types by effect with 95% CI and a paired Wilcoxon test. Resumable, CSV/JSON export, and a one-click "apply this lesion" in the game. Headless: `--critical-path TARGET`.
+- **Outdoor arena parameters:** open field wind direction and speed, sun azimuth and elevation, and the orchard's feeds per fruit, regrow time and fruit cap (all GAME RULE). They're also valid protocol `params`, and `assay: orchard` runs the orchard's feeding schedule headless and reproducibly (`protocols/orchard-feeding.yaml`).
 - **Simulation benchmark:** measures simulation throughput across 1, 8, and 16 flies: paced real-time ratio, uncapped steps/s, neurons/s, synapse updates/s, and memory footprint.
 - **Connectome robustness & research findings:**
-  - **Synapse threshold sweeps:** drops connections below any synapse count. Pruning <10 synapses drops 73.6% of all connections and 12,234 neurons' entire input, yet all 4 validated behaviors survive.
-  - **Transmitter sign flips:** flips the least confident transmitter predictions. Looming -> giant fiber (10.9x) and antennal -> aDN (4.8x) survive, whereas sugar -> MN9 fails in 100% of trials (2.22 -> 1.06).
+  - **Synapse threshold sweeps:** drops connections below any synapse count and re-runs the validated behaviors with validation's own criteria (seeds 1000-1009). The brain pack is already filtered at 3 synapses, so 1-3 change nothing. Pruning below 10 synapses removes 73.6% of all connections (7,562,973) and every input of 10,151 neurons, yet all 4 validated behaviors survive. Watch the rates, not only the ratios: a pruned brain is quieter at rest, so looming's ratio rises (11.8 -> 20.3) while DNp01's driven rate stays at 66.5 spikes/s.
+  - **Transmitter sign flips:** flips a random half of the neurons whose transmitter the dataset is less than 70% sure of (11,013, of which 4,366 have no confidence at all), over randomized trials. In 3 trials on seeds 1000-1006: looming -> giant fiber survives 3/3 (x13.2 vs x11.7 unperturbed) and antennal -> aDN survives 3/3 (x3.6 vs x4.9), while sugar -> MN9 fails 3/3 (x1.06 vs x2.22).
   - **Looming critical path:** single-group silencing shows LC4 (-50%) and LPLC2 (-43%) carry nearly all looming drive; other visual groups have near-zero effect.
-  - **Global inhibition block (Picrotoxin):** 0-100% severity slider scales inhibitory synapses down (`inhibition_scale = 1 - severity`). Runaway firing (>30 Hz brain-wide mean) emerges as a natural network consequence of disinhibition without scripted seizures; reports before/after firing distributions.
+  - **Global inhibition block (Picrotoxin):** 0-100% severity slider scales inhibitory synapses down (`inhibition_scale = 1 - severity`). Runaway firing emerges from disinhibition without scripted seizures: at 100% the brain-wide mean goes from 6.7 to 33.8 spikes/s (one seed, 1 s; re-checked for this release). Reports before/after firing distributions.
 - **Neural clamp:** records spike trains from a reference run and replays forced spikes into an altered connectome (lesion, threshold, sign-flip) to isolate wiring changes from sensory feedback. Dynamic clamping overrides intrinsic membrane state and breaks closed-loop feedback loops (e.g. proprioception and visual flow). Shows side-by-side activity diffs and exports.
 - **Connectome diff mode:** runs two flies (reference vs perturbed) side-by-side with identical seeds and inputs in lockstep. Tracks region-by-region activity divergence live with an autopsy-style diverging bar chart and a timeline showing when the two brains diverge.
 - **Hemifield & hemisphere lesions:** one-click surgery silencing unilateral visual pathways (LC10, LPLC2, LC4, LPTC, VS, HS) or an entire hemisphere. Demonstrates blind-side dodge failure, asymmetric steering bias, and broken 1v1 duel tracking. Reported strictly as a connectome wiring outcome, not physical injury.
@@ -278,7 +285,15 @@ flies: 6
 surgery: {"prefix:KC": -1}
 ```
 
-Neurons are named by a group (`loom`, `escape`, `head`, `reward`, `sweet`, `dnp01`, `mn9`, `adn`, `jo_ce`, `mn_front`...), `type:A,B`, `prefix:KC`, `superclass:descending_neuron` or `rows:1,2,3`. The full format is in `kickthefly/lab/protocol.py`, and examples are in `protocols/` (bundled in the exe and AppImage: `--protocol smoke.yaml`, `looming-giant-fiber.yaml`, `kc-silencing-tmaze.yaml`, `sugar-dose-response.yaml`).
+Neurons are named by a group (`loom`, `escape`, `head`, `reward`, `sweet`, `dnp01`, `mn9`, `adn`, `jo_ce`, `mn_front`...), `type:A,B`, `prefix:KC`, `superclass:descending_neuron` or `rows:1,2,3`. The full format is in `kickthefly/lab/protocol.py`, and examples are in `protocols/` (bundled in the exe and AppImage: `--protocol smoke.yaml`, `looming-giant-fiber.yaml`, `kc-silencing-tmaze.yaml`, `sugar-dose-response.yaml`, `orchard-feeding.yaml`).
+
+```yaml
+name: orchard-feeding
+assay: orchard        # the Orchard's feeding schedule, headless and reproducible
+seed: 4000
+flies: 4
+assay_options: {feeds: 4, regrow_s: 75, cap: 4, duration_s: 120}   # or params: {orchard.feeds: 4, ...}
+```
 
 Run one without a window, from the exe, the AppImage or source:
 
@@ -312,6 +327,8 @@ Results of this release (n = 10 flies, mean ± SD):
 | Antennal mechanosensory neurons JO-C/E excite the antennal grooming neurons aDN1/aDN2 ([Hampel et al. 2015](https://elifesciences.org/articles/08758); Shiu et al. 2024) | aDN1/aDN2 x4.87 ± 1.70 vs x0.85 ± 0.30 for random sensory neurons, p < 0.001 | **PASS** |
 | aDN1/aDN2 activation drives antennal grooming, a front-leg movement (Hampel et al. 2015) | front-leg motor neurons x1.13 ± 0.07 vs x0.95 ± 0.06, p < 0.001 | **FAIL: too weak** (consistent, but a 13% rise is far below the 1.5x bar) |
 | Odor + shock conditioning gives a positive T-maze performance index; unpaired doesn't ([Tully & Quinn 1985](https://pubmed.ncbi.nlm.nih.gov/3939242/)) | PI 1.00 ± 0.00 vs unpaired -0.03 ± 0.15, p < 0.001 | **PASS** (with caveats below) |
+| The E-PG ring forms a persistent head-direction bump from a driven wedge ([Seelig & Jayaraman 2015](https://www.nature.com/articles/nature14446)) | EPG peak/trough contrast x1.04 ± 0.14 (3.0x needed), persistence 0 ms (500 ms needed) | **FAIL: no bump** |
+| Steady directional wind anchors an E-PG bump that follows the wind ([Okubo et al. 2020](https://www.cell.com/neuron/fulltext/S0896-6273(20)30473-3)); the open field's wind, 8 directions | contrast x1.81 in wind vs x1.71 without (3.0x needed), persistence 101 ms (500 ms needed), direction tracking \|r\| 0.46 vs 0.40 for shuffled directions, p = 0.17 | **FAIL: no bump** |
 
 What the failures and passes mean:
 
@@ -319,6 +336,7 @@ What the failures and passes mean:
 - **aDN to front legs:** the upstream half of the grooming circuit (antennal touch to aDN) reproduces strongly; the motor half doesn't. The fly shows no grooming movement, and the GROOM reaction only logs the command neurons.
 - **Sugar:** the dataset doesn't label taste neurons by taste, so the sugar and bitter sets are chosen from their wiring to the Yao & Scott 2022 sugar and bitter neurons (MN9 is never used to choose them). Driving 30 random head taste neurons also raises MN9 somewhat.
 - **T-maze:** the learning rule, shock driving dopamine neurons and the choice at the T-maze are game rules running on the connectome's real synapses; the test shows they give odor-specific memory. The PI of 1.00 is above real flies' typical ~0.8-0.9 and not tuned to match. The approach output neurons' overall firing barely differs between the two odors (30.9 vs 31.0 spikes/s), so the choice is read from the learned synapses, not from output-neuron firing.
+- **E-PG compass, twice:** the first test drives a wedge of EPG neurons directly; the second (new in 2.7) uses the open field's steady wind as the cue, through exactly the transduction the arena uses, with the first test's pass criteria fixed before the run and no weights or time constants tuned. Wind is a real head-direction cue in flies, so this is a second test, not a retry. It reaches the ring only weakly (EPG firing actually drops, 6.8 to 5.5 spikes/s) and forms no bump. Whether tuned ring weights would support one isn't tested. No compass HUD ships.
 - **Not tested:** optomotor responses. Pixel input through the photoreceptors didn't carry a usable signal in this sim, so there is no honest way to ground one yet.
 
 `pytest` runs the suite and fails if any result changes in either direction.
@@ -336,6 +354,16 @@ Measured on an AMD Radeon RX 9070 XT / 24-thread CPU, Python 3.11 (`tools/bench_
 
 With several flies in the game, the brain threads, the renderer and the brain view share Python's interpreter lock, so the brains fall behind real time. That was already true before 2.6 and isn't changed by it.
 
+The 3D game in each arena, 2.7 (`python kick_the_fly.py --arena NAME --flies N --smoke 60`; fps averaged over the second half, sim/real is each brain's steps per second over the 200 of real time, mean over flies and the slowest fly):
+
+| | 1 fly | 8 flies |
+|---|---|---|
+| Room | 1.00x real time, 62 fps | 0.39x (slowest 0.36x), 58 fps |
+| Open field | 1.00x, 62 fps | 0.34x (slowest 0.32x), 58 fps |
+| Orchard | 1.00x, 62 fps | 0.32x (slowest 0.31x), 55 fps |
+
+Outdoors, scenery further than 38 m (grass beyond 16 m) or well behind the camera isn't drawn, static scenery is built once per arena, distant trees are skipped by the fly's collision checks, and distant ground fades into haze. Before those, the orchard starved the brain to 0.07x real time with a single fly.
+
 ## What is the connectome and what is a game rule
 
 **Connectome**
@@ -351,9 +379,12 @@ With several flies in the game, the brain threads, the renderer and the brain vi
 - Antennal wind excites the antennal grooming command neurons aDN1/aDN2 (validated); the GROOM reaction reads them.
 - Sugar reaching the proboscis motor neuron MN9 (validated); the PROBOSCIS reaction reads MN9 during an eating bout. Which taste neurons count as sugar-pathway ones is chosen from the connectome's wiring to the annotated sugar and bitter SEL neurons.
 - Everything inside the assays and protocols: how drive spreads, which neurons respond, and what silencing a group does.
-- **Global inhibition block (Picrotoxin):** Scaling down inhibitory synapses unmasks recurrent excitation, driving brain-wide firing rate from 6.7 Hz calm mean up to 33.8 Hz mean (>83% neurons >20 Hz, >42% >40 Hz) as an emergent property of connectome recurrence.
+- **Global inhibition block (Picrotoxin):** Scaling down inhibitory synapses unmasks recurrent excitation, driving brain-wide firing rate from 6.7 Hz calm mean up to 33.8 Hz mean (one seed, 1 s) as an emergent property of connectome recurrence.
 - **Hemifield visual lesions:** Unilateral visual silencing (LC10, LPLC2, LC4, LPTC, VS, HS) causes lateralized behavioral failure: intact escapes for contralateral looming (10.9x GF drive) vs complete failure for ipsilateral looming (1.02x drive), biased spontaneous steering (-1.8 Hz vs +0.10 Hz baseline), and loss of 1v1 duel aim when the opponent is in the blind hemifield (turn differential drops to 0.85 Hz, below steering deadzone).
-- **Connectome robustness sweeps:** Dropping connections below 10 synapses (73.6% of connections) preserves all four validated behaviors. Sign flips of low-confidence predictions break sugar -> MN9 completely (100% failure rate) while looming -> GF and JO -> aDN survive. Looming critical path depends primarily on LC4 (-50%) and LPLC2 (-43%).
+- **Connectome robustness sweeps:** Dropping connections below 10 synapses (73.6% of connections) preserves all four validated behaviors. Sign flips of low-confidence predictions break sugar -> MN9 in 3 of 3 trials while looming -> GF and JO -> aDN survive. Looming critical path depends primarily on LC4 (-50%) and LPLC2 (-43%).
+- **Outdoor senses:** the open field's wind drives the real JO-C/E wind neurons of each antenna and the sun drives the photoreceptors, as the fan and lamp arenas do. In wind, JO also drives the head-touch escape DNs, so the fly flies off repeatedly; that is the wiring, not a scripted behavior. Take-off still reads from DNg02 and escape from the head-touch DNs outdoors, with no ceiling (tested).
+- **Orchard feeding:** landing on a fruit drives the sugar-pathway taste neurons and the PAM reward neurons exactly as the sugar tool does (fermented fruit as the alcohol tool does). The MN9 response to it is the validated sugar -> MN9 pathway.
+- **Several flies in the orchard** notice each other only through the looming detectors and touch neurons they always had.
 - **Neural clamp:** Isolates structural wiring perturbations by forcing identical reference spike trains onto target neurons across different connectome variants.
 
 **Game rules**
@@ -374,6 +405,10 @@ With several flies in the game, the brain threads, the renderer and the brain vi
 - Real-science cards: which reactions get one is decided by the validation results, and only passing tests count.
 - Slow motion: the room's physics still advances in 1/60 s ticks; bodies are drawn in between.
 - Being drawn to the lamp, and the arena physics.
+- The outdoor worlds: the ground, sky, rocks, grass, trees and fruit; the open field's size and where a fly counts as lost; the wind's push on the body; escapes lasting 2.5x longer outdoors; recall (J).
+- How wind and sun reach the neurons: each antenna's share of the wind drive is the cosine of where the wind comes from relative to the heading, and the sun's drive is its elevation split between the eyes by azimuth. Real antennae sense wind by being deflected and real eyes see an image; neither is modelled.
+- The orchard: each fruit's feeds (default 4), regrowth (default 75 s, +-25%, with slots above the per-tree cap waiting until the tree loses a fruit), the cap (default 4), the share of fermented fruit, the fly flying to the nearest ripe fruit, landing, one fly per fruit, and the feeding bout length (1.5 s). The fly does not forage through its own circuitry; a real escape or take-off abandons the trip.
+- Alcohol's scent overlaps another tool's. Alcohol and fermented fruit smell through the real fermentation glomeruli DM1, DM2 and DP1m; every other tool's scent is 5 randomly chosen glomeruli (game rule), and DM2 and DP1m are two of the zapper's. So mushroom-body training on alcohol partly generalises to the zapper and back. That follows from using the real glomeruli, and anyone running feeding or training experiments in the orchard needs to know it.
 - In the 1v1 duel:
   - that it has a blaster at all;
   - where you appear in its view, which the game computes;

@@ -36,6 +36,13 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.7.0" date="2026-09-17">
+      <description>
+        <p>Two outdoor arenas: an open field with wind and sun, and an orchard where the fly feeds from fruit that
+        regrows. Lab tools that test how robust the results are to the connectome itself (synapse threshold, sign
+        flips, critical path, inhibition block), NWB export, and a second, negative E-PG compass test with wind.</p>
+      </description>
+    </release>
     <release version="2.6.0" date="2026-09-17">
       <description>
         <p>Settings menu, Play and Lab modes, challenges, slow motion and save states, native Wayland, a validation

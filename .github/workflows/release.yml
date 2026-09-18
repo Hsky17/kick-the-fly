@@ -158,7 +158,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title="Kick the Fly ${GITHUB_REF_NAME}: settings menu, Play and Lab modes, validation"
+          title="Kick the Fly ${GITHUB_REF_NAME}: outdoor arenas, Lab robustness tools, NWB export"
           files="release/KickTheFly-x86_64.AppImage release/KickTheFly.exe release/SHA256SUMS"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $files --clobber

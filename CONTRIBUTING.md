@@ -17,7 +17,8 @@ kickthefly/
   __main__.py              entry point (`python -m kickthefly`)
   core/                    simclock, simcore, memory, savestate, paths, platform_env, version, config, crash
   sim/                     brainpack, connectome/ (loader + LIF simulator), neuron and synapse state
-  game/                    kick_the_fly (2D game + Brain + brain panel), kick3d, render3d: physics, tools, arenas
+  game/                    kick_the_fly (2D game + Brain + brain panel), kick3d, render3d, outdoors (open field,
+                           orchard): physics, tools, arenas
   ui/                      menu framework and the settings screens
   lab/                     lab, labjobs, labstats, validation, assays, challenges, protocol, recorder, nwbexport,
                            headless, benchmark, and the Lab-only manipulations (threshold, signflip, criticalpath,
