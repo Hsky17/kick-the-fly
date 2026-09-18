@@ -925,11 +925,12 @@ for wtip in WING:
     LINKS += [(THX, wtip, 0.9, False), (ABD, wtip, 0.6, True), (HEAD, wtip, 0.3, True)]
 LINK_LEN = [float(np.hypot(*(REST[a] - REST[b]))) for a, b, _, _ in LINKS]
 MAX_HEALTH = 100.0
-ARENAS = ("room", "fan", "flypaper", "pool", "lamp")
+ARENAS = ("room", "fan", "flypaper", "pool", "lamp", "escaperoom")
 WATER_Y = FLOOR - 140                 # pool surface
 PAPER_X = (230.0, 660.0)              # flypaper strip on the floor
 LAMP = (445.0, 196.0)                 # bulb center
 FAN = (70.0, 548.0)                   # fan hub, low on the left so its wind hits a standing fly
+SUGAR_GOAL = (800.0, FLOOR - 14.0)    # escaperoom target sugar dish
 
 
 def particle_region(i: int) -> tuple[str, str | None]:
@@ -1106,9 +1107,10 @@ class Fly:
         for i, at in self.stuck.items():
             self.p[i] = at
             self.prev[i] = at
-        if self.arena == "flypaper" and self.grabbed is None:   # anything touching the strip sticks
+        if self.arena in ("flypaper", "escaperoom") and self.grabbed is None:   # anything touching the strip sticks
+            px0, px1 = (280.0, 560.0) if self.arena == "escaperoom" else PAPER_X
             for i in range(N_P):
-                if i not in self.stuck and PAPER_X[0] < self.p[i, 0] < PAPER_X[1] and self.p[i, 1] >= FLOOR - RADIUS[i] - 1.5:
+                if i not in self.stuck and px0 < self.p[i, 0] < px1 and self.p[i, 1] >= FLOOR - RADIUS[i] - 1.5:
                     self.stuck[i] = self.p[i].copy()
         self.hurt = max(0.0, self.hurt - 1 / 20)
         return self._contacts()
@@ -1838,7 +1840,7 @@ HELP = (
     ("1-9, 0, -", "pick a tool (or click the toolbar)"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery: silence or stimulate neuron groups"),
-    ("E", "change arena: room, fan, flypaper, pool, lamp"),
+    ("E", "change arena: room, fan, flypaper, pool, lamp, escaperoom"),
     ("P", "pain neurons: normal, more, max"),
     ("I", "immortal mode"),
     ("K", "brain stethoscope (spike sonification clicks)"),
@@ -1920,6 +1922,11 @@ class Game:
         self.inspect: dict | None = None
         from kickthefly.lab.laser import LaserState
         self.laser_state = LaserState()
+        self.escaperoom_start_t = 0.0
+        self.escaperoom_seed = 0
+        self.escaperoom_completed = False
+        self.escaperoom_finish_t = 0.0
+        self.escaperoom_code = ""
         self.inspect_buttons: list = []
         self.big_rect = pygame.Rect(0, 0, 0, 0)
         self.frames: deque = deque(maxlen=GIF_FRAMES)
@@ -2358,6 +2365,26 @@ class Game:
         self.alcohols: list[dict] = []
         self.surgery_modes = [0] * len(SURGERY)
         self.type_ops = {}
+        if getattr(self, "arena_i", 0) < len(ARENAS) and ARENAS[self.arena_i] == "escaperoom":
+            self.reset_escaperoom()
+
+    def reset_escaperoom(self, now: float = 0.0, seed: int | None = None) -> None:
+        self.escaperoom_start_t = now
+        self.escaperoom_seed = seed if seed is not None else int(self.cfg.get("brain.seed", 0))
+        self.escaperoom_completed = False
+        self.escaperoom_finish_t = 0.0
+        self.escaperoom_code = ""
+        if getattr(self, "flies", None):
+            fly = self.flies[0].fly
+            fly.stuck.clear()
+            if getattr(fly.p, "shape", [0, 0])[1] == 3:
+                shift_x = (-1.8 + 0.9) - fly.p[HEAD, 0]
+            else:
+                shift_x = 130.0 - fly.p[HEAD, 0]
+            fly.p[:, 0] += shift_x
+            fly.prev[:, 0] += shift_x
+            fly.hover[0] += shift_x
+            fly.fly_target[0] += shift_x
 
     def clear_transients(self) -> None:
         """Things in flight and effects, which save states don't keep."""
@@ -3250,6 +3277,60 @@ class Game:
                         fly.impulse(i, away * 1.5)
             if now < fly.escape_until and np.hypot(*(fly.fly_target - LAMP)) > 130:
                 fly.fly_target = np.array(LAMP) + (random.uniform(-110, 110), random.uniform(50, 130))
+        elif arena == "escaperoom":
+            # 1. Fan wind from left
+            gust = 0.75 + 0.25 * math.sin(now * 1.3) + 0.15 * math.sin(now * 4.1)
+            fly.wind = 0.45 * gust * float(np.clip(1.15 - fly.p[THX, 0] / 900.0, 0.15, 1.0))
+            if not fly.dead and self.frame % 3 == 0:
+                br.poke("wind", None, min(1.0, fly.wind * 1.4))
+            if random.random() < 0.6:
+                self.streaks.append([FAN[0] + 50, FAN[1] + random.uniform(-80, 80), random.uniform(10, 18), now])
+
+            # 2. Flypaper stickiness in middle
+            if fly.stuck:
+                kicking = now < fly.flail_until
+                for i in list(fly.stuck):
+                    pull = fly.grabbed is not None and np.hypot(*(np.array(mouse, float) - fly.stuck[i])) > 90
+                    if random.random() < 0.0012 + (0.012 if kicking else 0) + (0.06 if pull else 0):
+                        del fly.stuck[i]
+                if not fly.dead:
+                    if self.frame % 6 == 0:
+                        br.poke("legs", "L", 0.4)
+                        br.poke("legs", "R", 0.4)
+                        br.poke("body", None, 0.2)
+                    if len(fly.stuck) >= 3:
+                        self.damage(slot, 0.012, "the flypaper")
+
+            # 3. Hot Lamp overhead
+            d_lamp = float(np.hypot(*(fly.p[HEAD] - LAMP)))
+            if not fly.dead:
+                light = float(np.clip(1.2 - d_lamp / 500.0, 0.15, 1.0))
+                if self.frame % 2 == 0:
+                    br.poke("light", None, light, recruit=0.25 * light)
+                if d_lamp < 58:
+                    br.poke("heat", None, 0.8)
+                    self.damage(slot, 0.08, "the hot lamp")
+                    away = (fly.p[HEAD] - LAMP) / max(d_lamp, 1.0)
+                    for i in (HEAD, THX, ABD):
+                        fly.impulse(i, away * 1.5)
+            if now < fly.escape_until and np.hypot(*(fly.fly_target - LAMP)) > 130:
+                fly.fly_target = np.array(LAMP) + (random.uniform(-110, 110), random.uniform(50, 130))
+
+            # 4. Sugar Goal on the right
+            d_sugar = float(np.hypot(*(fly.p[HEAD] - SUGAR_GOAL)))
+            if d_sugar < 45.0 and not fly.dead:
+                if self.frame % 3 == 0:
+                    br.poke("sweet", None, 1.0)
+                if not self.escaperoom_completed:
+                    self.escaperoom_completed = True
+                    self.escaperoom_finish_t = now
+                    run_time = round(max(0.1, now - self.escaperoom_start_t), 2)
+                    from kickthefly.game.speedrun import make_speedrun_code
+                    self.escaperoom_code = make_speedrun_code(self.escaperoom_seed, run_time)
+                    from kickthefly.lab.challenges import record_score
+                    record_score("escaperoom_speedrun", run_time, "low")
+                    self.sound.play("yum")
+                    self.note(f"ESCAPEROOM CLEAR {run_time:.2f}s ({self.escaperoom_code})")
         if arena != "pool":
             fly.wet = max(0.0, fly.wet - 1 / 60)
         elif not (fly.p[:, 1] > WATER_Y).any():
@@ -3288,6 +3369,48 @@ class Game:
             for r, a in ((190, 18), (120, 30), (70, 60)):
                 aacircle(surf, (lx, ly), r * pulse, (255, 230, 150, a))
             aacircle(surf, (lx, ly), 24, (255, 246, 205))
+        elif arena == "escaperoom":
+            # 1. Fan
+            cx, cy = FAN
+            thick_line(surf, (cx - 20, cy), (cx - 20, FLOOR), 10, (70, 74, 84))
+            aacircle(surf, (cx, cy), 78, (50, 54, 64))
+            aacircle(surf, (cx, cy), 70, (26, 28, 34))
+            for k in range(3):
+                a = now * 25 + k * 2.094
+                tip = (cx + 62 * math.cos(a), cy + 62 * math.sin(a))
+                aapoly(surf, ellipse_pts(((cx + tip[0]) / 2, (cy + tip[1]) / 2), 34, 13, a, 16), (150, 160, 175))
+            aacircle(surf, (cx, cy), 12, (90, 96, 108))
+            for k in range(-3, 4):
+                gfxdraw.line(surf, int(cx - 70), int(cy + k * 18), int(cx + 70), int(cy + k * 18), (95, 100, 112))
+            for st in self.streaks:
+                e = (now - st[3]) / 1.2
+                x = st[0] + e * 1100 * (st[2] / 14)
+                gfxdraw.line(surf, int(x), int(st[1]), int(x + 40), int(st[1]), (200, 220, 235, int(110 * (1 - e))))
+
+            # 2. Flypaper strip in middle
+            px0, px1 = (280.0, 560.0)
+            pygame.draw.rect(surf, (214, 176, 50), (px0, FLOOR - 5, px1 - px0, 9), border_radius=3)
+            pygame.draw.rect(surf, (245, 214, 95), (px0 + 6, FLOOR - 4, px1 - px0 - 12, 2))
+            for k in range(8):
+                gfxdraw.filled_circle(surf, int(px0 + 20 + k * 35), FLOOR + 1, 2, (170, 130, 40))
+            self._text(surf, "FLYPAPER HAZARD", ((px0 + px1) // 2, FLOOR + 10), (190, 160, 70), self.f_small, "midtop")
+
+            # 3. Hot Lamp overhead
+            lx, ly = LAMP
+            pygame.draw.line(surf, (60, 60, 64), (lx, CEIL - 40), (lx, ly - 40), 3)
+            aapoly(surf, [(lx - 22, ly - 42), (lx + 22, ly - 42), (lx + 46, ly - 8), (lx - 46, ly - 8)], (60, 64, 74))
+            pulse = 0.9 + 0.1 * math.sin(now * 3)
+            for r, a in ((190, 18), (120, 30), (70, 60)):
+                aacircle(surf, (lx, ly), r * pulse, (255, 230, 150, a))
+            aacircle(surf, (lx, ly), 24, (255, 246, 205))
+
+            # 4. Sugar Goal on the right
+            gx, gy = SUGAR_GOAL
+            pygame.draw.rect(surf, (180, 190, 205), (gx - 28, FLOOR - 6, 56, 8), border_radius=3)
+            sparkle = 0.8 + 0.2 * math.sin(now * 6)
+            pygame.draw.circle(surf, (255, 245, 220), (int(gx), int(gy)), 14)
+            pygame.draw.circle(surf, (255, 255, 255), (int(gx), int(gy)), int(10 * sparkle))
+            self._text(surf, "★ SUGAR GOAL ★", (int(gx), FLOOR + 10), (255, 220, 100), self.f_small, "midtop")
 
     def _draw_arena_front(self, surf, now: float) -> None:
         if ARENAS[self.arena_i] != "pool":
@@ -4824,6 +4947,8 @@ class Game:
         self._draw_pain(surf)
         self._draw_reward(surf)
         self._draw_memory(surf)
+        if ARENAS[self.arena_i] == "escaperoom":
+            self._draw_escaperoom_hud(surf, now)
         if getattr(fly, "inebriation", 0.0) > 0.02:
             ix, iy, iw, ih = 10, 452, 236, 40
             if iy + ih < FLOOR:
@@ -4834,6 +4959,36 @@ class Game:
                 st_str = "wobbly" if pct < 35 else "stumbling" if pct < 70 else "inebriated"
                 self._text(surf, f"ALCOHOL {pct}% ({st_str})", (ix + 10, iy + 4), (255, 140, 190), self.f_small)
                 self._text(surf, "[GAME RULE: motor degradation]", (ix + 10, iy + 20), (215, 160, 180), self.f_small)
+
+    def _draw_escaperoom_hud(self, surf, now: float) -> None:
+        cw, ch = 380, 84
+        cx, cy = PLAY_W // 2 - cw // 2, 70
+        card = pygame.Surface((cw, ch), pygame.SRCALPHA)
+        pygame.draw.rect(card, (14, 18, 26, 220), card.get_rect(), border_radius=10)
+        border_col = (255, 214, 95) if self.escaperoom_completed else (86, 180, 240)
+        pygame.draw.rect(card, border_col, card.get_rect(), 2, border_radius=10)
+        surf.blit(card, (cx, cy))
+
+        elapsed = (self.escaperoom_finish_t if self.escaperoom_completed else now) - self.escaperoom_start_t
+        elapsed = max(0.0, elapsed)
+
+        status_txt = "★ GOAL REACHED! ★" if self.escaperoom_completed else "ESCAPE ROOM: SPEEDRUN"
+        col = (255, 220, 100) if self.escaperoom_completed else (120, 210, 255)
+        self._text(surf, status_txt, (cx + 14, cy + 8), col, self.f_small)
+
+        timer_txt = f"{elapsed:.2f}s"
+        self._text(surf, timer_txt, (cx + 14, cy + 24), INK, self.f_head)
+
+        from kickthefly.lab.challenges import load_scores
+        best = load_scores().get("escaperoom_speedrun")
+        best_txt = f"BEST: {best:.2f}s" if best is not None else "BEST: --"
+        self._text(surf, f"SEED: {self.escaperoom_seed}   {best_txt}", (cx + cw - 14, cy + 10), LABEL, self.f_small, "topright")
+
+        if self.escaperoom_completed and self.escaperoom_code:
+            self._text(surf, f"CODE: {self.escaperoom_code}", (cx + 14, cy + 58), (200, 245, 180), self.f_small)
+            self._text(surf, "(R to run again)", (cx + cw - 14, cy + 58), LABEL, self.f_small, "topright")
+        else:
+            self._text(surf, "Navigate fan wind, flypaper & heat to reach sugar! (R: reset)", (cx + 14, cy + 58), LABEL, self.f_small)
 
     def _draw_reward(self, surf) -> None:
         x, y, w, h = 10, 308, 236, 64
@@ -5140,6 +5295,8 @@ class Game:
             self.arena_i = (self.arena_i + 1) % len(ARENAS)
             for slot in self.flies:
                 slot.fly.stuck.clear()
+            if ARENAS[self.arena_i] == "escaperoom":
+                self.reset_escaperoom(now=now)
             self.note(f"ARENA    {ARENAS[self.arena_i]}")
         elif action == "spawn":
             self.spawn_fly()
@@ -5151,6 +5308,8 @@ class Game:
             self.save_gif()
         elif action == "reset":
             self.new_fly()
+            if ARENAS[self.arena_i] == "escaperoom":
+                self.reset_escaperoom(now=now)
         elif action == "big_view":
             self.big_view = not self.big_view
         elif action == "autopilot":

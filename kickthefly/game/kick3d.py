@@ -98,7 +98,7 @@ HELP3D = (
     ("O", "brain surgery"),
     ("T", "training: teach it to fear or like a smell (saved)"),
     ("X", "1v1 duel: the fly gets a blaster and can kill you"),
-    ("E", "arena: room, fan, flypaper, pool, lamp"),
+    ("E", "arena: room, fan, flypaper, pool, lamp, escaperoom"),
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
     ("F12 / G", "save a screenshot / a GIF of the last 6 s"),
@@ -330,7 +330,7 @@ class Fly3D:
         for i, at in self.stuck.items():
             self.p[i] = at
             self.prev[i] = at
-        if self.arena == "flypaper" and self.grabbed is None:
+        if self.arena in ("flypaper", "escaperoom") and self.grabbed is None:
             x0, x1, z0, z1 = PAPER3
             for i in range(N_P):
                 if i not in self.stuck and x0 < self.p[i, 0] < x1 and z0 < self.p[i, 2] < z1 and self.p[i, 1] <= RAD3[i] + 1.5 * S:
@@ -1187,7 +1187,7 @@ class Game3D(k2.Game):
     def _environment_one(self, slot: "k2.FlySlot", arena: str, now: float) -> None:
         fly, br = slot.fly, slot.brain
         fly.arena, fly.wind = arena, np.zeros(3)
-        if arena != "flypaper":
+        if arena not in ("flypaper", "escaperoom"):
             fly.stuck.clear()
         if arena == "fan":
             gust = 0.75 + 0.25 * math.sin(now * 1.3) + 0.15 * math.sin(now * 4.1)
@@ -1240,6 +1240,65 @@ class Game3D(k2.Game):
                         fly.impulse(i, away * 1.5 * S)
             if now < fly.escape_until and np.linalg.norm(fly.fly_target - LAMP3) > 0.8:
                 fly.fly_target = LAMP3 + np.array([random.uniform(-0.6, 0.6), -random.uniform(0.3, 0.8), random.uniform(-0.6, 0.6)])
+        elif arena == "escaperoom":
+            # 1. Fan wind from left
+            gust = 0.75 + 0.25 * math.sin(now * 1.3) + 0.15 * math.sin(now * 4.1)
+            dx = fly.p[THX, 0] - FAN3[0]
+            lateral = math.exp(-((fly.p[THX, 2] - FAN3[2]) ** 2) / (2 * 1.9 ** 2))
+            w = 0.55 * gust * float(np.clip(1.15 - dx / 7.0, 0.25, 1.0)) * lateral
+            fly.wind = np.array([w * S, 0, 0])
+            if not fly.dead and self.frame % 3 == 0:
+                br.poke("wind", None, min(1.0, w * 1.4))
+            if random.random() < 0.8:
+                self.parts.append(dict(p=np.array([FAN3[0] + 0.5, random.uniform(0.4, 1.6), FAN3[2] + random.uniform(-1.2, 1.2)]),
+                                       v=np.array([random.uniform(0.09, 0.15), 0, 0]), t=now, life=1.0, kind="streak", size=0.025))
+
+            # 2. Flypaper in middle
+            if fly.stuck:
+                kicking = now < fly.flail_until
+                for i in list(fly.stuck):
+                    pull = fly.grabbed is not None and np.linalg.norm(self._hold_point() - fly.stuck[i]) > 0.55
+                    if random.random() < 0.0012 + (0.012 if kicking else 0) + (0.06 if pull else 0):
+                        del fly.stuck[i]
+                if not fly.dead:
+                    if self.frame % 6 == 0:
+                        br.poke("legs", "L", 0.4)
+                        br.poke("legs", "R", 0.4)
+                        br.poke("body", None, 0.2)
+                    if len(fly.stuck) >= 3:
+                        self.damage(slot, 0.012, "the flypaper")
+
+            # 3. Hot Lamp overhead
+            dist = float(np.linalg.norm(fly.p[HEAD] - LAMP3))
+            if not fly.dead:
+                light = float(np.clip(1.2 - dist / 3.0, 0.15, 1.0))
+                if self.frame % 2 == 0:
+                    br.poke("light", None, light, recruit=0.25 * light)
+                if dist < 0.36:
+                    br.poke("heat", None, 0.8)
+                    self.damage(slot, 0.08, "the hot lamp")
+                    away = (fly.p[HEAD] - LAMP3) / max(dist, 1e-6)
+                    for i in (HEAD, THX, ABD):
+                        fly.impulse(i, away * 1.5 * S)
+            if now < fly.escape_until and np.linalg.norm(fly.fly_target - LAMP3) > 0.8:
+                fly.fly_target = LAMP3 + np.array([random.uniform(-0.6, 0.6), -random.uniform(0.3, 0.8), random.uniform(-0.6, 0.6)])
+
+            # 4. Sugar Goal on the right
+            sugar_pos = np.array([RX - 0.7, 0.04, 0.0])
+            d_sugar = float(np.linalg.norm(fly.p[HEAD] - sugar_pos))
+            if d_sugar < 0.4 and not fly.dead:
+                if self.frame % 3 == 0:
+                    br.poke("sweet", None, 1.0)
+                if not self.escaperoom_completed:
+                    self.escaperoom_completed = True
+                    self.escaperoom_finish_t = now
+                    run_time = round(max(0.1, now - self.escaperoom_start_t), 2)
+                    from kickthefly.game.speedrun import make_speedrun_code
+                    self.escaperoom_code = make_speedrun_code(self.escaperoom_seed, run_time)
+                    from kickthefly.lab.challenges import record_score
+                    record_score("escaperoom_speedrun", run_time, "low")
+                    self.sound.play("yum")
+                    self.note(f"ESCAPEROOM CLEAR {run_time:.2f}s ({self.escaperoom_code})")
         if arena != "pool" or not (fly.p[:, 1] < WATER3).any():
             fly.wet = max(0.0, fly.wet - 1 / 60)
 
@@ -1800,6 +1859,19 @@ class Game3D(k2.Game):
             rd.add("sphere", trs(LAMP3, None, (0.11, 0.13, 0.11)), (1.0, 0.95, 0.8), P_NONE, 3.0)
             for k in range(3):
                 rd.particle(LAMP3, 0.35 + 0.25 * k + 0.03 * math.sin(now * 3 + k), (1.0, 0.85, 0.5, 0.12), additive=True)
+        elif arena == "escaperoom":
+            self._draw_fan(rd, now)
+            x0, x1, z0, z1 = PAPER3
+            rd.add("cube", trs(((x0 + x1) / 2, 0.018, (z0 + z1) / 2), None, (x1 - x0, 0.01, z1 - z0)), (0.88, 0.72, 0.24), P_PAPER)
+            top = np.array([LAMP3[0], RY, LAMP3[2]])
+            rd.add("cylinder", segment(LAMP3 + (0, 0.2, 0), top, 0.008), (0.15, 0.15, 0.15))
+            rd.add("cylinder", trs(LAMP3 + (0, 0.02, 0), None, (0.26, 0.2, 0.26)), (0.25, 0.32, 0.28))
+            rd.add("sphere", trs(LAMP3, None, (0.11, 0.13, 0.11)), (1.0, 0.95, 0.8), P_NONE, 3.0)
+            for k in range(3):
+                rd.particle(LAMP3, 0.35 + 0.25 * k + 0.03 * math.sin(now * 3 + k), (1.0, 0.85, 0.5, 0.12), additive=True)
+            sugar_pos = np.array([RX - 0.7, 0.04, 0.0])
+            rd.add("cylinder", trs(sugar_pos, None, (0.22, 0.02, 0.22)), (0.85, 0.85, 0.9))
+            rd.add("sphere", trs(sugar_pos + (0, 0.02, 0), None, (0.16, 0.05, 0.16)), (0.95, 0.95, 0.95), P_NONE, 1.5)
         alpha = self.clock.alpha
         for slot in self.flies:
             fly = slot.fly
