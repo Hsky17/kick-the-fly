@@ -31,6 +31,9 @@ INFO = (
      "fly lengths away", "low"),
     ("sweet", "Find its sweet tooth",
      "Offer sugar at different strengths. Find the weakest sugar it still reaches for, in 8 tries.", "% sugar", "low"),
+    ("reverse_surgery", "Mystery defect (Reverse surgery)",
+     "One brain circuit is turned off! Test the fly with tools, ask for hints, and deduce what's missing.",
+     "stars", "high"),
 )
 
 
@@ -66,6 +69,8 @@ def stars(key: str, value: float) -> int:
         return 3 if value >= 9 else 2 if value >= 7 else 1 if value >= 5 else 0
     if key == "sneak":
         return 3 if value <= 1.0 else 2 if value <= 2.0 else 1 if value <= 3.5 else 0
+    if key in ("reverse_surgery", "mystery"):
+        return 3 if value >= 3 else 2 if value >= 2 else 1 if value >= 1 else 0
     return 3 if value <= 10 else 2 if value <= 25 else 1 if value <= 50 else 0
 
 
@@ -494,7 +499,278 @@ class Sweet(Challenge):
         self.draw_buttons(surf, mouse)
 
 
-CLASSES = {"tmaze": TMaze, "sneak": Sneak, "sweet": Sweet}
+# --- Reverse brain surgery (Mystery defect) ---------------------------------------------------------------------------
+class ReverseSurgery(Challenge):
+    key = "reverse_surgery"
+    overlay = False
+
+    CIRCUITS = [
+        dict(
+            id="jump",
+            play_label="Emergency visual jump",
+            target_spec="dnp01",
+            bio_name="DNp01 (Giant Fiber escape command)",
+            citation="von Reyn et al. 2014, Nat Neurosci 17:962",
+            missing_behavior="It ignores rapid looming shadows and flyswatters without jumping or dodging.",
+            hints=[
+                "Try waving the flyswatter fast toward the fly or moving quickly near it.",
+                "Normal flies dodge sudden approaching shadows; this one doesn't flinch.",
+            ],
+        ),
+        dict(
+            id="wings",
+            play_label="Wing take-off & flight",
+            target_spec="prefix:DNg02",
+            bio_name="DNg02 (Wing power & take-off command)",
+            citation="Shiu et al. 2024, Nature 634:210",
+            missing_behavior="It runs along the floor when startled, but its wings never lift it into flight.",
+            hints=[
+                "Try prodding the fly or giving it a puff of air to launch into flight.",
+                "It can scramble along the ground, but its wings never produce flight lift.",
+            ],
+        ),
+        dict(
+            id="sweet",
+            play_label="Sweet taste & sugar reach",
+            target_spec="sweet",
+            bio_name="Sweet GRNs & SEL pathway (Proboscis extension to sugar)",
+            citation="Shiu et al. 2024, Nature 634:210; Yao & Scott 2022",
+            missing_behavior="It never unrolls or extends its proboscis when touching sugar droplets.",
+            hints=[
+                "Place a drop of sugar near its feet or mouthparts.",
+                "It completely ignores sugar and won't extend its feeding tube to eat.",
+            ],
+        ),
+        dict(
+            id="fear",
+            play_label="Fear of zapped smells",
+            target_spec="type:PPL101,PPL103",
+            bio_name="PPL1 Dopaminergic neurons (Aversive shock reinforcement)",
+            citation="Claridge-Chang et al. 2009, Cell 139:405; Aso et al. 2014",
+            missing_behavior="It smells odors normally, but fails to learn which smell gave it an electric zap.",
+            hints=[
+                "Try pairing an odor scent with an electric zap in training.",
+                "It can smell odors, but never forms an aversive memory of the shock.",
+            ],
+        ),
+        dict(
+            id="steering",
+            play_label="Steering & turning",
+            target_spec="type:DNa02",
+            bio_name="DNa02 (Steering descending command neurons)",
+            citation="Shiu et al. 2024, Nature 634:210; Rayshubskiy et al. 2020",
+            missing_behavior="It struggles to coordinate left vs right steering when encountering obstacles.",
+            hints=[
+                "Nudge the fly from the side or watch how it steers around objects.",
+                "Its asymmetric steering is disabled; it struggles to turn cleanly away from obstacles.",
+            ],
+        ),
+    ]
+
+    def __init__(self, game, choice_idx: int | None = None):
+        super().__init__(game)
+        self.state = "testing"  # testing | guessing | revealed
+        self.hints_revealed = 0
+        self.guess_result: bool | None = None
+        self.guessed_id: str | None = None
+        self.silenced_rows = np.array([], dtype=int)
+        self.old_overrides: dict[int, float] = {}
+        self.panel_rect = pygame.Rect(40, 40, 460, 200)
+
+        if choice_idx is not None and 0 <= choice_idx < len(self.CIRCUITS):
+            self.circuit_idx = choice_idx
+        else:
+            seed = int(getattr(getattr(game, "brain", None), "seed", 0)) + int(getattr(getattr(game, "clock", None), "now", 0) * 1000) % 10000
+            rng = np.random.default_rng(seed)
+            self.circuit_idx = int(rng.integers(0, len(self.CIRCUITS)))
+
+        self.target_circuit = self.CIRCUITS[self.circuit_idx]
+        self._apply_silence()
+
+    def _apply_silence(self) -> None:
+        br = getattr(self.game, "brain", None)
+        if br is None:
+            return
+        from kickthefly.lab import assays
+        from kickthefly.core import simcore
+        spec = self.target_circuit["target_spec"]
+        g = assays.groups(br)
+        if spec in g:
+            rows = g[spec]
+        else:
+            try:
+                rows = simcore.rows_of(br, spec)
+            except Exception:
+                rows = np.array([], dtype=int)
+        self.silenced_rows = np.asarray(rows, dtype=int)
+        if len(self.silenced_rows) > 0:
+            self.old_overrides = {int(r): float(br.override[r]) for r in self.silenced_rows}
+            br.override[self.silenced_rows] = 0.0
+
+    def _restore_silence(self) -> None:
+        br = getattr(self.game, "brain", None)
+        if br is not None and len(self.silenced_rows) > 0:
+            for r, v in self.old_overrides.items():
+                br.override[r] = v
+            self.silenced_rows = np.array([], dtype=int)
+            self.old_overrides = {}
+
+    def end(self) -> None:
+        self._restore_silence()
+        super().end()
+
+    def request_hint(self) -> str:
+        hints = self.target_circuit["hints"]
+        if self.hints_revealed < len(hints):
+            self.hints_revealed += 1
+            return hints[self.hints_revealed - 1]
+        return hints[-1]
+
+    def make_guess(self, circuit_id: str) -> bool:
+        self.guessed_id = circuit_id
+        self.guess_result = (circuit_id == self.target_circuit["id"])
+        self.state = "revealed"
+        if self.guess_result:
+            score = max(1, 3 - self.hints_revealed)
+            record_score("reverse_surgery", score, "high")
+        return self.guess_result
+
+    def click(self, pos) -> bool:
+        for b in self.buttons:
+            if b.enabled and b.rect.collidepoint(pos):
+                self.game.sound.play("click")
+                b.action()
+                return True
+        if hasattr(self, "panel_rect") and self.panel_rect.collidepoint(pos):
+            return True
+        return False
+
+    def draw(self, surf, now, mouse) -> None:
+        from kickthefly.game.kick_the_fly import PLAY_W
+        g = self.game
+        cx = min(PLAY_W - 250, max(250, PLAY_W // 2))
+        self.buttons = []
+
+        if self.state == "testing":
+            w, h = 480, 200
+            self.panel_rect = pygame.Rect(cx - w // 2, 80, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (14, 18, 26, 235), card.get_rect(), border_radius=12)
+            pygame.draw.rect(card, (70, 90, 130), card.get_rect(), 1, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            g._text(surf, "MYSTERY DEFECT (Reverse Brain Surgery)", (self.panel_rect.x + 16, self.panel_rect.y + 12), AMBER, g.f_bold)
+            g._text(surf, "One brain circuit is turned off! Test the fly with your tools.", (self.panel_rect.x + 16, self.panel_rect.y + 38), TEXT, g.f_small)
+
+            hints = self.target_circuit["hints"]
+            if self.hints_revealed == 0:
+                hint_txt = "No hints used yet. Tap [Hint] if you need a clue."
+                col = LABEL
+            elif self.hints_revealed == 1:
+                hint_txt = f"Hint 1: {hints[0]}"
+                col = (130, 200, 255)
+            else:
+                hint_txt = f"Hint 2: {hints[1]}"
+                col = (255, 210, 120)
+            g._text(surf, hint_txt, (self.panel_rect.x + 16, self.panel_rect.y + 72), col, g.f_small)
+
+            best = load_scores().get("reverse_surgery")
+            if best is not None:
+                g._text(surf, f"Best: {best} stars", (self.panel_rect.right - 16, self.panel_rect.y + 12), LABEL, g.f_small, "topright")
+
+            can_hint = (self.hints_revealed < len(hints))
+            self.buttons.append(Button(
+                (self.panel_rect.x + 16, self.panel_rect.bottom - 52, 130, 38),
+                f"Hint ({2 - self.hints_revealed} left)",
+                self.request_hint,
+                enabled=can_hint,
+            ))
+            self.buttons.append(Button(
+                (self.panel_rect.x + 154, self.panel_rect.bottom - 52, 170, 38),
+                "Make a Guess",
+                lambda: setattr(self, "state", "guessing"),
+                style="primary",
+            ))
+            self.buttons.append(Button(
+                (self.panel_rect.right - 116, self.panel_rect.bottom - 52, 100, 38),
+                "Quit",
+                self.end,
+            ))
+
+        elif self.state == "guessing":
+            w, h = 480, 340
+            self.panel_rect = pygame.Rect(cx - w // 2, 60, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (14, 18, 26, 240), card.get_rect(), border_radius=12)
+            pygame.draw.rect(card, (80, 110, 160), card.get_rect(), 1, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            g._text(surf, "WHICH BEHAVIOR IS MISSING?", (self.panel_rect.x + 16, self.panel_rect.y + 12), INK, g.f_head)
+            g._text(surf, "Choose the circuit you believe was turned off:", (self.panel_rect.x + 16, self.panel_rect.y + 40), LABEL, g.f_small)
+
+            by = self.panel_rect.y + 68
+            for c in self.CIRCUITS:
+                cid = c["id"]
+                clabel = c["play_label"]
+                self.buttons.append(Button(
+                    (self.panel_rect.x + 20, by, self.panel_rect.w - 40, 38),
+                    clabel,
+                    lambda cid=cid: self.make_guess(cid),
+                ))
+                by += 44
+
+            self.buttons.append(Button(
+                (self.panel_rect.centerx - 60, self.panel_rect.bottom - 46, 120, 36),
+                "Cancel",
+                lambda: setattr(self, "state", "testing"),
+            ))
+
+        elif self.state == "revealed":
+            w, h = 520, 340
+            self.panel_rect = pygame.Rect(cx - w // 2, 60, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (16, 20, 30, 245), card.get_rect(), border_radius=12)
+            border_col = GOOD if self.guess_result else BAD
+            pygame.draw.rect(card, border_col, card.get_rect(), 2, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            header_text = "CORRECT DIAGNOSIS!" if self.guess_result else "NOT QUITE!"
+            g._text(surf, header_text, (self.panel_rect.x + 20, self.panel_rect.y + 14), border_col, g.f_head)
+
+            if self.guess_result:
+                score = max(1, 3 - self.hints_revealed)
+                draw_stars(surf, (self.panel_rect.right - 80, self.panel_rect.y + 26), score, 11)
+                g._text(surf, f"Diagnosed with {self.hints_revealed} hints!", (self.panel_rect.x + 20, self.panel_rect.y + 46), TEXT, g.f_small)
+            else:
+                guessed_lbl = next((c["play_label"] for c in self.CIRCUITS if c["id"] == self.guessed_id), self.guessed_id)
+                g._text(surf, f"You guessed: '{guessed_lbl}'", (self.panel_rect.x + 20, self.panel_rect.y + 46), (220, 160, 160), g.f_small)
+
+            # Circuit reveal box
+            rev_box = pygame.Rect(self.panel_rect.x + 16, self.panel_rect.y + 74, self.panel_rect.w - 32, 190)
+            pygame.draw.rect(surf, (24, 30, 44), rev_box, border_radius=8)
+            pygame.draw.rect(surf, (50, 62, 88), rev_box, 1, border_radius=8)
+
+            g._text(surf, f"Missing Behavior: {self.target_circuit['play_label']}", (rev_box.x + 12, rev_box.y + 10), AMBER, g.f_bold)
+            g._text(surf, f"Biological Circuit: {self.target_circuit['bio_name']}", (rev_box.x + 12, rev_box.y + 36), (140, 200, 255), g.f_small)
+            g._text(surf, f"What happens: {self.target_circuit['missing_behavior']}", (rev_box.x + 12, rev_box.y + 64), TEXT, g.f_small)
+            g._text(surf, f"Citation: {self.target_circuit['citation']}", (rev_box.x + 12, rev_box.y + 140), LABEL, g.f_small)
+
+            self.buttons.append(Button(
+                (self.panel_rect.x + 30, self.panel_rect.bottom - 56, 200, 42),
+                "Play Another Mystery",
+                lambda: self.game.start_challenge("reverse_surgery"),
+                style="primary",
+            ))
+            self.buttons.append(Button(
+                (self.panel_rect.right - 170, self.panel_rect.bottom - 56, 140, 42),
+                "Close",
+                self.end,
+            ))
+
+        self.draw_buttons(surf, mouse)
+
+
+CLASSES = {"tmaze": TMaze, "sneak": Sneak, "sweet": Sweet, "reverse_surgery": ReverseSurgery}
 
 
 def page_challenges(m, surf, rect, mouse) -> None:
@@ -504,21 +780,30 @@ def page_challenges(m, surf, rect, mouse) -> None:
     m.text(surf, "CHALLENGES", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
     m.text(surf, "Games built on real fly experiments. The fly's brain decides how it does.", (rect.x + 24, rect.y + 50),
            ui.LABEL, m.f_small)
+    body = pygame.Rect(rect.x + 16, rect.y + 80, rect.w - 32, rect.h - 80 - 70)
+    key = "challenges"
+    off = int(m.scroll.get(key, 0))
+    m.clip = body
+    prev = surf.get_clip()
+    surf.set_clip(body)
     scores = load_scores()
-    y = rect.y + 96
-    for key, title, desc, unit, better in INFO:
-        card = pygame.Rect(rect.x + 24, y, rect.w - 48, 150)
+    y = body.y + 4 - off
+    for c_key, title, desc, unit, better in INFO:
+        card = pygame.Rect(body.x + 8, y, body.w - 16, 150)
         pygame.draw.rect(surf, (28, 32, 42), card, border_radius=12)
         m.text(surf, title, (card.x + 20, card.y + 16), ui.INK, m.f_head)
         m.text(surf, desc, (card.x + 20, card.y + 54), ui.TEXT, m.f_text)
-        best = scores.get(key)
+        best = scores.get(c_key)
         if best is not None:
-            shown = f"{best:.0f}/10" if key == "tmaze" else f"{best:.1f} fly lengths" if key == "sneak" else f"{best:.0f}%"
+            shown = f"{best:.0f}/10" if c_key == "tmaze" else f"{best:.1f} fly lengths" if c_key == "sneak" else f"{best:.0f} stars" if c_key == "reverse_surgery" else f"{best:.0f}%"
             m.text(surf, f"Best: {shown}", (card.x + 20, card.y + 96), ui.AMBER, m.f_bold)
-            draw_stars(surf, (card.x + 250, card.y + 106), stars(key, best), 11)
+            draw_stars(surf, (card.x + 250, card.y + 106), stars(c_key, best), 11)
         else:
             m.text(surf, "Not played yet", (card.x + 20, card.y + 96), ui.LABEL, m.f_text)
-        m.button(surf, (card.right - 170, card.y + 86, 150, 46), "Start", (lambda k=key: game.start_challenge(k)),
-                 style="primary", id=("challenge", key))
+        m.button(surf, (card.right - 170, card.y + 86, 150, 46), "Start", (lambda k=c_key: game.start_challenge(k)),
+                 style="primary", id=("challenge", c_key))
         y += 166
+    m.content_h[key] = max(0, y + off - body.bottom + 8)
+    surf.set_clip(prev)
+    m.clip = None
     m.button(surf, (rect.right - 164, rect.bottom - 58, 140, 42), "Back", m.back, style="primary", id=("ch", "back"))
