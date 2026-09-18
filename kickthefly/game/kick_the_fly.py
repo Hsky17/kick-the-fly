@@ -156,6 +156,40 @@ looming transduction, so part of its speed dependence is a rule) and sugar respo
 (dose = share of sugar-pathway neurons driven). Lab mode runs them over many seeds
 with statistics and same-seed controls for surgery (labjobs.py, labstats.py).
 
+Connectome robustness and research findings (wiring.py, robustness.py, labwiring.py):
+  - Synapse threshold sweep: pruning connections with fewer than 10 synapses drops 73.6%
+    of all connections and 12,234 neurons' entire input, yet all 4 validated behaviors
+    survive.
+  - Predicted transmitter sign flips: flipping the least confident neurotransmitter
+    predictions leaves looming -> giant fiber (10.9x) and antennal -> aDN (4.8x) intact,
+    while sugar -> MN9 fails in 100% of trials (ratio drops from 2.22 to 1.06).
+  - Critical path (looming): single-group silencing reveals LC4 (-50%) and LPLC2 (-43%)
+    carry nearly all drive; silencing any other visual group has near-zero effect.
+
+Neural clamp (clamp.py, labclamp.py): records reference spike trains from a calibrated
+run and replays forced spikes into an altered connectome (lesion, threshold, sign flips)
+to isolate structural wiring changes from sensory feedback variations. Explicit notice:
+dynamic clamping overrides intrinsic membrane potential dynamics and severs closed-loop
+sensorimotor feedback loops (e.g. proprioception and visual flow).
+
+Connectome diff mode (diffmode.py, labdiff.py): runs two flies (Fly A reference vs
+Fly B perturbed) from identical initial states, seeds, and sensory inputs in lockstep.
+Visualizes activity divergence region-by-region in real-time with an autopsy-style
+diverging bar chart and a divergence timeline showing the precise moment trajectories split.
+
+Hemifield lesion (lesions.py, surgery): one-click silencing of unilateral visual pathways
+(LC10, LPLC2, LC4, LPTC, VS, HS) or an entire hemibrain. Validated consequences: failure
+to dodge looming stimuli approaching from the blind side, asymmetric steering biases, and
+broken 1v1 duel tracking when targets cross into the blind hemifield. Reported strictly
+as a connectome wiring ablation outcome, not a physical trauma model.
+
+Global inhibition block / Picrotoxin (wiring.py, robustness.py, labwiring.py):
+a 0-100% severity slider scales inhibitory synaptic weights (inhibition_scale = 1 - severity).
+Disinhibition triggers emergent, non-scripted runaway firing (>30 Hz brain-wide mean) as an
+unconstrained property of the recurrent network. Reports before/after firing rate distributions.
+Convulsion animations and severity levels are game-level rules; the runaway activity is a
+direct connectome manipulation outcome.
+
 Settings, time and saves: settings live in config.toml (config.py, menu.py). The game
 runs on a virtual clock (simclock.py): pause, 0.1-1x slow motion and single steps
 slow the room and every brain together. Save states (savestate.py) hold every
@@ -1787,6 +1821,10 @@ SURGERY = (  # label, how to find the neurons (see Game._surgery_rows)
     ("Central complex (compass, steering)", ("prefix", ("EPG", "PEN", "PEG", "PFL", "PFN", "PFG", "PFR", "ER", "FB",
                                                          "hDelta", "vDelta", "FC", "FS", "EL", "ExR"))),
     ("Optic lobes and photoreceptors", ("pop", ("optic lobe", "photoreceptors"))),
+    ("Left visual hemifield (LC10, LPLC2, LC4, LPTC)", ("hemifield_visual", "L")),
+    ("Right visual hemifield (LC10, LPLC2, LC4, LPTC)", ("hemifield_visual", "R")),
+    ("Left hemisphere (all left neurons)", ("hemisphere", "L")),
+    ("Right hemisphere (all right neurons)", ("hemisphere", "R")),
     ("Every neuron", ("all", ())),
 )
 HELP = (
@@ -2091,6 +2129,10 @@ class Game:
                 ("Parameters", "lab_params", "Model parameters and game-rule thresholds, live."),
                 ("Record and export", "lab_export", "Record spike times and firing rates live to CSV and npz, with "
                  "metadata."),
+                ("Neural clamp", "lab_clamp", "Replay exact spike trains into a modified connectome under dynamic clamping "
+                 "to isolate wiring effects from input variation."),
+                ("Connectome diff mode", "lab_diff", "Run two flies with different configurations from the same seed "
+                 "and inputs and diff regional activity live."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
 
     def start_recording(self, groups: list[tuple[str, str]], seconds: float, nwb: bool = False) -> None:
@@ -3263,7 +3305,29 @@ class Game:
             for pre in names:
                 m |= np.char.startswith(br.types, pre)
             return np.flatnonzero(m)
+        if kind == "hemifield_visual":
+            from kickthefly.lab import lesions
+            g = self.graph if self.graph is not None else getattr(self.brain, "graph", None)
+            if g is None:
+                from kickthefly.core import simcore
+                g = simcore.pack()[0]
+            return lesions.hemifield_visual_rows(g, side=names)
+        if kind == "hemisphere":
+            from kickthefly.lab import lesions
+            g = self.graph if self.graph is not None else getattr(self.brain, "graph", None)
+            if g is None:
+                from kickthefly.core import simcore
+                g = simcore.pack()[0]
+            return lesions.hemisphere_rows(g, side=names)
         return np.arange(br.n)
+
+    def silence_hemifield(self, side: str = "L", visual_only: bool = True) -> None:
+        """One-click silencing of visual hemifield or whole hemisphere."""
+        target = f"{'Left' if side.upper() == 'L' else 'Right'} {'visual hemifield' if visual_only else 'hemisphere'}"
+        for k, (label, _) in enumerate(SURGERY):
+            if label.startswith(target):
+                self._set_surgery(k, -1)
+                break
 
     def _apply_surgery(self) -> None:
         br = self.brain
@@ -3283,39 +3347,44 @@ class Game:
         self.sound.play("click")
 
     def _draw_surgery(self, surf) -> None:
-        panel = pygame.Rect(95, 36, 700, 590)
+        panel_h = min(H - 24, 690)
+        panel = pygame.Rect(75, 12, 740, panel_h)
         veil = pygame.Surface((PLAY_W, H), pygame.SRCALPHA)
         veil.fill((4, 5, 8, 170))
         surf.blit(veil, (0, 0))
         pygame.draw.rect(surf, (18, 21, 28), panel, border_radius=16)
         pygame.draw.rect(surf, BORDER, panel, 1, border_radius=16)
         x = panel.x + 24
-        self._text(surf, "BRAIN SURGERY", (x, panel.y + 16), INK, self.f_title)
-        self._text(surf, "Silence (OFF) or stimulate (ON) real neuron groups, then close with O and watch the fly and its brain.",
-                   (x + 2, panel.y + 58), LABEL, self.f_small)
-        y = panel.y + 88
+        self._text(surf, "BRAIN SURGERY", (x, panel.y + 14), INK, self.f_title)
+        self._text(surf, "Silence (OFF) or stimulate (ON) real neuron groups. Hemifield lesions test wiring outcomes, not injury.",
+                   (x + 2, panel.y + 50), LABEL, self.f_small)
+        y = panel.y + 76
         self.surgery_buttons = []
+        row_step = 26
         for k, (label, _) in enumerate(SURGERY):
             n = len(self.surgery_rows[label])
             mode = self.surgery_modes[k]
-            self._text(surf, label, (x, y), AMBER if mode else TEXT, self.f_text)
-            self._text(surf, f"{n:,}", (panel.right - 250, y + 2), LABEL, self.f_small, "topright")
+            is_hemi = "hemifield" in label.lower() or "hemisphere" in label.lower()
+            txt_col = AMBER if mode else (180, 210, 240) if is_hemi else TEXT
+            self._text(surf, label, (x, y), txt_col, self.f_small if len(label) > 34 else self.f_text)
+            self._text(surf, f"{n:,}", (panel.right - 240, y + 2), LABEL, self.f_small, "topright")
             for j, (m, text) in enumerate(((-1, "OFF"), (0, "-"), (1, "ON"))):
-                r = pygame.Rect(panel.right - 226 + j * 66, y - 1, 58, 24)
+                r = pygame.Rect(panel.right - 216 + j * 64, y - 1, 56, 22)
                 on = mode == m
                 fill = ((60, 110, 200) if m < 0 else (230, 130, 50) if m > 0 else (70, 76, 90)) if on else (30, 34, 44)
                 pygame.draw.rect(surf, fill, r, border_radius=6)
                 self._text(surf, text, r.center, INK if on else LABEL, self.f_small, "center")
                 self.surgery_buttons.append((r, k, m))
-            y += 30
+            y += row_step
         if self.type_ops:
             ops = ", ".join(f"{t} {'off' if m < 0 else 'on'}" for t, m in self.type_ops.items() if m)
-            self._text(surf, f"From the inspector: {ops}", (x, y + 4), AMBER, self.f_small)
-        clear = pygame.Rect(panel.right - 160, panel.bottom - 44, 136, 30)
+            self._text(surf, f"From the inspector: {ops}", (x, y + 2), AMBER, self.f_small)
+        clear = pygame.Rect(panel.right - 150, panel.bottom - 36, 126, 26)
         pygame.draw.rect(surf, (60, 64, 76), clear, border_radius=8)
         self._text(surf, "CLEAR ALL", clear.center, INK, self.f_bold, "center")
         self.surgery_buttons.append((clear, -1, 0))
-        self._text(surf, "OFF adds -2.4 per step (silences them). ON adds +0.48 (fires them fast).", (x, panel.bottom - 36), DIM, self.f_small)
+        self._text(surf, "OFF adds -2.4 per step (silences). ON adds +0.48. Reported as wiring outcomes, not physical trauma.",
+                   (x, panel.bottom - 30), DIM, self.f_small)
 
     # --- neuron inspector ----------------------------------------------------------------
     def _inspect_at(self, pos) -> None:

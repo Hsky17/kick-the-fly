@@ -199,6 +199,29 @@ def _inhibitory_edges(g) -> np.ndarray:
     return inhib[edge_pre()]
 
 
+def inhibition_stats(g, scale: float = 1.0) -> dict:
+    """Statistics for scaling inhibitory (GABA/glutamate) synapses."""
+    nt, conf, source = transmitters(g)
+    inhib_edges = _inhibitory_edges(g)
+    total_edges = len(synapse_counts())
+    n_inhib_edges = int(inhib_edges.sum())
+    is_inhib = np.isin(nt, INHIBITORY)
+    n_gaba = int(np.count_nonzero(nt == "gaba"))
+    n_glut = int(np.count_nonzero(nt == "glutamate"))
+    n_inhib_neurons = int(is_inhib.sum())
+    return dict(
+        scale=float(scale),
+        severity=float(np.clip(1.0 - scale, 0.0, 1.0)),
+        total_connections=total_edges,
+        inhibitory_connections=n_inhib_edges,
+        inhibitory_share=n_inhib_edges / max(1, total_edges),
+        inhibitory_neurons=n_inhib_neurons,
+        gaba_neurons=n_gaba,
+        glutamate_neurons=n_glut,
+        total_neurons=int(len(nt)),
+    )
+
+
 def modified_entries(g, w: Wiring) -> tuple[np.ndarray, np.ndarray]:
     """(entry indices this wiring changes, multiplier to apply to each). Multiplying keeps learned weights learned."""
     counts = synapse_counts()

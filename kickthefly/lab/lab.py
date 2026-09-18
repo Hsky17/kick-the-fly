@@ -217,6 +217,24 @@ ASSUMPTIONS = (
      "Asymmetries in synaptic weights or firing between left and right hemibrains reflect both biology and reconstruction noise.",
      "MaleCNS v1.0 EM tracing has variable proofreading depth, staining artifacts, and truncation near slice boundaries. L/R differences may stem from incomplete reconstruction rather than true lateralization.",
      "README.md § Connectome Data · kickthefly/lab/headless.py"),
+
+    ("Dynamic neural clamp breaks closed-loop sensorimotor feedback",
+     "DYNAMICS",
+     "Replaying recorded reference spikes forces activity on target neurons, overriding endogenous membrane state and breaking feedback loops (proprioception, visual flow, collision).",
+     "In vivo closed-loop dynamics depend on continuous sensorimotor recurrence. Dynamic clamping isolates connectome structural changes from sensory input variation, but converts an autonomous organism into a driven open-loop circuit.",
+     "kickthefly/lab/clamp.py · kickthefly/lab/labclamp.py · Lab > Neural clamp"),
+
+    ("Global inhibition block (picrotoxin) as synaptic scale",
+     "SYNAPSE",
+     "A 0-100% severity slider scales inhibitory synaptic weights (W_inh * (1 - s)). Runaway excitation (>30 Hz) is an emergent recurrent network outcome; visual convulsion twitching is a game rule.",
+     "Picrotoxin pharmacologically blocks ionotropic GABA_A (Rdl) chloride channels with non-uniform subunit affinities and dose kinetics. Receptor-dependent washes (octopamine, dopamine antagonists) and metabotropic cascades are omitted.",
+     "kickthefly/sim/wiring.py · kickthefly/lab/robustness.py · Lab > Robustness > Inhibition block"),
+
+    ("Hemifield lesion as static connectome wiring ablation",
+     "DATASET",
+     "One-click surgery silences visual pathways (LC10, LPLC2, LC4, LPTC, VS, HS) on one hemifield or an entire hemibrain, reported strictly as a wiring outcome.",
+     "Physical brain lesions in Drosophila trigger axotomy, Wallerian degeneration, glial immune responses, and homeostatic synaptic compensation. The simulation models pure static silencing of cell rows without injury pathology.",
+     "kickthefly/lab/lesions.py · kickthefly/game/kick_the_fly.py · Lab > Brain surgery"),
 )
 
 
@@ -493,9 +511,11 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_assumptions"] = page_assumptions
     menu.pages["lab_asymmetry"] = page_asymmetry
     menu.pages["lab_benchmark"] = page_benchmark
-    from kickthefly.lab import labcritical, labwiring
+    from kickthefly.lab import labclamp, labcritical, labdiff, labwiring
     menu.pages["lab_wiring"] = labwiring.page
     menu.pages["lab_critical"] = labcritical.page
+    menu.pages["lab_clamp"] = labclamp.page
+    menu.pages["lab_diff"] = labdiff.page
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 

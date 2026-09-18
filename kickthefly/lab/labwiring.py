@@ -43,7 +43,10 @@ def _st(m):
         st.flip_trials = 10
         st.flip_seeds = 10
         st.inhibition = 100
+        st.inhibition_severity = 100
         st.inhibition_before = None
+        st.inhibition_job = None
+        st.inhibition_result = None
     return st
 
 
@@ -320,4 +323,140 @@ def _export(m, res) -> None:
     robustness.save(res, folder)
     m.host.last_export = str(folder)
     m.flash(f"saved to {folder.name} in exports", ui.GOOD)
+
+
+# --- picrotoxin / global inhibition block ------------------------------------------------------------------------
+@tab("inhibition", "Inhibition block")
+def _tab_inhibition(m, surf, body, st, host) -> None:
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring as wiring_mod
+    from kickthefly.sim.wiring import Wiring
+
+    y = body.y
+    m.text(surf, "Picrotoxin / global inhibition block: scales or zeroes inhibitory synapse weights based on MaleCNS v1.0 "
+                 "neurotransmitter predictions.", (body.x + 8, y), ui.TEXT, m.f_small)
+    m.text(surf, "Whether removing inhibition produces runaway activity is an observed outcome of the recurrent "
+                 "network, not a scripted seizure.", (body.x + 8, y + 18), ui.LABEL, m.f_small)
+    m.chip(surf, (body.x + 8, y + 40), "CONNECTOME")
+    m.text(surf, "acts on real predicted-inhibitory synapses (GABA and glutamate)",
+           (body.x + 120, y + 48), ui.LABEL, m.f_small, "midleft")
+    m.chip(surf, (body.x + 540, y + 40), "RULE")
+    m.text(surf, "severity mapping and physical convulsing are game rules; receptor expression is unmodeled",
+           (body.x + 600, y + 48), ui.LABEL, m.f_small, "midleft")
+    y += 72
+    try:
+        g = simcore.pack()[0]
+        severity = getattr(st, "inhibition_severity", 100)
+        scale = max(0.0, min(1.0, 1.0 - severity / 100.0))
+        stats = wiring_mod.inhibition_stats(g, scale)
+    except Exception as e:
+        m.text(surf, f"needs a brain pack with transmitter predictions: {e}", (body.x + 8, y), ui.BAD, m.f_small)
+        return
+
+    m.text(surf, "Block severity", (body.x + 8, y + 15), ui.TEXT, m.f_text, "midleft")
+    m.slider(surf, (body.x + 160, y, 260, 30), severity, 0, 100, 5, "{:.0f}%",
+             lambda v: setattr(st, "inhibition_severity", int(v)), lambda: None, id="inhib_sev",
+             tip="0% leaves all inhibitory synapses unmodified (x1.00). 100% zeroes all predicted GABA and glutamate "
+                 "synapses (x0.00, full picrotoxin block).")
+    m.text(surf, f"Synapse weight scale: x{scale:.2f}", (body.x + 440, y + 15), ui.INK, m.f_text, "midleft")
+    y += 40
+
+    m.text(surf, f"{stats['inhibitory_connections']:,} of {stats['total_connections']:,} connections affected "
+                 f"({stats['inhibitory_share']:.1%})  ·  {stats['inhibitory_neurons']:,} presynaptic inhibitory neurons "
+                 f"({stats['gaba_neurons']:,} GABA, {stats['glutamate_neurons']:,} glutamate)",
+           (body.x + 8, y), ui.INK, m.f_text)
+    live = getattr(host, "wiring", None)
+    applied = live is not None and abs(live.inhibition_scale - scale) < 1e-4
+    if live is not None and live.inhibition_scale != 1.0:
+        m.text(surf, f"live on fly: inhibition scaled x{live.inhibition_scale:.2f}",
+               (body.x + 8, y + 20), ui.AMBER, m.f_small)
+    y += 46
+
+    m.button(surf, (body.x + 8, y, 240, 38), "Applied" if applied else "Apply to every fly",
+             lambda: host.set_wiring(Wiring(min_synapses=live.min_synapses if live else 1,
+                                            flip_rows=live.flip_rows if live else (),
+                                            inhibition_scale=scale)),
+             id="apply_inhib", style="primary", enabled=not applied and not getattr(host, "wiring_busy", ""),
+             tip="Reversibly scales all predicted inhibitory synapses on the live flies. Watch the fly convulse "
+                 "naturally as runaway excitation recruits motor circuits.")
+
+    job, res = st.inhibition_job, st.inhibition_result
+    if job is not None and not job["thread"].is_alive():
+        st.inhibition_result = res = job.get("result") or res
+        if job.get("error"):
+            m.text(surf, f"error: {job['error']}", (body.x + 270, y + 19), ui.BAD, m.f_small, "midleft")
+        st.inhibition_job = job = None
+
+    if job is not None:
+        frac = job["done"] / max(1, job["total"])
+        pygame.draw.rect(surf, (30, 36, 48), (body.x + 270, y + 13, body.w - 300, 12), border_radius=6)
+        pygame.draw.rect(surf, ui.AMBER, (body.x + 270, y + 13, max(8, int((body.w - 300) * frac)), 12),
+                         border_radius=6)
+        m.text(surf, job["label"], (body.x + 270, y + 29), ui.LABEL, m.f_small)
+    else:
+        m.button(surf, (body.x + 270, y, 300, 38), "Measure firing rate distribution",
+                 lambda: _start_inhibition(m, st, scale), id="run_inhib_dist",
+                 tip="Simulates the whole connectome before (x1.00) and after (current scale) and measures the "
+                     "firing rate distribution across all 166.7k neurons to document runaway excitation.")
+    y += 50
+    if res:
+        _draw_inhibition(m, surf, pygame.Rect(body.x + 8, y, body.w - 16, body.bottom - y), st, res)
+
+
+def _start_inhibition(m, st, scale: float) -> None:
+    import threading
+    from kickthefly.lab import robustness
+
+    job = dict(done=0, total=2, label="starting", result=None, error=None)
+
+    def work():
+        try:
+            job["label"] = "measuring before (control x1.00) …"
+            job["done"] = 1
+            res = robustness.inhibition_report(scale=scale, seeds=(1000,), steps=200)
+            job["done"] = 2
+            job["label"] = "done"
+            job["result"] = res
+        except Exception as e:
+            job["error"] = f"{type(e).__name__}: {e}"
+
+    job["thread"] = threading.Thread(target=work, name="inhibition_block", daemon=True)
+    job["thread"].start()
+    st.inhibition_job = job
+
+
+def _draw_inhibition(m, surf, area, st, res) -> None:
+    b, a = res["before"], res["after"]
+    m.text(surf, f"Firing Rate Distribution Report  ·  Severity: {res['severity']:.0%} (scale x{res['scale']:.2f})  ·  "
+                 f"seeds {res['seeds']}  ·  {res['seconds']:.1f}s", (area.x, area.y), ui.INK, m.f_small)
+    y = area.y + 20
+
+    m.text(surf, f"Mean rate: {b['mean']:.1f} Hz -> {a['mean']:.1f} Hz ({a['mean'] / max(b['mean'], 0.01):.1f}x)   "
+                 f"Median: {b['median']:.1f} Hz -> {a['median']:.1f} Hz   "
+                 f"95th percentile: {b['p95']:.1f} Hz -> {a['p95']:.1f} Hz   "
+                 f"Max: {b['max']:.1f} Hz -> {a['max']:.1f} Hz",
+           (area.x, y), ui.BAD if a['mean'] > b['mean'] * 2 else ui.GOOD, m.f_small)
+    y += 24
+
+    head = ["Rate bin", "Control (100% inhib)", f"Treated (x{res['scale']:.2f} inhib)", "Shift"]
+    xs = [area.x, area.x + 130, area.x + 310, area.x + 500]
+    for hx, label in zip(xs, head):
+        m.text(surf, label, (hx, y), ui.LABEL, m.f_small)
+    y += 18
+
+    for lbl, b_cnt, b_sh, a_cnt, a_sh in zip(b["bin_labels"], b["histogram"], b["bin_shares"],
+                                             a["histogram"], a["bin_shares"]):
+        m.text(surf, lbl, (xs[0], y), ui.TEXT, m.f_small)
+        m.text(surf, f"{b_cnt:,} ({b_sh:.1%})", (xs[1], y), ui.LABEL, m.f_small)
+        m.text(surf, f"{a_cnt:,} ({a_sh:.1%})", (xs[2], y), ui.INK, m.f_small)
+        diff = a_sh - b_sh
+        col = ui.BAD if (diff > 0 and (">" in lbl or "40" in lbl or "20" in lbl)) else ui.GOOD if diff < 0 else ui.TEXT
+        m.text(surf, f"{diff:+.1%}", (xs[3], y), col, m.f_small)
+        y += 18
+
+    y += 6
+    m.text(surf, "Runaway activity is an observed emergent outcome of uninhibited recurrent excitation across 166.7k "
+                 "neurons, not a scripted seizure.", (area.x, y), ui.LABEL, m.f_small)
+    m.button(surf, (area.x, min(y + 20, area.bottom - 34), 200, 30), "Export CSV + JSON",
+             lambda: _export(m, res), id="inhib_export")
 

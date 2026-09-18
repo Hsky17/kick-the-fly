@@ -174,3 +174,54 @@ def test_wilson_interval_behaves_at_the_edges():
     assert hi == 1.0 and 0.4 < lo < 0.7
     lo, hi = _wilson(50, 100)
     assert lo < 0.5 < hi and hi - lo < 0.25
+
+
+# --- inhibition block tests --------------------------------------------------------------------------------------
+@needs_pack
+def test_inhibition_stats_and_scaling_reversibility():
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring
+    from kickthefly.sim.wiring import Wiring
+
+    g = simcore.pack()[0]
+    st = wiring.inhibition_stats(g, scale=0.5)
+    assert st["scale"] == 0.5
+    assert st["severity"] == 0.5
+    assert st["inhibitory_connections"] > 0
+    assert 0.20 < st["inhibitory_share"] < 0.50
+    assert st["inhibitory_neurons"] == st["gaba_neurons"] + st["glutamate_neurons"]
+
+    br = simcore.new_brain(seed=7, warmup=0)
+    before = br.sim.W_csr.data.copy()
+    inhib_edges = wiring._inhibitory_edges(g)
+    assert np.any(inhib_edges) and np.any(~inhib_edges)
+
+    # Apply 100% block (scale 0.0)
+    info = wiring.apply(br, Wiring(inhibition_scale=0.0))
+    assert info["changed"] == int(inhib_edges.sum())
+    assert np.all(br.sim.W_csr.data[inhib_edges] == 0)
+    assert np.array_equal(br.sim.W_csr.data[~inhib_edges], before[~inhib_edges])
+
+    # Reversible
+    wiring.clear(br)
+    assert np.array_equal(br.sim.W_csr.data, before)
+
+
+@needs_pack
+def test_inhibition_block_emergent_runaway_activity(tmp_path):
+    from kickthefly.lab import robustness
+    from kickthefly.sim.wiring import Wiring
+
+    rep = robustness.inhibition_report(scale=0.0, seeds=(1000,), steps=100)
+    assert rep["kind"] == "inhibition_block"
+    assert rep["scale"] == 0.0
+    assert rep["severity"] == 1.0
+    # Emergent runaway excitation: treated mean firing rate must exceed control baseline
+    assert rep["after"]["mean"] > rep["before"]["mean"] * 2.0
+    assert rep["after"]["p95"] > rep["before"]["p95"]
+
+    # Test export
+    export_folder = tmp_path / "inhibition_export"
+    robustness.save(rep, export_folder)
+    assert (export_folder / "inhibition_block.json").exists()
+    assert (export_folder / "inhibition_block.csv").exists()

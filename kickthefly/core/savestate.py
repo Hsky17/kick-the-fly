@@ -307,7 +307,10 @@ def load_game(game, path: Path) -> dict:
     for name, v in meta.get("lab_params", {}).items():
         if name in game.lab_params:
             game.set_lab_param(name, float(v))
-    game.surgery_modes = list(meta["surgery_modes"])
+    saved_modes = list(meta.get("surgery_modes", []))
+    if len(saved_modes) < len(game.surgery_modes):
+        saved_modes = saved_modes + [0] * (len(game.surgery_modes) - len(saved_modes))
+    game.surgery_modes = saved_modes[:len(game.surgery_modes)]
     game.type_ops = dict(meta["type_ops"])
     from kickthefly.sim.wiring import Wiring                  # the connectome the save was made on (Lab)
 

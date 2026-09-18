@@ -242,6 +242,86 @@ def summary(res: dict) -> str:
     return "\n".join(lines)
 
 
+def measure_firing_distribution(wiring: Wiring | None = None, seeds=(1000,), steps: int = 200) -> dict:
+    """Measure firing rate distribution across the whole connectome under a given wiring."""
+    import numpy as np
+    from kickthefly.core import simcore
+
+    w = wiring or Wiring()
+    all_rates = []
+    for s in seeds:
+        br = simcore.new_brain(seed=s, warmup=150, wiring=w)
+        rec = simcore.step(br, steps, record=np.arange(br.n))
+        rates_hz = rec.sum(axis=0) / (steps * 0.005)
+        all_rates.append(rates_hz)
+
+    mean_rates = np.mean(all_rates, axis=0) if len(all_rates) > 1 else all_rates[0]
+    bins = [0, 2, 5, 10, 20, 40, 100]
+    hist, _ = np.histogram(mean_rates, bins=bins)
+    bin_labels = ["<2 Hz", "2-5 Hz", "5-10 Hz", "10-20 Hz", "20-40 Hz", ">40 Hz"]
+    shares = (hist / len(mean_rates)).tolist()
+
+    return dict(
+        mean=float(np.mean(mean_rates)),
+        median=float(np.median(mean_rates)),
+        p95=float(np.percentile(mean_rates, 95)),
+        max=float(np.max(mean_rates)),
+        active_share=float(np.count_nonzero(mean_rates > 0.1) / len(mean_rates)),
+        histogram=hist.tolist(),
+        bin_labels=bin_labels,
+        bin_edges=bins,
+        bin_shares=shares,
+        n_neurons=int(len(mean_rates)),
+    )
+
+
+def inhibition_report(scale: float = 0.0, seeds=(1000,), steps: int = 200) -> dict:
+    """Compare firing rate distributions before (scale=1.0) and after (scale=scale) an inhibition block."""
+    import time
+    from kickthefly.core import simcore
+    from kickthefly.sim import wiring as wiring_mod
+
+    g, _, _ = simcore.pack()
+    stats = wiring_mod.inhibition_stats(g, scale)
+    t0 = time.time()
+    dist_before = measure_firing_distribution(Wiring(inhibition_scale=1.0), seeds=seeds, steps=steps)
+    dist_after = measure_firing_distribution(Wiring(inhibition_scale=scale), seeds=seeds, steps=steps)
+
+    return dict(
+        kind="inhibition_block",
+        created=time.strftime("%Y-%m-%d %H:%M:%S"),
+        seconds=round(time.time() - t0, 1),
+        scale=float(scale),
+        severity=float(stats["severity"]),
+        stats=stats,
+        before=dist_before,
+        after=dist_after,
+        seeds=list(seeds),
+    )
+
+
+def inhibition_csv(res: dict, path: Path) -> Path:
+    import csv
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["metric", "before_100pct_inhibition", f"after_scale_{res['scale']:.2f}"])
+        w.writerow(["mean_hz", f"{res['before']['mean']:.2f}", f"{res['after']['mean']:.2f}"])
+        w.writerow(["median_hz", f"{res['before']['median']:.2f}", f"{res['after']['median']:.2f}"])
+        w.writerow(["p95_hz", f"{res['before']['p95']:.2f}", f"{res['after']['p95']:.2f}"])
+        w.writerow(["max_hz", f"{res['before']['max']:.2f}", f"{res['after']['max']:.2f}"])
+        w.writerow(["active_neurons_share", f"{res['before']['active_share']:.4f}", f"{res['after']['active_share']:.4f}"])
+        w.writerow([])
+        w.writerow(["firing_rate_bin", "before_count", "before_share", "after_count", "after_share"])
+        for lbl, bc, bs, ac, as_ in zip(res["before"]["bin_labels"],
+                                        res["before"]["histogram"], res["before"]["bin_shares"],
+                                        res["after"]["histogram"], res["after"]["bin_shares"]):
+            w.writerow([lbl, bc, f"{bs:.4f}", ac, f"{as_:.4f}"])
+    return path
+
+
 def save(res: dict, folder: Path) -> Path:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -250,4 +330,6 @@ def save(res: dict, folder: Path) -> Path:
         sweep_csv(res, folder / "threshold_sweep.csv")
     elif res["kind"] == "signflip_trials":
         flips_csv(res, folder / "signflip_trials.csv")
+    elif res["kind"] == "inhibition_block":
+        inhibition_csv(res, folder / "inhibition_block.csv")
     return folder
