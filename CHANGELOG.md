@@ -33,6 +33,9 @@
 - Lab hub scrolls; Model assumptions gains entries for weak connections, transmitter signs, outdoor transduction, the orchard, the alcohol/zapper scent overlap and the compass.
 
 ### Fixed
+- Dragging across the big brain view no longer freezes the game (the view is re-projected on the brain-view thread, not on every mouse move), and clicking a neuron no longer crashes the inspector.
+- Fullscreen scales correctly in 2D and 3D: the 3D window opens at the display's size instead of toggling after creation, F11 works in both, and the 3D HUD is never shorter than 760 units (the bottom toolbar used to be cut off at 1440p).
+- The laser works in the 3D game (beam, hit feedback, viewmodel, HUD badge), pulses finish instead of stopping when the mouse is released, and several flies no longer overwrite each other's laser state.
 - `--autopilot` and `--mirror-weights` crashed at startup (`Config` doesn't support item assignment).
 - Holding the laser near the fly crashed the 3D game (its scent group is empty).
 - A packaged build with a pack older than 2.6 crashed on startup instead of leaving regions unassigned.
