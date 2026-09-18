@@ -1,0 +1,151 @@
+"""Targeted optogenetics laser for in-world real-time stimulation and silencing.
+
+Provides real-time targeted current injection into selected cell types without
+opening menus. Replaces static surgery for rapid interactive experiments.
+
+Scientific note: this models targeted cellular stimulation (+current) and
+silencing (-current) directly on connectome neuron rows. It does NOT claim
+Gal4/UAS driver specificity or named opsin kinetics (ChR2/GtACR), as expression
+data is not part of the MaleCNS v1.0 reconstruction.
+"""
+from __future__ import annotations
+
+import math
+import numpy as np
+
+# Standard current intensities matching surgery constants
+BASE_STIM_CURRENT = 0.48    # depolarizing current (stimulate)
+BASE_SILENCE_CURRENT = -2.40  # hyperpolarizing current (silence)
+
+DEFAULT_TARGETS = [
+    "LC10",     # visual target-tracking -> steering
+    "LPLC2",    # looming escape -> giant fiber
+    "LC4",      # looming escape -> giant fiber
+    "dnp01",    # giant fiber escape command neuron
+    "DNg02",    # wing-power flight command neuron
+    "MDN",      # moonwalker backward walking command neuron
+    "aDN1",     # antennal grooming command neuron
+    "MN9",      # proboscis extension motor neuron
+    "PPL1",     # punishment dopaminergic neurons
+    "PAM",      # reward dopaminergic neurons
+    "DNa02",    # descending steering neuron
+]
+
+
+class LaserState:
+    """Configuration and live state of the targeted optogenetics laser."""
+
+    def __init__(
+        self,
+        target_type: str = "dnp01",
+        mode: str = "activate",       # "activate" (+1) or "silence" (-1)
+        intensity: float = 1.0,       # multiplier 0.1 .. 3.0
+        trigger_mode: str = "hold",   # "hold" or "pulse"
+        pulse_duration: float = 0.20, # seconds
+    ):
+        self.target_type = target_type
+        self.mode = mode
+        self.intensity = float(np.clip(intensity, 0.1, 3.0))
+        self.trigger_mode = trigger_mode
+        self.pulse_duration = float(np.clip(pulse_duration, 0.05, 2.0))
+
+        # Runtime dynamic state
+        self.firing: bool = False
+        self.pulse_until: float = 0.0
+        self.hit_fly: bool = False
+        self.hit_pos: tuple[float, ...] | None = None
+        self.last_applied_rows: np.ndarray = np.array([], dtype=int)
+        self.last_applied_current: float = 0.0
+
+    def set_target(self, target: str) -> None:
+        self.target_type = str(target).strip()
+
+    def set_mode(self, mode: str) -> None:
+        if mode in ("activate", "silence"):
+            self.mode = mode
+
+    def toggle_mode(self) -> str:
+        self.mode = "silence" if self.mode == "activate" else "activate"
+        return self.mode
+
+    def set_intensity(self, val: float) -> None:
+        self.intensity = float(np.clip(val, 0.1, 3.0))
+
+    def set_trigger_mode(self, mode: str) -> None:
+        if mode in ("hold", "pulse"):
+            self.trigger_mode = mode
+
+    def current_value(self) -> float:
+        base = BASE_STIM_CURRENT if self.mode == "activate" else BASE_SILENCE_CURRENT
+        return float(base * self.intensity)
+
+    def is_active(self, now: float) -> bool:
+        """Returns True if the laser is currently emitting light."""
+        if self.trigger_mode == "hold":
+            return self.firing
+        elif self.trigger_mode == "pulse":
+            return now < self.pulse_until
+        return False
+
+    def trigger_press(self, now: float) -> None:
+        self.firing = True
+        if self.trigger_mode == "pulse":
+            self.pulse_until = now + self.pulse_duration
+
+    def trigger_release(self) -> None:
+        self.firing = False
+
+    def resolve_target_rows(self, brain) -> np.ndarray:
+        """Find neuron indices in brain matching target_type."""
+        tt = self.target_type.lower()
+        if not hasattr(brain, "types"):
+            return np.array([], dtype=int)
+        types = np.char.lower(brain.types.astype(str))
+        
+        # Direct exact match or prefix
+        exact = np.flatnonzero(types == tt)
+        if len(exact):
+            return exact
+        # Substring / prefix match for groups like 'lc10', 'dnp01', 'ppl1'
+        prefix = np.flatnonzero(np.char.startswith(types, tt))
+        if len(prefix):
+            return prefix
+        contains = np.flatnonzero(np.char.find(types, tt) >= 0)
+        return contains
+
+    def apply(self, brain, now: float, is_hitting: bool) -> float:
+        """Applies laser current to target neurons if active and striking fly.
+
+        Returns the injected current per neuron (0.0 if not active/hitting).
+        """
+        active = self.is_active(now) and is_hitting
+        target_current = self.current_value() if active else 0.0
+
+        if active:
+            rows = self.resolve_target_rows(brain)
+            self.last_applied_rows = rows
+            self.last_applied_current = target_current
+            if len(rows) and hasattr(brain, "override"):
+                brain.override[rows] = target_current
+                brain.surgery = bool(np.any(brain.override))
+        else:
+            if len(self.last_applied_rows) and hasattr(brain, "override"):
+                # Clear previous laser override on these specific rows
+                brain.override[self.last_applied_rows] = 0.0
+                brain.surgery = bool(np.any(brain.override))
+                self.last_applied_rows = np.array([], dtype=int)
+                self.last_applied_current = 0.0
+
+        self.hit_fly = active
+        return target_current
+
+    def clear(self, brain) -> None:
+        """Completely clear any laser overrides on the brain."""
+        if len(self.last_applied_rows) and hasattr(brain, "override"):
+            brain.override[self.last_applied_rows] = 0.0
+            brain.surgery = bool(np.any(brain.override))
+        self.last_applied_rows = np.array([], dtype=int)
+        self.last_applied_current = 0.0
+        self.hit_fly = False
+        self.firing = False
+        self.pulse_until = 0.0

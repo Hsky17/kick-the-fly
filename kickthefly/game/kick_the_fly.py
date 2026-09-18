@@ -291,7 +291,7 @@ PAIN_LEVELS = (  # name, share of a region's neurons a light touch recruits, how
     ("normal", 0.3, 0.0), ("more", 0.6, 0.5), ("max", 1.0, 1.0),
 )
 SURGERY_CURRENT = {-1: -0.6, 0: 0.0, 1: 0.12}   # x ext_gain 4: silenced -2.4 per step (beats any touch), stimulated +0.48
-TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", "freeze", "spider", "sugar", "alcohol")
+TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", "freeze", "spider", "sugar", "alcohol", "laser")
 STIM_AMP = 0.5              # x ext_gain 4 = 2.0 per step: a driven neuron fires every refractory cycle
 HIST = 1500                  # history samples, one per 20 ms = 30 s
 CALM_STEPS = 400             # 2 s without a touch before the baseline learns again
@@ -362,6 +362,8 @@ class Brain:
             if name == "alcohol":
                 # Fermented fruit / ethanol odor activates canonical food attraction glomeruli (DM1, DM2, DP1m)
                 self.sense[("scent", name)] = orn[np.isin(glom, ["DM1", "DM2", "DP1m"])]
+            elif name == "laser":
+                self.sense[("scent", name)] = orn[:0]   # pure optical beam: carries no odor
             else:
                 self.sense[("scent", name)] = orn[np.isin(glom, order[k * 5:(k + 1) * 5])]
         self.sense[("scent", "player")] = orn[np.isin(glom, order[50:])]   # you: the last 3 glomeruli
@@ -1511,6 +1513,10 @@ def draw_icon(surf, name: str, c, col) -> None:
         aapoly(surf, [(x - 6, y + 11), (x + 6, y + 11), (x + 8, y + 3), (x + 3, y - 3), (x + 3, y - 10), (x - 3, y - 10), (x - 3, y - 3), (x - 8, y + 3)], col)
         aapoly(surf, [(x - 5, y + 10), (x + 5, y + 10), (x + 6, y + 4), (x - 6, y + 4)], (225, 80, 130))
         aacircle(surf, (x, y - 1), 2, (255, 180, 210))
+    elif name == "laser":
+        aapoly(surf, [(x - 10, y + 8), (x + 2, y - 4), (x + 6, y - 2), (x - 6, y + 10)], col)
+        aacircle(surf, (x + 4, y - 3), 3, (80, 200, 255))
+        thick_line(surf, (x + 5, y - 4), (x + 14, y - 11), 2, (100, 220, 255))
     else:
         aacircle(surf, (x - 2, y + 3), 10, col)
         thick_line(surf, (x + 5, y - 5), (x + 10, y - 11), 3, col)
@@ -1523,7 +1529,8 @@ TOOLS = (("hand", "HAND", "drag the fly and throw it"), ("flick", "FLICK", "clic
          ("torch", "TORCH", "hold: burns it, maxes out pain"), ("cleaner", "CLEANER", "hold: brake cleaner dissolves it"),
          ("zapper", "ZAP", "click: electric shock through its body"), ("freeze", "FREEZE", "hold: freezes it solid, then smash the ice"),
          ("spider", "SPIDER", "click: drop a spider that hunts it"), ("sugar", "SUGAR", "click: drop sugar to reward it"),
-         ("alcohol", "ALCOHOL", "click: drop alcohol, sweet PAM reward but escalating drunkenness"))
+         ("alcohol", "ALCOHOL", "click: drop alcohol, sweet PAM reward but escalating drunkenness"),
+         ("laser", "LASER", "targeted laser: hold/click to stimulate or silence cell types in real time"))
 assert tuple(t[0] for t in TOOLS) == TOOL_NAMES
 # Real vs rule (the on-screen tags, Settings > Brain): which reactions are triggered by the connectome sim's own neurons
 # and which by a rule the game adds. REAL means live descending-neuron firing crossed a threshold; how the body then
@@ -1565,10 +1572,10 @@ def draw_source_chip(surf, pos, source: str, font, anchor: str = "midtop", alpha
     return r
 
 
-TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0, pygame.K_MINUS)
+TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0, pygame.K_MINUS, pygame.K_EQUALS)
 TORCH_KEYS = (("head", None), ("body", None), ("legs", "L"), ("legs", "R"), ("wing", "L"), ("wing", "R"), ("heat", None))
 OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
-CURSOR_SIZE = {"flick": 12, "swatter": 38, "bomb": 16, "torch": 18, "cleaner": 22, "zapper": 16, "freeze": 22, "spider": 20}
+CURSOR_SIZE = {"flick": 12, "swatter": 38, "bomb": 16, "torch": 18, "cleaner": 22, "zapper": 16, "freeze": 22, "spider": 20, "laser": 14}
 LOOM_MIN, LOOM_FULL = 1.5, 8.0        # rad/s of angular expansion: below LOOM_MIN nothing, LOOM_MIN + LOOM_FULL = full drive
 SCENT_RANGE = 330.0                   # px: how close a tool must be for the fly to smell it
 FEAR_ACT, LIKE_ACT = 0.35, 0.35       # learned memory (memory.py) that changes behavior
@@ -1911,6 +1918,8 @@ class Game:
         self.type_ops: dict[str, int] = {}
         self.surgery_buttons: list = []
         self.inspect: dict | None = None
+        from kickthefly.lab.laser import LaserState
+        self.laser_state = LaserState()
         self.inspect_buttons: list = []
         self.big_rect = pygame.Rect(0, 0, 0, 0)
         self.frames: deque = deque(maxlen=GIF_FRAMES)
@@ -2133,6 +2142,7 @@ class Game:
                  "to isolate wiring effects from input variation."),
                 ("Connectome diff mode", "lab_diff", "Run two flies with different configurations from the same seed "
                  "and inputs and diff regional activity live."),
+                ("Optogenetics laser", "lab_laser", "Aimable in-world laser to activate or silence cell types live."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
 
     def start_recording(self, groups: list[tuple[str, str]], seconds: float, nwb: bool = False) -> None:
@@ -3910,6 +3920,12 @@ class Game:
         elif name == "alcohol" and len(self.alcohols) < 3:
             self.alcohols.append({"p": np.array(pos, float), "v": 0.0, "left": 1.0})
             self.sound.play("drop")
+        elif name == "laser":
+            if not hasattr(self, "laser_state"):
+                from kickthefly.lab.laser import LaserState
+                self.laser_state = LaserState()
+            self.laser_state.trigger_press(now)
+            self.torching = True
 
     def _spray(self, mouse, now: float, kind: str) -> None:
         """Mist toward the nearest fly, but drenches every fly it passes over. Brake cleaner soaks (dissolves; smell
@@ -4200,6 +4216,43 @@ class Game:
             if random.random() < 0.02:
                 self.popup(fly.p[HEAD] + (0, -60), random.choice(("SIZZLE!", "TSSSS!", "HOT HOT!")), (255, 150, 60))
 
+    def _laser_step(self, mouse, now: float) -> None:
+        if not hasattr(self, "laser_state"):
+            return
+        hit_any = False
+        m_pos = np.array(mouse, float)
+        for slot in self.flies:
+            fly = slot.fly
+            if fly.dead:
+                self.laser_state.apply(slot.brain, now, is_hitting=False)
+                continue
+            d = np.hypot(*(fly.p - m_pos).T) - RADIUS
+            if np.any(d < 45):
+                hit_any = True
+                cur = self.laser_state.apply(slot.brain, now, is_hitting=True)
+                if random.random() < 0.04:
+                    act_txt = "STIM" if self.laser_state.mode == "activate" else "SILENCE"
+                    self.popup(fly.p[HEAD] + (0, -40), f"LASER {act_txt} {self.laser_state.target_type}",
+                               (255, 180, 80) if self.laser_state.mode == "activate" else (80, 200, 255))
+            else:
+                self.laser_state.apply(slot.brain, now, is_hitting=False)
+        self.laser_state.hit_fly = hit_any
+
+    def _draw_laser(self, surf, now: float, mouse) -> None:
+        if not hasattr(self, "laser_state") or not self.laser_state.is_active(now):
+            return
+        ls = self.laser_state
+        emitter = (PLAY_W - 30, FLOOR + 20)
+        col = (255, 140, 50) if ls.mode == "activate" else (60, 190, 255)
+        core_col = (255, 255, 220) if ls.mode == "activate" else (220, 250, 255)
+        thick_line(surf, emitter, mouse, 5, col)
+        thick_line(surf, emitter, mouse, 2, core_col)
+        spot_r = 9 + int(3 * math.sin(now * 24))
+        aacircle(surf, mouse, spot_r, col)
+        aacircle(surf, mouse, max(2, spot_r - 4), core_col)
+        badge = f"LASER: {ls.target_type} ({'STIM' if ls.mode == 'activate' else 'SILENCE'})"
+        self._text(surf, badge, (mouse[0] + 14, mouse[1] - 16), col, self.f_small)
+
     def _swat_impact(self, pos, now: float) -> None:
         self.shake_until = now + 0.18
         self.sound.play("whack")
@@ -4290,6 +4343,8 @@ class Game:
             self._torch(mouse, now)
         if self.torching and TOOLS[self.tool][0] in ("cleaner", "freeze") and self.report is None:
             self._spray(mouse, now, TOOLS[self.tool][0])
+        if (self.torching or getattr(self, "laser_state", None) and self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser" and self.report is None:
+            self._laser_step(mouse, now)
         self._effects(now)
         for sh in self.shards:
             sh[0] += sh[2]
@@ -4591,6 +4646,8 @@ class Game:
             thick_line(arena, m - aim * 70, m - aim * 8, 16, (110, 116, 128))
             thick_line(arena, m - aim * 70, m - aim * 50, 18, (200, 60, 50))
             aacircle(arena, m, 5, (255, 250, 220))
+        if (self.torching or getattr(self, "laser_state", None) and self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser" and self.report is None and mouse[0] < PLAY_W:
+            self._draw_laser(arena, now, mouse)
         for fl in list(self.flashes):
             e = (now - fl[1]) / 0.35
             if e >= 1 or self.calm_fx:
@@ -5286,6 +5343,10 @@ class Game:
                 if not self.fly.wrapped:
                     self.fly.grabbed = None
                 self.torching = False
+                if hasattr(self, "laser_state"):
+                    self.laser_state.trigger_release()
+                    for slot in self.flies:
+                        self.laser_state.clear(slot.brain)
         return True
 
 
