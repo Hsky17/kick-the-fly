@@ -301,3 +301,82 @@ def apply_surgery(br, surgery: dict | None) -> None:
         br.set_override(rows, int(mode))
     br.surgery = bool(np.any(br.override))
     assert k.SURGERY_CURRENT
+
+
+# --- orchard feeding (the Orchard arena, headless) ----------------------------------------------------------------------
+ORCHARD_TRAVEL_S = 2.0              # time between feeds: flying to the next fruit (game rule)
+
+
+def orchard_fly(seed: int, feeds: int | None = None, regrow_s: float | None = None, cap: int | None = None,
+                duration_s: float = 120.0, surgery: dict | None = None, params: dict | None = None,
+                brain=None, wiring=None) -> dict:
+    """One fly feeding in the Orchard for `duration_s`, in lockstep, so a reward schedule is reproducible.
+
+    The orchard (trees, fruit, how many feeds each holds, regrowth, the cap) and the fly's schedule (fly to the nearest
+    ripe fruit, feed one bout, fly on) are GAME RULES, taken unchanged from kickthefly/game/outdoors.py. Feeding drives
+    the same real neurons the game does: the sugar-pathway taste neurons and the PAM reward neurons (fermented fruit a
+    little harder, as the alcohol tool does). Readouts: PAM and MN9 firing while feeding vs while travelling, and the
+    orchard's state over time. PAM being driven by feeding is itself the game rule the sugar tool uses (in this sim
+    taste alone doesn't reach PAM), so its ratio says how hard the schedule rewards, not that the fly finds fruit
+    rewarding; MN9's response to the sugar pathway is the validated part.
+    """
+    from kickthefly.game import outdoors
+
+    params = params or {}
+    feeds = int(feeds if feeds is not None else params.get("orchard.feeds", outdoors.DEFAULT_FEEDS))
+    regrow_s = float(regrow_s if regrow_s is not None else params.get("orchard.regrow_s", outdoors.DEFAULT_REGROW_S))
+    cap = int(cap if cap is not None else params.get("orchard.cap", outdoors.DEFAULT_CAP))
+    br = brain or simcore.new_brain(seed=seed, params=params, wiring=wiring)
+    apply_surgery(br, surgery)
+    rest(br, 200)
+    g = groups(br)
+    pam = br.sense[("reward", None)]
+    mn9 = g["mn9"]
+    orch = outdoors.Orchard(outdoors.scenery("orchard")["trees"], feeds=feeds, regrow_s=regrow_s, cap=cap, seed=seed)
+    pos = np.array([0.0, 1.0, 0.0])
+    t = 0.0
+    dt = 0.005
+    counts = {"feed": [0, 0, 0], "travel": [0, 0, 0]}     # PAM spikes, MN9 spikes, steps
+    n_feeds = emptied = fermented_feeds = 0
+    timeline = []
+    next_sample = 0.0
+
+    def run(steps, phase, fruit=None):
+        nonlocal t
+        for i in range(steps):
+            if fruit is not None and i % 3 == 0:
+                br.poke("taste", None, 0.5)
+                br.poke("sweet", None, 0.6 if fruit.fermented else 0.5, recruit=0.6)
+                br.poke("reward", None, 0.6 if fruit.fermented else 0.4)
+                if fruit.fermented and i % 10 == 0:
+                    br.poke("scent", "alcohol", 0.35)
+            br._step()
+            s = br.sim.spikes
+            c = counts[phase]
+            c[0] += int(np.count_nonzero(s[pam]))
+            c[1] += int(np.count_nonzero(s[mn9]))
+            c[2] += 1
+            t += dt
+
+    while t < duration_s:
+        orch.step(t)
+        if t >= next_sample:
+            timeline.append(dict(t=round(t, 2), **orch.counts()))
+            next_sample += 5.0
+        f = orch.nearest_ripe(pos)
+        run(int(ORCHARD_TRAVEL_S / dt), "travel")
+        if f is None or not f.ripe:
+            continue
+        pos = f.pos.copy()
+        run(int(outdoors.FEED_BOUT_S / dt), "feed", f)
+        n_feeds += 1
+        fermented_feeds += int(f.fermented)
+        emptied += int(orch.feed(f, t))
+    fe, tr = counts["feed"], counts["travel"]
+    pam_feed, pam_travel = hz(fe[0], len(pam), fe[2]), hz(tr[0], len(pam), tr[2])
+    mn9_feed, mn9_travel = hz(fe[1], len(mn9), fe[2]), hz(tr[1], len(mn9), tr[2])
+    return dict(seed=seed, feeds_per_fruit=feeds, regrow_s=regrow_s, cap=cap, duration_s=duration_s,
+                feeds=n_feeds, fermented_feeds=fermented_feeds, fruit_emptied=emptied,
+                pam_feed_hz=pam_feed, pam_travel_hz=pam_travel, pam_ratio=pam_feed / max(pam_travel, 0.5),
+                mn9_feed_hz=mn9_feed, mn9_travel_hz=mn9_travel, mn9_ratio=mn9_feed / max(mn9_travel, 0.5),
+                timeline=timeline)

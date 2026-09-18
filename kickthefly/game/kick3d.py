@@ -29,10 +29,11 @@ import pygame
 
 from kickthefly.core import crash
 from kickthefly.game import kick_the_fly as k2
+from kickthefly.game import outdoors
 from kickthefly.game.kick_the_fly import (ABD, FOOT, HEAD, KNEE, LINKS, MAX_HEALTH, N_P, PULL, RADIUS, REST, THRESH, THX, TOOLS,
                           TORCH_KEYS, TRIPOD, WING)
-from kickthefly.game.render3d import (P_BOOKS, P_CEIL, P_EYE, P_ICE, P_NONE, P_PAPER, P_RUG, P_STRIPES, P_WALLPAPER, P_WATER,
-                      P_WOOD, Renderer, frame_from_x, look_at, perspective, rot_x, rot_y, rot_z, segment, trs)
+from kickthefly.game.render3d import (P_BOOKS, P_CEIL, P_EYE, P_GRASS, P_ICE, P_NONE, P_PAPER, P_RUG, P_SKYDOME, P_STRIPES,
+                      P_WALLPAPER, P_WATER, P_WOOD, Renderer, frame_from_x, look_at, perspective, rot_x, rot_y, rot_z, segment, trs)
 
 S = 0.006                                   # meters per 2D pixel
 RX, RY, RZ = 4.2, 3.0, 3.6                  # room half-width, height, half-depth
@@ -88,6 +89,44 @@ COLLIDERS = [
     (np.array([RX - 0.45, 0.0, -1.9]), np.array([RX, 2.05, -0.1])),         # bookshelf
     (np.array([RX - 1.0, 0.0, RZ - 1.0]), np.array([RX - 0.2, 0.55, RZ - 0.2])),   # plant
 ]
+ROOM_COLLIDERS = tuple(COLLIDERS)
+# The fly's own bounds. Indoors they are the room's walls and ceiling; outdoors they are far beyond the ground you can
+# walk on, so a fly that flies off really leaves (see set_world and Game3D._check_lost).
+FLY_RX, FLY_RY, FLY_RZ = RX, RY, RZ
+OUTDOOR_FAR = 90.0                          # far plane outdoors, metres; the room keeps its 40
+DRAW_DIST = 38.0                            # scenery further than this from the camera isn't drawn
+TUFT_DIST = 16.0                            # grass tufts are only drawn this close (they are small and many)
+SPIDER_TOP = 3.0                            # outdoors the spider drops from a branch height, not from the sky
+
+
+def scene_setup(game) -> tuple[dict, tuple, float]:
+    """(lights, clear colour, far plane) for the arena the game is in. Outdoors the sun sits where the Lab puts it,
+    the room's ceiling light is off, and distant scenery fades into haze instead of stopping at the far plane."""
+    arena = k2.ARENAS[game.arena_i] if game is not None else "room"
+    if arena in outdoors.OUTDOOR:
+        p = game.lab_params
+        sun = outdoors.sun_direction(p.get("outdoor.sun_az", 135.0), p.get("outdoor.sun_el", 45.0))
+        up = max(0.0, float(sun[1]))
+        w = outdoors.spec(arena)
+        haze = (0.72, 0.78, 0.84)
+        lights = dict(u_sun_dir=-sun, u_sun_col=tuple(np.array((1.05, 0.98, 0.86)) * (0.25 + 0.9 * up ** 0.5)),
+                      u_sky=tuple(np.array(w.sky) * (0.45 + 0.55 * up)), u_ground=w.ground, u_lp0=(0.0, 100.0, 0.0),
+                      u_lc0=(0, 0, 0), u_lp1=(0.0, 100.0, 0.0), u_lc1=(0, 0, 0), u_fog=(*haze, DRAW_DIST * 2.0))
+        return lights, haze, OUTDOOR_FAR
+    lamp_on = arena == "lamp"
+    lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
+                  u_sky=(0.42, 0.44, 0.5), u_ground=(0.24, 0.2, 0.17), u_lp0=(0.0, RY - 0.3, 0.0), u_lc0=(2.4, 2.2, 1.9),
+                  u_lp1=tuple(LAMP3), u_lc1=(3.5, 2.8, 1.8) if lamp_on else (0, 0, 0), u_fog=(0.0, 0.0, 0.0, 0.0))
+    return lights, SKY_CLEAR, 40.0
+
+
+def set_world(arena: str, trees=()) -> None:
+    """Rebind the world's bounds and obstacles for an arena. Every function here reads them at call time."""
+    global RX, RY, RZ, FLY_RX, FLY_RY, FLY_RZ, COLLIDERS
+    w = outdoors.spec(arena)
+    RX, RY, RZ = w.rx, w.ry, w.rz
+    FLY_RX, FLY_RY, FLY_RZ = w.fly_rx, w.fly_ry, w.fly_rz
+    COLLIDERS = list(outdoors.tree_colliders(trees)) if arena in outdoors.OUTDOOR else list(ROOM_COLLIDERS)
 
 HELP3D = (
     ("WASD", "walk (Shift sprint, Ctrl crouch)"),
@@ -98,7 +137,8 @@ HELP3D = (
     ("O", "brain surgery"),
     ("T", "training: teach it to fear or like a smell (saved)"),
     ("X", "1v1 duel: the fly gets a blaster and can kill you"),
-    ("E", "arena: room, fan, flypaper, pool, lamp, escaperoom"),
+    ("E", "arena: room, fan, flypaper, pool, lamp, escape room, open field, orchard"),
+    ("J", "outdoors: call back a fly that flew out of sight"),
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
     ("F12 / G", "save a screenshot / a GIF of the last 6 s"),
@@ -153,7 +193,11 @@ def wrap(a: float) -> float:
 
 def push_out_boxes(p: np.ndarray, r) -> None:
     """Push points (n, 3) out of the furniture boxes along the shallowest axis."""
+    rmax = float(np.max(r)) if np.ndim(r) else float(r)
+    pmin, pmax = p.min(axis=0) - rmax, p.max(axis=0) + rmax
     for lo, hi in COLLIDERS:
+        if (pmax < lo).any() or (pmin > hi).any():     # nowhere near this box (outdoors: most tree trunks)
+            continue
         inside = np.all((p > lo - r[:, None]) & (p < hi + r[:, None]), axis=1) if np.ndim(r) else \
             np.all((p > lo - r) & (p < hi + r), axis=1)
         for i in np.flatnonzero(inside):
@@ -197,6 +241,7 @@ class Fly3D:
         self.wet = 0.0
         self.inebriation = 0.0
         self.stuck: dict[int, np.ndarray] = {}
+        self.perch = None                         # the orchard fruit it is sitting on, if any (game rule)
 
     @property
     def dead(self) -> bool:
@@ -232,6 +277,8 @@ class Fly3D:
         return v / n if n > 1e-6 else body_axes(self.yaw)[0]
 
     def escape(self, now: float, seconds: float = 2.4, wander: bool = False) -> None:
+        if self.arena in outdoors.OUTDOOR:              # open sky: the same escape keeps going (game rule)
+            seconds *= 2.5
         away = self.away_from(self.last_hit)
         launch = away * 4.0 * S + np.array([0, 9.0 * S, 0])
         if getattr(self, "inebriation", 0.0) > 0:
@@ -245,6 +292,13 @@ class Fly3D:
         self.escape_ready = now + seconds + 1.0 + delay
 
     def _new_target(self, away=None) -> None:
+        if self.arena in outdoors.OUTDOOR:              # open sky: escapes carry it metres away, not across a room
+            if away is None:
+                t = np.array([random.uniform(-RX + 1, RX - 1), random.uniform(1.0, 4.0), random.uniform(-RZ + 1, RZ - 1)])
+            else:
+                t = self.p[THX] + away * random.uniform(4.0, 12.0) + np.array([0, random.uniform(1.5, 5.0), 0])
+            self.fly_target = np.clip(t, (-FLY_RX + 1, 0.5, -FLY_RZ + 1), (FLY_RX - 1, FLY_RY - 1, FLY_RZ - 1))
+            return
         for _ in range(12):
             if away is None:
                 t = np.array([random.uniform(-RX + 0.8, RX - 0.8), random.uniform(0.8, 2.4), random.uniform(-RZ + 0.8, RZ - 0.8)])
@@ -342,7 +396,9 @@ class Fly3D:
         d = self.fly_target - self.hover
         dist = float(np.linalg.norm(d))
         speed = (2.5 + 2.5 * min(self.power, 2.0)) * S
-        if dist < 25 * S:
+        if getattr(self, "perch", None) is not None and dist < 25 * S:
+            self.hover += d * 0.3                       # landed on a fruit: stay on it (game rule)
+        elif dist < 25 * S:
             self._new_target()
         else:
             self.hover += d / dist * min(speed, dist)
@@ -407,9 +463,9 @@ class Fly3D:
 
     def _clamp(self) -> None:
         r = RAD3
-        np.clip(self.p[:, 0], -RX + r, RX - r, out=self.p[:, 0])
-        np.clip(self.p[:, 2], -RZ + r, RZ - r, out=self.p[:, 2])
-        np.clip(self.p[:, 1], r, RY - r, out=self.p[:, 1])
+        np.clip(self.p[:, 0], -FLY_RX + r, FLY_RX - r, out=self.p[:, 0])
+        np.clip(self.p[:, 2], -FLY_RZ + r, FLY_RZ - r, out=self.p[:, 2])
+        np.clip(self.p[:, 1], r, FLY_RY - r, out=self.p[:, 1])
         push_out_boxes(self.p, r)
 
     def _contacts(self) -> list[tuple[int, float]]:
@@ -425,11 +481,11 @@ class Fly3D:
                 self.prev[i, 1] = y + v[i, 1] * 0.35
                 self.prev[i, 0] = x - v[i, 0] * 0.75
                 self.prev[i, 2] = z - v[i, 2] * 0.75
-            elif y >= RY - r[i] - eps and v[i, 1] > 0:
+            elif y >= FLY_RY - r[i] - eps and v[i, 1] > 0:
                 if v[i, 1] > 9 * S:
                     hits.append((i, v[i, 1] / S))
                 self.prev[i, 1] = y + v[i, 1] * 0.35
-            for ax, lim in ((0, RX), (2, RZ)):
+            for ax, lim in ((0, FLY_RX), (2, FLY_RZ)):
                 c = self.p[i, ax]
                 if (c <= -lim + r[i] + eps and v[i, ax] < 0) or (c >= lim - r[i] - eps and v[i, ax] > 0):
                     if abs(v[i, ax]) > 9 * S:
@@ -573,7 +629,10 @@ class Game3D(k2.Game):
         self.throw_t = -9.0
         self.hold_dist = 1.2
         self.popups3: list = []
+        set_world("room")                              # the room's furniture is built at the room's size
         self._room = self._build_room()
+        self.world, self.scenery, self.orchard = "room", outdoors.scenery("room"), None
+        self.on_arena_changed(0.0)                     # config.toml may have chosen an outdoor arena
         self.quit_armed = False
         self.view_w, self.hud_h = k2.PLAY_W, k2.H
         self.hint_extra = "V panel   X 1v1   F11 fullscreen   H help"
@@ -592,7 +651,8 @@ class Game3D(k2.Game):
             player=dict(pos=[float(x) for x in pl.pos], yaw=pl.yaw, pitch=pl.pitch, eye_h=pl.eye_h,
                         vel=[float(x) for x in pl.vel]),
             duel=bool(self.duel), player_hp=float(self.player_hp), duel_stats=dict(self.duel_stats),
-            valence=float(self.valence))
+            valence=float(self.valence),
+            orchard=self.orchard.state(now) if getattr(self, "orchard", None) is not None else None)
 
     def load_extra(self, extra: dict, z, now: float) -> None:
         self.sugars3 = [dict(p=np.array(sg["p"]), v=np.array(sg["v"]), left=sg["left"], landed=sg["landed"])
@@ -607,6 +667,8 @@ class Game3D(k2.Game):
         self.player_hp, self.player_dead_at = float(extra.get("player_hp", PLAYER_HP)), None
         self.duel_stats = dict(extra.get("duel_stats", self.duel_stats))
         self.valence = float(extra.get("valence", 0.0))
+        if getattr(self, "orchard", None) is not None and extra.get("orchard"):
+            self.orchard.load_state(extra["orchard"], now)
 
     def apply_setting(self, key: str) -> None:
         super().apply_setting(key)
@@ -905,7 +967,8 @@ class Game3D(k2.Game):
             else:
                 pt = eye + np.array([d[0], 0, d[2]]) * 2.0
             pt = np.clip(pt, (-RX + 0.4, 0, -RZ + 0.4), (RX - 0.4, 0, RZ - 0.4))
-            self.spider3 = dict(p=np.array([pt[0], RY - 0.05, pt[2]]), state="drop", bite_at=0.0, bites=0, anchor=pt.copy())
+            self.spider3 = dict(p=np.array([pt[0], min(RY, SPIDER_TOP) - 0.05, pt[2]]), state="drop", bite_at=0.0,
+                                bites=0, anchor=pt.copy())
             self.spider = self.spider3
             self.sound.play("drop")
         elif name == "sugar" and len(self.sugars3) < 3 and now - self.throw_t > 0.3:
@@ -1178,18 +1241,221 @@ class Game3D(k2.Game):
             fly.walk_until, fly.run = now + 1.0, False
             self.note(f"APPROACH remembers sugar ({slot.like_now:.2f})")
 
+    # --- outdoor worlds: Open field and Orchard (kickthefly/game/outdoors.py) --------------------------------------------------
+    def on_arena_changed(self, now: float) -> None:
+        if getattr(self, "_room", None) is None:     # still inside __init__; runs again once the room exists
+            return
+        super().on_arena_changed(now)
+        arena = k2.ARENAS[self.arena_i]
+        was = getattr(self, "world", "room")
+        self.scenery = outdoors.scenery(arena)
+        set_world(arena, self.scenery["trees"])
+        self.world = arena
+        self.orchard = None
+        if arena == "orchard":
+            p = self.lab_params
+            self.orchard = outdoors.Orchard(self.scenery["trees"], feeds=int(p.get("orchard.feeds", outdoors.DEFAULT_FEEDS)),
+                                            regrow_s=float(p.get("orchard.regrow_s", outdoors.DEFAULT_REGROW_S)),
+                                            cap=int(p.get("orchard.cap", outdoors.DEFAULT_CAP)),
+                                            seed=int(self.cfg["brain.seed"]))
+            for f in self.orchard.fruit:             # the game clock doesn't start at 0: staggered regrowth from now
+                if f.regrow_at is not None:
+                    f.regrow_at += now
+        for slot in self.flies:
+            slot.lost, slot.fruit = False, None
+            slot.fly.perch = None
+        if (was in outdoors.OUTDOOR) != (arena in outdoors.OUTDOOR) or arena in outdoors.OUTDOOR:
+            self.player.pos = np.array([0.0, 2.6]) if arena not in outdoors.OUTDOOR else np.array([0.0, 3.0])
+            self.player.vel = np.zeros(2)
+            self.player.yaw = -math.pi / 2
+            for slot in self.flies:
+                self._move_fly(slot.fly, self._spawn_point()[0])
+            self.sugars3 = [sg for sg in self.sugars3 if abs(sg["p"][0]) < RX and abs(sg["p"][2]) < RZ]
+            self.alcohols3 = [al for al in getattr(self, "alcohols3", []) if abs(al["p"][0]) < RX and abs(al["p"][2]) < RZ]
+            self.spider3 = self.spider = None
+
+    def arena_status(self) -> list[str]:
+        arena = k2.ARENAS[self.arena_i]
+        if arena not in outdoors.OUTDOOR:
+            return []
+        p = self.lab_params
+        out = []
+        if arena == "field":
+            out.append(f"wind {p.get('field.wind_speed', 3.0):.0f} m/s from {p.get('field.wind_dir', 180.0):.0f}°")
+        if self.orchard is not None:
+            c = self.orchard.counts()
+            out.append(f"fruit {c['ripe']} ({c['fermented']} fermented)")
+        lost = sum(1 for slot in self.flies if getattr(slot, "lost", False))
+        if lost:
+            out.append(f"{lost} LOST ({self.cfg.keys.get('recall', 'j').upper()} recall)")
+        return out
+
+    def _move_fly(self, fly: "Fly3D", xz) -> None:
+        """Put a fly's whole body down at a new spot on the ground, standing, not flying. A GAME RULE move."""
+        off = np.array([xz[0] - fly.p[THX, 0], STAND3 - fly.p[THX, 1], xz[1] - fly.p[THX, 2]])
+        fly.p += off
+        fly.prev = fly.p.copy()
+        fly.anchor = np.array(xz, float)
+        fly.hover = fly.p[THX].copy()
+        fly.fly_target = fly.hover.copy()
+        fly.escape_until = 0.0
+        fly.stuck.clear()
+        fly.perch = None
+
+    def recall_flies(self, now: float) -> None:
+        """J: bring every fly that flew out of sight back in front of you. GAME RULE, like respawning the player."""
+        lost = [slot for slot in self.flies if getattr(slot, "lost", False)]
+        if not lost:
+            self.note("RECALL   no fly is lost", source="rule")
+            return
+        for slot in lost:
+            self._move_fly(slot.fly, self._spawn_point()[0])
+            slot.lost = False
+            if getattr(slot, "fruit", None) is not None:
+                self._leave_fruit(slot, now)
+        self.note(f"RECALL   {len(lost)} lost fl{'y' if len(lost) == 1 else 'ies'} called back", source="rule")
+
+    def _check_lost(self, now: float) -> None:
+        w = outdoors.spec(self.world)
+        if w.lost_radius is None:
+            return
+        me = self.player.pos
+        for slot in self.flies:
+            th = slot.fly.p[THX]
+            d = math.hypot(th[0] - me[0], th[2] - me[1])
+            far = d > w.lost_radius or th[1] > 15.0
+            if far and not getattr(slot, "lost", False):
+                slot.lost = True
+                self.note(f"LOST     flew out of sight, {d:.0f} m away ({self.cfg.keys.get('recall', 'j').upper()} "
+                          f"calls it back)")
+            elif not far and getattr(slot, "lost", False):
+                slot.lost = False
+
+    def _weather(self, slot, arena: str, now: float) -> None:
+        """Outdoor wind and sunlight onto the real wind and light neurons. The transduction is a GAME RULE."""
+        fly, br = slot.fly, slot.brain
+        p = self.lab_params
+        if arena == "field":
+            wd, ws = float(p.get("field.wind_dir", 180.0)), float(p.get("field.wind_speed", 3.0))
+            fly.wind = outdoors.wind_vector(wd, ws) * 0.0006           # how hard the air pushes the body (game rule)
+            if not fly.dead and self.frame % 3 == 0 and ws > 0:
+                left, right = outdoors.wind_drive(fly.yaw, wd, ws)
+                if left > 0.02:
+                    br.poke("wind", "L", left)
+                if right > 0.02:
+                    br.poke("wind", "R", right)
+            if random.random() < 0.25 * min(1.0, ws / 4):
+                me = self.player.eye
+                src = me + np.array([random.uniform(-6, 6), random.uniform(0.2, 2.5), random.uniform(-6, 6)])
+                self.parts.append(dict(p=src, v=outdoors.wind_vector(wd, ws) / 60, t=now, life=1.2, kind="streak",
+                                       size=0.02))
+        if not fly.dead and self.frame % 2 == 0:
+            left, right = outdoors.sun_light(fly.yaw, float(p.get("outdoor.sun_az", 135.0)),
+                                             float(p.get("outdoor.sun_el", 45.0)))
+            if left > 0.02:
+                br.poke("light", "L", left, recruit=0.25 * left)
+            if right > 0.02:
+                br.poke("light", "R", right, recruit=0.25 * right)
+
+    # the orchard: fruit, flying to it, feeding. All of it GAME RULE except the neurons feeding drives.
+    def _perch_of(self, f) -> np.ndarray:
+        return f.pos + np.array([0.0, 0.07, 0.0])
+
+    def _fly_to(self, fly: "Fly3D", now: float, target: np.ndarray, seconds: float) -> None:
+        """Take off toward a point without touching escape_ready, so the neurons can still trigger a real escape."""
+        if now >= fly.escape_until:
+            fly.hover = fly.p[THX].copy()
+            fly.prev[:] = fly.p - np.array([0, 6.0 * S, 0])
+        fly.escape_until = now + seconds
+        fly.wander = False
+        fly.fly_target = np.asarray(target, float).copy()
+
+    def _leave_fruit(self, slot, now: float) -> None:
+        f = getattr(slot, "fruit", None)
+        if f is not None and f.eater is slot:
+            f.eater = None
+        slot.fruit, slot.landed = None, False
+        slot.fly.perch = None
+        slot.fruit_ready = now + random.uniform(8.0, 16.0)
+
+    def _orchard_tick(self, now: float) -> None:
+        o = self.orchard
+        p = self.lab_params
+        o.set_params(p.get("orchard.feeds"), p.get("orchard.regrow_s"), p.get("orchard.cap"))
+        o.step(now)
+        for slot in self.flies:
+            fly, br = slot.fly, slot.brain
+            f = getattr(slot, "fruit", None)
+            busy = (fly.dead or fly.wrapped or fly.frozen_at is not None or fly.grabbed is not None
+                    or getattr(slot, "lost", False))
+            if f is not None:
+                perch = self._perch_of(f)
+                diverted = not np.allclose(fly.fly_target, perch)            # the neurons made it escape: they win
+                if busy or diverted or not f.ripe or now >= fly.escape_until \
+                        or (getattr(slot, "landed", False) and f.eater is not slot):
+                    self._leave_fruit(slot, now)
+                    continue
+                if not getattr(slot, "landed", False):
+                    if float(np.linalg.norm(fly.hover - perch)) < 0.1:        # landed
+                        if f.eater is not None:                            # another fly got there first
+                            self._leave_fruit(slot, now)
+                            continue
+                        f.eater, slot.landed, slot.feed_start = slot, True, now
+                        fly.escape_until = now + outdoors.FEED_BOUT_S + 1.0
+                        self.note("EATING   fermented fruit: sweet + PAM reward [GAME RULE: inebriation]" if f.fermented
+                                  else "EATING   fruit: taste + PAM reward", source="rule")
+                        self.popup(fly.p[HEAD] + (0, 0.3, 0), random.choice(("YUM!", "NOM NOM")), (255, 160, 190))
+                    elif now - slot.fruit_since > 14.0:
+                        self._leave_fruit(slot, now)                         # took too long: give up
+                    continue
+                # feeding: the same real neurons the sugar tool (or, fermented, the alcohol tool) drives
+                fly.eating_until = now + 0.4
+                br.poke("taste", None, 0.5)
+                br.poke("sweet", None, 0.6 if f.fermented else 0.5, recruit=0.6)
+                br.poke("reward", None, 0.6 if f.fermented else 0.4)
+                if f.fermented:
+                    fly.inebriation = min(1.0, getattr(fly, "inebriation", 0.0) + 0.008)     # GAME RULE
+                    if self.frame % 10 == 0:
+                        br.poke("scent", "alcohol", 0.35)                    # DM1/DM2/DP1m fermentation glomeruli
+                fly.health = min(MAX_HEALTH, fly.health + 0.15)
+                if now - slot.feed_start >= outdoors.FEED_BOUT_S:
+                    emptied = o.feed(f, now)
+                    if emptied:
+                        self.popup(f.pos + (0, 0.3, 0), "ALL GONE", (230, 200, 150))
+                    self._leave_fruit(slot, now)
+                    self._fly_to(fly, now, fly.p[THX] + np.array([random.uniform(-2, 2), 1.2, random.uniform(-2, 2)]), 1.5)
+                continue
+            if busy or now < getattr(slot, "fruit_ready", now + random.uniform(2.0, 6.0)) or now < fly.escape_until:
+                slot.fruit_ready = getattr(slot, "fruit_ready", now + random.uniform(2.0, 6.0))
+                continue
+            can_fly = fly.frost < 0.5 and fly.melt < 0.3 and fly.venom < 0.5 and fly.wet <= 0 and len(fly.stuck) < 2
+            target = o.nearest_ripe(fly.p[THX])
+            if not can_fly or target is None or float(np.linalg.norm(target.pos - fly.p[THX])) > 14.0:
+                slot.fruit_ready = now + 3.0
+                continue
+            slot.fruit, slot.fruit_since, slot.landed = target, now, False
+            self._fly_to(fly, now, self._perch_of(target), 16.0)
+            fly.perch = target                                               # hold there on arrival, don't wander
+            self.note("TO FRUIT flies to a fruit", source="rule")
+
     # --- arenas and ongoing effects -------------------------------------------------------------------------------------------
     def _environment(self, now: float, mouse=None) -> None:
         arena = k2.ARENAS[self.arena_i]
         for slot in self.flies:
             self._environment_one(slot, arena, now)
+        if arena in outdoors.OUTDOOR:
+            self._check_lost(now)
+            if self.orchard is not None:
+                self._orchard_tick(now)
 
     def _environment_one(self, slot: "k2.FlySlot", arena: str, now: float) -> None:
         fly, br = slot.fly, slot.brain
         fly.arena, fly.wind = arena, np.zeros(3)
         if arena not in ("flypaper", "escaperoom"):
             fly.stuck.clear()
-        if arena == "fan":
+        if arena in outdoors.OUTDOOR:
+            self._weather(slot, arena, now)
+        elif arena == "fan":
             gust = 0.75 + 0.25 * math.sin(now * 1.3) + 0.15 * math.sin(now * 4.1)
             dx = fly.p[THX, 0] - FAN3[0]
             lateral = math.exp(-((fly.p[THX, 2] - FAN3[2]) ** 2) / (2 * 1.9 ** 2))
@@ -1432,7 +1698,7 @@ class Game3D(k2.Game):
             sp["p"][1] += 2.2 * S * 2
             if sp["state"] == "carry" and wrapped is not None:
                 wrapped.fly.grabbed = THX
-            if sp["p"][1] > RY + 0.4:
+            if sp["p"][1] > min(RY, SPIDER_TOP) + 0.4:
                 self.spider3 = self.spider = None
                 if wrapped is not None and wrapped.fly.wrapped:
                     wrapped.fly.grabbed = None
@@ -1841,10 +2107,15 @@ class Game3D(k2.Game):
         return R
 
     def draw_world(self, rd: Renderer, now: float) -> None:
-        for mesh, model, color, pattern, glow in self._room:
-            rd.add(mesh, model, color, pattern, glow)
         arena = k2.ARENAS[self.arena_i]
-        if arena == "fan":
+        if arena in outdoors.OUTDOOR:
+            self._draw_outdoors(rd, now)
+        else:
+            for mesh, model, color, pattern, glow in self._room:
+                rd.add(mesh, model, color, pattern, glow)
+        if arena in outdoors.OUTDOOR:
+            pass
+        elif arena == "fan":
             self._draw_fan(rd, now)
         elif arena == "flypaper":
             x0, x1, z0, z1 = PAPER3
@@ -1884,6 +2155,91 @@ class Game3D(k2.Game):
             else:
                 self._draw_fly(rd, now, fly)
         self._draw_extras(rd, now)
+
+    def _camera(self) -> tuple[np.ndarray, np.ndarray]:
+        if getattr(self, "photo_mode", False) and getattr(self, "free_cam", None) is not None:
+            return np.asarray(self.free_cam.eye, float), np.asarray(self.free_cam.forward(), float)
+        return self.player.eye, self.player.forward()
+
+    @staticmethod
+    def _visible(pos: np.ndarray, eye: np.ndarray, fwd: np.ndarray, max_dist: float, radius: np.ndarray | float = 0.5):
+        """Which of these points to draw: within max_dist, and not well behind the camera. Keeps the outdoor worlds
+        to a few hundred instances a frame so rendering never starves the brain threads of the interpreter."""
+        v = pos - eye
+        d = np.linalg.norm(v, axis=1)
+        return (d < max_dist + radius) & ((v @ fwd) > -0.35 * d - radius)
+
+    def _draw_outdoors(self, rd: Renderer, now: float) -> None:
+        eye, fwd = self._camera()
+        w = outdoors.spec(self.world)
+        sky = w.sky
+        rd.add("sphere", trs(eye, None, (80.0, 80.0, 80.0)), sky, P_SKYDOME)
+        gx, gz = round(float(eye[0]) / 10) * 10, round(float(eye[2]) / 10) * 10   # the ground follows you in 10 m steps
+        rd.add("cube", trs((gx, -0.01, gz), None, (240.0, 0.02, 240.0)), w.ground, P_GRASS)
+        sc = self.scenery
+        if sc.get("_models") is None:                 # static scenery: build every model matrix once per arena
+            sc["_models"] = self._scenery_models(sc)
+        for kind, max_d, rad in (("rocks", DRAW_DIST, 1.0), ("tufts", TUFT_DIST, 0.3), ("trees", DRAW_DIST, 2.5)):
+            pos, rows = sc["_models"][kind]
+            if not len(pos):
+                continue
+            for i in np.flatnonzero(self._visible(pos, eye, fwd, max_d, rad)):
+                for mesh, model, col in rows[i]:
+                    rd.add(mesh, model, col)
+        if self.orchard is not None:
+            self._draw_fruit(rd, now, eye, fwd)
+
+    @staticmethod
+    def _scenery_models(sc: dict) -> dict:
+        """(positions for culling, per-object list of (mesh, model matrix, colour)) for rocks, tufts and trees."""
+        out = {}
+        rocks = [[("sphere", trs(c, rot_y(yaw), scale), (tone, tone * 0.97, tone * 0.92))]
+                 for c, scale, yaw, tone in sc["rocks"]]
+        out["rocks"] = (np.array([r[0] for r in sc["rocks"]]).reshape(-1, 3), rocks)
+        tufts = []
+        for c, h, tone in sc["tufts"]:
+            base = np.array([c[0], 0.0, c[2]])
+            col = (0.28 * tone, 0.5 * tone, 0.18 * tone)
+            tufts.append([("cylinder", segment(base, base + (0.03, h, 0.01), 0.008), col),
+                          ("cylinder", segment(base, base + (-0.02, h * 0.8, 0.03), 0.008), col)])
+        out["tufts"] = (np.array([t[0] for t in sc["tufts"]]).reshape(-1, 3), tufts)
+        trees = []
+        for t in sc["trees"]:
+            base, h, cr = t["pos"], t["height"], t["crown"]
+            top = base + (0, h - 0.35, 0)
+            trees.append([("cylinder", segment(base, base + (0, h * 0.62, 0), 0.13), (0.36, 0.25, 0.16)),
+                          ("sphere", trs(top, None, (cr, cr * 0.72, cr)), (0.2, 0.42, 0.18)),
+                          ("sphere", trs(top + (0.35, 0.25, -0.2), None, (cr * 0.7, cr * 0.55, cr * 0.7)),
+                           (0.24, 0.48, 0.2))])
+        out["trees"] = (np.array([t["pos"] for t in sc["trees"]]).reshape(-1, 3), trees)
+        return out
+
+    def _draw_fruit(self, rd: Renderer, now: float, eye, fwd) -> None:
+        """Ripe fruit shrink and brown as they are eaten down; an emptied one drops to the ground and fades."""
+        o = self.orchard
+        if getattr(o, "_pos", None) is None:
+            o._pos = np.array([f.pos for f in o.fruit])
+        near = self._visible(o._pos, eye, fwd, DRAW_DIST, 0.2)
+        for i in np.flatnonzero(near):
+            f = o.fruit[i]
+            if f.ripe:
+                key = (f.feeds_left, f.feeds_max, f.fermented)
+                cached = getattr(f, "_models", None)
+                if cached is None or cached[0] != key:        # rebuilt only when it's eaten, not every frame
+                    full = f.fullness
+                    base = np.array((0.45, 0.22, 0.4)) if f.fermented else np.array((0.9, 0.22, 0.14))
+                    col = tuple(base * (0.55 + 0.45 * full) + np.array((0.35, 0.25, 0.12)) * (1 - full))
+                    r = 0.035 + 0.045 * full ** 0.5
+                    f._models = cached = (key, [("sphere", trs(f.pos, None, (r, r * 1.05, r)), col),
+                                                ("cylinder", segment(f.pos + (0, r * 0.8, 0), f.pos + (0, r + 0.05, 0),
+                                                                     0.006), (0.3, 0.22, 0.1))])
+                for mesh, model, col in cached[1]:
+                    rd.add(mesh, model, col)
+            elif f.fell_at is not None and now - f.fell_at < 6.0:
+                t = now - f.fell_at
+                y = max(0.03, float(f.pos[1]) - 4.9 * t * t)
+                fade = float(np.clip(1.0 - (t - 3.0) / 3.0, 0.0, 1.0))
+                rd.add("sphere", trs((f.pos[0], y, f.pos[2]), None, (0.04, 0.03, 0.04)), (0.35, 0.22, 0.1, fade))
 
     def _draw_fan(self, rd: Renderer, now: float) -> None:
         base = FAN3
@@ -2044,7 +2400,7 @@ class Game3D(k2.Game):
         if self.spider3 is not None:
             sp = self.spider3
             x, y, z = sp["p"]
-            rd.add("cylinder", segment((x, y + 0.05, z), (x, RY, z), 0.002), (0.9, 0.9, 0.92, 0.7))
+            rd.add("cylinder", segment((x, y + 0.05, z), (x, min(RY, SPIDER_TOP), z), 0.002), (0.9, 0.9, 0.92, 0.7))
             body = np.array([x, y, z])
             black = (0.12, 0.11, 0.13)
             rd.add("sphere", trs(body, None, (0.075, 0.06, 0.09)), black)
@@ -2161,7 +2517,9 @@ class Game3D(k2.Game):
 
     def respawn_player(self) -> None:
         fly = self.fly.p[THX]
-        corners = [np.array([x, z]) for x in (-RX + 0.8, RX - 0.8) for z in (-RZ + 0.8, RZ - 0.8)]
+        span_x, span_z = min(RX - 0.8, 6.0), min(RZ - 0.8, 6.0)   # outdoors: close enough for it to see you
+        corners = [fly[[0, 2]] * (RX > 10) + np.array([x, z]) for x in (-span_x, span_x) for z in (-span_z, span_z)]
+        corners = [np.clip(c, (-RX + 0.8, -RZ + 0.8), (RX - 0.8, RZ - 0.8)) for c in corners]
         self.player.pos = max(corners, key=lambda c: float(np.hypot(*(c - fly[[0, 2]])))).astype(float)
         v = fly[[0, 2]] - self.player.pos
         self.player.yaw, self.player.pitch = math.atan2(v[1], v[0]), -0.25
@@ -2635,24 +2993,21 @@ class App:
         fb = self.ms or self.scene
         fb.use()
         ctx.viewport = (0, 0, vw, vh)
-        ctx.clear(*SKY_CLEAR, depth=1.0)
+        lights, clear_col, far = scene_setup(game)
+        ctx.clear(*clear_col, depth=1.0)
         cam = game.free_cam if (getattr(game, "photo_mode", False) and getattr(game, "free_cam", None) is not None) else game.player
         eye = cam.eye
         shake = np.random.uniform(-0.01, 0.01, 3) if now < game.shake_until and not game.calm_fx else 0
         f, r, u = cam.basis()
         view = look_at(eye + shake, eye + shake + f)
         cam_fov = getattr(game, "photo_fov", float(game.cfg["controls.fov"])) if getattr(game, "photo_mode", False) else float(game.cfg["controls.fov"])
-        proj = perspective(math.radians(cam_fov), vw / vh, 0.03, 40.0)
+        proj = perspective(math.radians(cam_fov), vw / vh, 0.03, far)
         # when the 3D view runs under a see-through panel, shift the lens so the crosshair and your hand stay centered
         # on the open part of the screen
         lens = np.eye(4)
         if not getattr(game, "photo_mode", False):
             lens[0, 3] = play_w / view_w - 1                  # shift in clip x by w: moves the image center left
         proj = lens @ proj
-        lamp_on = k2.ARENAS[game.arena_i] == "lamp"
-        lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
-                      u_sky=(0.42, 0.44, 0.5), u_ground=(0.24, 0.2, 0.17), u_lp0=(0.0, RY - 0.3, 0.0), u_lc0=(2.4, 2.2, 1.9),
-                      u_lp1=tuple(LAMP3), u_lc1=(3.5, 2.8, 1.8) if lamp_on else (0, 0, 0))
         rd.clear()
         game.draw_world(rd, now)
         rd.set_scene(view, proj, eye, lights, now)
@@ -2776,7 +3131,8 @@ class App:
         fb = self.ctx.framebuffer(color_attachments=[tex], depth_attachment=depth_tex)
         fb.use()
         self.ctx.viewport = (0, 0, tw, th)
-        self.ctx.clear(*SKY_CLEAR, depth=1.0)
+        lights, clear_col, far = scene_setup(game)
+        self.ctx.clear(*clear_col, depth=1.0)
         self.ctx.enable(moderngl.DEPTH_TEST)
 
         cam = (game.free_cam if (getattr(game, "photo_mode", False) and getattr(game, "free_cam", None) is not None) else game.player) if game else None
@@ -2789,12 +3145,7 @@ class App:
             eye = (0, 0, 0)
             view = np.eye(4)
             cam_fov = 70.0
-        proj = perspective(math.radians(cam_fov), tw / th, 0.03, 40.0)
-
-        lamp_on = (k2.ARENAS[game.arena_i] == "lamp") if game else False
-        lights = dict(u_sun_dir=np.array([0.3, -0.55, 0.78]) / np.linalg.norm([0.3, -0.55, 0.78]), u_sun_col=(0.95, 0.88, 0.75),
-                      u_sky=(0.42, 0.44, 0.5), u_ground=(0.24, 0.2, 0.17), u_lp0=(0.0, RY - 0.3, 0.0), u_lc0=(2.4, 2.2, 1.9),
-                      u_lp1=tuple(LAMP3), u_lc1=(3.5, 2.8, 1.8) if lamp_on else (0, 0, 0))
+        proj = perspective(math.radians(cam_fov), tw / th, 0.03, far)
         self.rd.clear()
         if game:
             game.draw_world(self.rd, now)
@@ -2826,7 +3177,8 @@ class App:
         pygame.image.save(img, str(path))
 
 
-def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None) -> int:
+def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None,
+        flies: int = 1) -> int:
     from kickthefly.core import config
     cfg = cfg if cfg is not None else config.Config(None)
     app = App(fullscreen, vsync=cfg["graphics.vsync"])
@@ -2866,6 +3218,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()
+    to_spawn = max(0, int(flies) - 1)              # --flies N: spawn the rest once the game runs (benchmarks)
+    fps_log: list[float] = []
     lay = app.layout(game)
 
     def to_logical(pos):
@@ -2886,6 +3240,9 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             game.set_look(False)
         rel = pygame.mouse.get_rel() if game.look else (0, 0)
         keys = game.held(pygame.key.get_pressed())
+        if to_spawn and not game._spawning and len(game.flies) < k2.MAX_FLIES:
+            game.spawn_fly()
+            to_spawn -= 1
         game.sync_time()
         game.update_player(dt, keys, rel)
         for tick_dt in ticks:
@@ -2904,13 +3261,19 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             app.screenshot(path, lay, game=game, now=now)
             game.saved_note(path)
         pygame.display.flip()
+        if smoke and real - t_game > smoke / 2 and not to_spawn:
+            fps_log.append(clock.get_fps())                # the second half of the run: after spawning and warm-up
         if smoke and real - t_game > smoke:
             try:
                 from PIL import Image  # noqa: F401
                 gif = "gif ok"
             except ImportError:
                 gif = "no gif"
-            status = f"smoke ok 3d: {brain.n:,} neurons, {brain.steps_per_s:.0f} steps/s, {clock.get_fps():.0f} fps, sound {game.sound.ok}, {gif}"
+            rates = [sl.brain.steps_per_s for sl in game.flies]
+            fps = float(np.mean(fps_log)) if fps_log else clock.get_fps()
+            status = (f"smoke ok 3d: {brain.n:,} neurons, {brain.steps_per_s:.0f} steps/s, {fps:.0f} fps, "
+                      f"sound {game.sound.ok}, {gif}, arena {k2.ARENAS[game.arena_i]}, {len(game.flies)} flies, "
+                      f"sim/real {min(rates) / 200:.2f}x (slowest fly) {np.mean(rates) / 200:.2f}x (mean)")
             print(status)
             if shot:
                 app.ctx.screen.use()

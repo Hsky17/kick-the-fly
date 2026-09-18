@@ -16,8 +16,9 @@ import numpy as np
 
 from kickthefly.lab import labstats
 
-ASSAYS = ("tmaze", "looming", "sugar")
-ASSAY_LABEL = {"tmaze": "T-maze conditioning", "looming": "Looming escape", "sugar": "Sugar response"}
+ASSAYS = ("tmaze", "looming", "sugar", "orchard")
+ASSAY_LABEL = {"tmaze": "T-maze conditioning", "looming": "Looming escape", "sugar": "Sugar response",
+               "orchard": "Orchard feeding"}
 
 
 def default_workers() -> int:
@@ -40,11 +41,13 @@ def assay_task(kind: str, seed: int, options: dict, surgery: dict | None, params
         return assays.looming_fly(seed, surgery=surgery, params=params, **opts)
     if kind == "sugar":
         return assays.sugar_fly(seed, surgery=surgery, params=params, **opts)
+    if kind == "orchard":
+        return assays.orchard_fly(seed, surgery=surgery, params=params, **opts)
     raise ValueError(kind)
 
 
 HEADLINE_LABEL = {"tmaze": "performance index", "looming": "escape probability (all speeds)",
-                  "sugar": "MN9 ratio (all doses)"}
+                  "sugar": "MN9 ratio (all doses)", "orchard": "MN9 ratio, feeding vs travelling"}
 
 
 def headline(kind: str, fly: dict) -> float:
@@ -55,6 +58,8 @@ def headline(kind: str, fly: dict) -> float:
         return float(np.mean([np.mean([t["escaped"] for t in tr]) for tr in fly["trials"].values()]))
     if kind == "sugar":
         return float(np.mean([np.mean([o["ratio"] for o in offs]) for offs in fly["offers"].values()]))
+    if kind == "orchard":
+        return float(fly["mn9_ratio"])
     raise ValueError(kind)
 
 
@@ -82,6 +87,16 @@ def summarize(kind: str, flies: list[dict]) -> dict:
         return dict(metric="escape probability and latency vs approach speed", rows=rows,
                     per_fly=[float(np.mean([np.mean([t["escaped"] for t in tr]) for tr in f["trials"].values()]))
                              for f in flies])
+    if kind == "orchard":
+        return dict(metric="orchard feeding: MN9 and PAM feeding vs travelling, and the orchard's depletion",
+                    mn9_ratio=labstats.mean_ci([f["mn9_ratio"] for f in flies]),
+                    pam_ratio=labstats.mean_ci([f["pam_ratio"] for f in flies]),
+                    feeds=labstats.mean_ci([f["feeds"] for f in flies]),
+                    fruit_emptied=labstats.mean_ci([f["fruit_emptied"] for f in flies]),
+                    fermented_feeds=labstats.mean_ci([f["fermented_feeds"] for f in flies]),
+                    settings=dict(feeds_per_fruit=flies[0]["feeds_per_fruit"], regrow_s=flies[0]["regrow_s"],
+                                  cap=flies[0]["cap"], duration_s=flies[0]["duration_s"]),
+                    per_fly=[f["mn9_ratio"] for f in flies])
     if kind == "sugar":
         doses = flies[0]["doses"]
         rows = []

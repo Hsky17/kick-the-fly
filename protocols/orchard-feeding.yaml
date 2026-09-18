@@ -1,0 +1,9 @@
+# Orchard feeding, headless and reproducible: one fly feeds on the Orchard's fruit for two minutes.
+# The fruit, how many feeds each holds, regrowth and the fly's fly-feed-fly schedule are game rules
+# (kickthefly/game/outdoors.py); feeding drives the real sugar-pathway taste and PAM reward neurons.
+# Readouts: MN9 and PAM firing while feeding vs travelling, feeds, fruit emptied.
+name: orchard-feeding
+assay: orchard
+seed: 4000
+flies: 4
+assay_options: {feeds: 4, regrow_s: 75, cap: 4, duration_s: 120}

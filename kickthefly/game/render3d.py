@@ -12,7 +12,8 @@ import moderngl
 import numpy as np
 
 # patterns decided in the fragment shader
-P_NONE, P_WOOD, P_WALLPAPER, P_RUG, P_STRIPES, P_EYE, P_PAPER, P_WATER, P_SKY, P_CEIL, P_ICE, P_BOOKS = range(12)
+P_NONE, P_WOOD, P_WALLPAPER, P_RUG, P_STRIPES, P_EYE, P_PAPER, P_WATER, P_SKY, P_CEIL, P_ICE, P_BOOKS, P_GRASS, \
+    P_SKYDOME = range(14)
 
 
 # --- matrices (column vectors; sent to GL column-major) -------------------------------------------------------
@@ -191,6 +192,7 @@ uniform vec3 u_lc0;
 uniform vec3 u_lp1;
 uniform vec3 u_lc1;
 uniform float u_time;
+uniform vec4 u_fog;          // rgb: horizon colour, w: distance where fog is full (0 = no fog, indoors)
 in vec3 v_world;
 in vec3 v_norm;
 in vec3 v_local;
@@ -264,6 +266,21 @@ void main() {
         base *= 0.94 + 0.06 * step(0.47, max(c.x, c.y));
     } else if (v_pattern == 10) {         // ice
         spec_k = 1.4; shin = 80.0;
+    } else if (v_pattern == 12) {         // outdoor ground: grass and soil patches
+        float big = noise(v_world.xz * 0.35);
+        float fine = noise(v_world.xz * 7.0);
+        base *= 0.78 + 0.3 * big + 0.12 * fine;
+        base = mix(base, base * vec3(1.15, 0.95, 0.7), smoothstep(0.62, 0.8, big));
+        spec_k = 0.02;
+    } else if (v_pattern == 13) {         // sky dome: unlit gradient from horizon haze to blue, with the sun's glow
+        vec3 dir = normalize(v_world - u_cam);
+        float h = clamp(dir.y, 0.0, 1.0);
+        vec3 sky = mix(u_fog.rgb, v_color.rgb, pow(h, 0.55));
+        float sun = max(dot(dir, -u_sun_dir), 0.0);
+        sky += vec3(1.0, 0.92, 0.75) * (pow(sun, 400.0) * 3.0 + pow(sun, 12.0) * 0.25);
+        if (dir.y < 0.0) sky = u_fog.rgb * 0.9;
+        f_color = vec4(pow(sky, vec3(1.0 / 1.15)), 1.0);
+        return;
     } else if (v_pattern == 11) {         // book spines
         float k = floor(v_world.x * 26.0 + v_world.z * 26.0);
         vec3 c = vec3(hash(vec2(k, 1.0)), hash(vec2(k, 2.0)), hash(vec2(k, 3.0)));
@@ -290,6 +307,10 @@ void main() {
     }
     vec3 col = base * light + spec + base * v_glow;
     if (v_pattern == 7) alpha = min(1.0, alpha + 0.35 * pow(1.0 - max(dot(n, V), 0.0), 3.0));
+    if (u_fog.w > 0.0) {                                   // outdoors: distant things fade into the horizon haze
+        float fd = length(v_world - u_cam);
+        col = mix(col, u_fog.rgb, smoothstep(u_fog.w * 0.45, u_fog.w, fd));
+    }
     col = col / (1.0 + col * 0.15);                        // gentle tone map
     f_color = vec4(pow(col, vec3(1.0 / 1.15)), alpha);
 }
@@ -447,11 +468,10 @@ class Renderer:
         n = len(rows)
         if eye is not None:                           # back to front for blending
             rows = sorted(rows, key=lambda r: -float(np.linalg.norm(r[0][:3, 3] - eye)))
-        data = np.empty((n, 22), "f4")
-        for i, (m, c, p, g) in enumerate(rows):
-            data[i, :16] = m.T.reshape(-1)
-            data[i, 16:20] = c
-            data[i, 20:22] = (p, g)
+        data = np.empty((n, 22), "f4")                  # packed in bulk: a per-row loop cost ~3 us an instance
+        data[:, :16] = np.stack([r[0] for r in rows]).transpose(0, 2, 1).reshape(n, 16)
+        data[:, 16:20] = [r[1] for r in rows]
+        data[:, 20:22] = [(r[2], r[3]) for r in rows]
         if self.inst_cap.get(key, 0) < n:
             cap = max(64, 1 << (n - 1).bit_length())
             self.inst[key] = self.ctx.buffer(reserve=cap * 22 * 4, dynamic=True)

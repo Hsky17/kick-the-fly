@@ -26,7 +26,8 @@ def results():
 
 
 @pytest.mark.parametrize("test_id", ["looming_escape", "mdn_backward", "sugar_feeding", "antenna_grooming_circuit",
-                                     "adn_grooming_motor", "mb_conditioning", "epg_compass"])
+                                     "adn_grooming_motor", "mb_conditioning", "epg_compass",
+                                     "epg_compass_wind"])
 def test_matches_expected(results, test_id):
     from kickthefly.lab import validation
     t = results[test_id]

@@ -93,12 +93,24 @@ TESTS = (
          control="", control_label="none", popup_event=None,
          note="Under raw unweighted LIF dynamics without tuned E/I balance, bump contrast and persistence fail; "
               "reported honestly as a negative validation result."),
+    dict(id="epg_compass_wind", name="E-PG compass forms a bump from steady directional wind (open field)",
+         play="",
+         claim="Wind direction is a head-direction cue: steady directional wind anchors a persistent E-PG bump "
+               "whose position follows the wind.",
+         citation="Okubo, Patella, D'Alessandro & Wilson 2020, Neuron 107:924; Seelig & Jayaraman 2015, Nature 521:186",
+         drive="", drive_label="steady wind from 8 directions through the open field's JO-C/E transduction",
+         readout="epg", readout_label="EPG (46) in 16 PB glomeruli", control="",
+         control_label="the same brain without wind; shuffled directions for tracking", popup_event=None,
+         note="A second, different test from the visual one: wind, not a visual landmark. The pass criteria are the "
+              "visual test's, fixed before the run. Direction tracking is reported (circular correlation with a "
+              "permutation null) but not needed to pass. No weights or time constants were tuned."),
 )
 BY_ID = {t["id"]: t for t in TESTS}
 # The held-out results of this release (README "Validation"). tests/test_validation.py and --strict flag any change,
 # in either direction, so a regression (or a newly reproduced behavior) never goes unnoticed.
 EXPECTED = {"looming_escape": True, "mdn_backward": False, "sugar_feeding": True, "antenna_grooming_circuit": True,
-            "adn_grooming_motor": False, "mb_conditioning": True, "epg_compass": False}
+            "adn_grooming_motor": False, "mb_conditioning": True, "epg_compass": False,
+            "epg_compass_wind": False}
 
 
 def _ratio(base: float, driven: float) -> float:
@@ -165,7 +177,7 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
     t0 = time.time()
     workers = workers or min(4, os.cpu_count() or 1)
     include = set(include or BY_ID)
-    jobs_path = [s for s in seeds] if include - {"mb_conditioning", "epg_compass"} else []
+    jobs_path = [s for s in seeds] if include - {"mb_conditioning", "epg_compass", "epg_compass_wind"} else []
     jobs_tmaze = [(s, cs, paired) for s in seeds for paired in (True, False) for cs in ("odor_a", "odor_b")] \
         if "mb_conditioning" in include else []
     total, done = len(jobs_path) + len(jobs_tmaze), 0
@@ -203,7 +215,20 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
         if t["id"] not in include:
             continue
         r = {k_: v for k_, v in t.items()}
-        if t["id"] == "epg_compass":
+        if t["id"] == "epg_compass_wind":
+            from kickthefly.lab import compass
+            w = compass.probe_epg_wind(seeds=seeds)
+            r["measured"] = dict(
+                mean_contrast=w["mean_contrast"], sd_contrast=w["sd_contrast"],
+                baseline_contrast=w["baseline_contrast"], mean_persistence_ms=w["mean_persistence_ms"],
+                direction_tracking=w["direction_tracking"], direction_tracking_p=w["direction_tracking_p"],
+                direction_tracking_null=w["direction_tracking_null"], epg_rate_baseline_hz=w["epg_rate_baseline_hz"],
+                epg_rate_wind_hz=w["epg_rate_wind_hz"], wind_speed_m_s=w["wind_speed_m_s"], n=len(seeds))
+            r["criteria"] = w["criteria"]
+            r["passed"] = w["passed"]
+            r["finding"] = w["finding"]
+            r["per_seed"] = w["per_seed"]
+        elif t["id"] == "epg_compass":
             from kickthefly.lab import compass
             res_epg = compass.probe_epg_compass(seeds=seeds)
             r["measured"] = dict(
@@ -271,6 +296,9 @@ def summary(res: dict) -> str:
                     f"x{m['control_ratio_mean']:.2f} for {t['control_label']}, p={m['p_value']:.4f}")
         elif "pi_mean" in m:
             nums = f"PI {m['pi_mean']:.2f} ± {m['pi_sd']:.2f} vs unpaired {m['control_pi_mean']:.2f}, p={m['p_value']:.4f}"
+        elif "direction_tracking" in m:
+            nums = (f"wind: contrast {m['mean_contrast']:.2f}x (no wind {m['baseline_contrast']:.2f}x), persist "
+                    f"{m['mean_persistence_ms']:.0f} ms, tracking |r| {m['direction_tracking']:.2f} (p={m['direction_tracking_p']:.2f})")
         elif "mean_contrast" in m:
             nums = f"contrast {m['mean_contrast']:.2f} ± {m.get('sd_contrast', 0):.2f}x, persist {m['mean_persistence_ms']:.0f} ms"
         else:

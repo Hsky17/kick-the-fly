@@ -73,6 +73,27 @@ can drown; flypaper glues any part that touches it, and the stuck fly's leg
 neurons fire; the lamp's light drives photoreceptors and it is drawn to it
 (phototaxis is a game rule), and the hot bulb fires heat sensors.
 
+Outdoor arenas (3D only; outdoors.py). The 2D game stays indoors and says so.
+  Open field  30 m x 30 m of ground you can walk, open sky above. Connectome: a steady
+              wind drives the real JO-C/E wind neurons of each antenna, and sunlight
+              drives the photoreceptors. Game rules: how the two antennae and eyes split
+              that drive (by heading), the wind's push on the body, the ground, rocks
+              and grass. Wind also reaches the head-touch escape DNs through JO (as in
+              the fan arena), so in wind the fly keeps flying off: that is the wiring.
+              Escapes last 2.5x longer outdoors (game rule) so a flight goes somewhere;
+              a fly more than 26 m from you or 15 m up is LOST, and J recalls it.
+  Orchard     24 fruit trees. Connectome: feeding drives the sugar-pathway taste
+              neurons and the PAM reward neurons exactly as sugar does (fermented fruit
+              exactly as alcohol does) and heals. Game rules: the trees and fruit, feeds
+              per fruit (default 4), regrowth (default 75 s, +-25%, dormant slots wait
+              for room), the per-tree cap (default 4), the fly flying to the nearest
+              ripe fruit, one fly per fruit, landing. Its own escapes override the trip.
+              Several flies only notice each other through looming and touch; nothing
+              about competing is scripted.
+  Alcohol's scent is the real fermentation glomeruli DM1/DM2/DP1m, and DM2/DP1m are
+  also two of the zapper's five scent glomeruli, so mushroom-body training on one
+  partly generalises to the other.
+
 Tracking: every neuron's spikes are counted into its group each 5 ms step. Each
 group's rate is compared with its own calm baseline, a 10 s average taken only
 while nothing has touched the fly for 2 s, so hits don't inflate "normal".
@@ -142,12 +163,14 @@ proboscis comes out (drawn by the game). Sugar-pathway neurons -> MN9 is validat
 
 Real vs rule (REACTION_SOURCE): reactions triggered by live descending-neuron firing
 are tagged REAL; ones the game decides (eating, the lamp, memory-driven avoidance,
-silk, death, duel hits) are tagged RULE. The movement itself is always game physics.
+silk, death, duel hits, flying to fruit, getting lost, recall) are tagged RULE. The movement itself is always game physics.
 
 Validation (validation.py): which published results this sim reproduces, on held-out
 seeds with pass criteria fixed beforehand. Pass: looming -> giant fiber, sugar -> MN9,
 antennal touch -> aDN, T-maze conditioning. Fail: MDN -> backward walking (MDN doesn't
-reach the leg motor neurons), aDN -> front-leg motor neurons. Real-science cards in
+reach the leg motor neurons), aDN -> front-leg motor neurons, and no E-PG
+head-direction bump forms, neither from a driven wedge nor (2.7) from the open field's
+steady wind (contrast 1.81x vs 3.0x needed, 101 ms vs 500 ms). Real-science cards in
 Play mode come only from passing tests; the BACK UP reaction (MDN) is a game rule.
 
 Assays and challenges (assays.py, challenges.py): T-maze conditioning (the choice at
@@ -448,6 +471,8 @@ class Brain:
             return
         s = float(np.clip(strength, 0, 1))
         pop = self.sense[(region, side)]
+        if not len(pop):                             # e.g. the laser's scent: it carries none
+            return
         share = self.recruit + (1 - self.recruit) * s if recruit is None else recruit
         rows = self.rng.choice(pop, size=max(1, int(len(pop) * share)), replace=False)
         steps = 8 + int(40 * s)
@@ -925,7 +950,8 @@ for wtip in WING:
     LINKS += [(THX, wtip, 0.9, False), (ABD, wtip, 0.6, True), (HEAD, wtip, 0.3, True)]
 LINK_LEN = [float(np.hypot(*(REST[a] - REST[b]))) for a, b, _, _ in LINKS]
 MAX_HEALTH = 100.0
-ARENAS = ("room", "fan", "flypaper", "pool", "lamp", "escaperoom")
+ARENAS = ("room", "fan", "flypaper", "pool", "lamp", "escaperoom", "field", "orchard")
+OUTDOOR_ARENAS = ("field", "orchard")            # 3D only: large open worlds (kickthefly/game/outdoors.py)
 WATER_Y = FLOOR - 140                 # pool surface
 PAPER_X = (230.0, 660.0)              # flypaper strip on the floor
 LAMP = (445.0, 196.0)                 # bulb center
@@ -1543,11 +1569,13 @@ REACTION_SOURCE = {
     "EATING": "rule", "TO LIGHT": "rule", "AVOID": "rule", "APPROACH": "rule", "FLEE": "rule", "WRAPPED": "rule",
     "BROKE FREE": "rule", "DIED": "rule", "HIT YOU": "rule", "YOU DIED": "rule", "AUTOPILOT": "rule",
     "PHOTO MODE": "rule", "ALCOHOL": "rule", "INEBRIATED": "rule", "STUMBLE": "rule", "SIP": "rule", "DRINKING": "rule",
+    "TO FRUIT": "rule", "LOST": "rule", "RECALL": "rule",
 }
 POPUP_SOURCE = {"DODGE!": "real", "YIKES!": "real", "NOPE!": "rule", "RUN AWAY!": "rule", "YUM!": "rule",
                 "SWEET!": "rule", "NOM NOM": "rule", "K.O.!": "rule", "BROKE FREE!": "rule", "FLY WINS!": "rule",
                 "GOTCHA!": "rule", "PEW PEW!": "rule", "TAKE THAT!": "rule", "AUTOPILOT": "rule", "SPECTATOR": "rule",
-                "PHOTO MODE": "rule", "*HIC*": "rule", "SIP...": "rule", "GLUG!": "rule", "STUMBLE!": "rule"}
+                "PHOTO MODE": "rule", "*HIC*": "rule", "SIP...": "rule", "GLUG!": "rule", "STUMBLE!": "rule",
+                "ALL GONE": "rule"}
 SOURCE_TIP = {"real": "REAL: triggered by the connectome sim's own neurons firing above a threshold.",
               "rule": "RULE: a game rule, not something the connectome sim produced."}
 
@@ -1975,6 +2003,23 @@ class Game:
             self.sound.configure(c)
             if hasattr(self, "flies") and len(self.flies) > 0:
                 self.update_stethoscope_target()
+        elif key == "brain.arena":
+            name = c[key]
+            if not self.three_d and name in OUTDOOR_ARENAS:
+                self.note(f"ARENA    {name} needs the 3D game; staying in the room")
+                if hasattr(self, "menu"):
+                    self.menu.flash("Open field and Orchard need the 3D game (OpenGL 3.3). The 2D game stays "
+                                    "indoors.", menu_ui.AMBER)
+                name = "room"
+            i = ARENAS.index(name) if name in ARENAS else 0
+            changed = i != getattr(self, "arena_i", 0)
+            self.arena_i = i
+            if hasattr(self, "flies"):
+                for slot in self.flies:
+                    slot.fly.stuck.clear()
+                self.on_arena_changed(self.clock.now)
+                if changed:
+                    self.note(f"ARENA    {ARENAS[self.arena_i]}")
         elif key == "brain.pain_level":
             self.pain_level = c[key]
             for slot in self.flies:
@@ -2367,6 +2412,19 @@ class Game:
         self.type_ops = {}
         if getattr(self, "arena_i", 0) < len(ARENAS) and ARENAS[self.arena_i] == "escaperoom":
             self.reset_escaperoom()
+
+    def arena_status(self) -> list[str]:
+        """Extra HUD notes for the arena (the 3D game adds wind, fruit and lost flies outdoors)."""
+        return []
+
+    def recall_flies(self, now: float) -> None:
+        """The 2D game has walls: no fly can get lost in it. The 3D game overrides this for its outdoor arenas."""
+        self.note("RECALL   only outdoor arenas (3D) can lose a fly", source="rule")
+
+    def on_arena_changed(self, now: float) -> None:
+        """Whatever a new arena needs set up. The 3D game overrides this to build its outdoor worlds."""
+        if ARENAS[self.arena_i] == "escaperoom":
+            self.reset_escaperoom(now=now)
 
     def reset_escaperoom(self, now: float = 0.0, seed: int | None = None) -> None:
         self.escaperoom_start_t = now
@@ -4921,11 +4979,13 @@ class Game:
         label = "DEAD" if fly.dead else f"HEALTH {fly.health:.0f}" + ("  IMMORTAL" if self.immortal else "")
         self._text(surf, label, (PLAY_W // 2, by + 9), INK, self.f_bold, "center")
         bits = [f"arena: {ARENAS[self.arena_i]} (E)"]
+        status = self.arena_status()
+        bits += status
         if self.brain.surgery:
             bits.append("SURGERY ON (O)")
         if self.sound.muted:
             bits.append("muted (M)")
-        bits.append(getattr(self, "hint_extra", "F11 fullscreen   H help"))
+        bits.append("H help" if status else getattr(self, "hint_extra", "F11 fullscreen   H help"))
         hint = self.f_small.render("   ".join(bits), True, AMBER if self.brain.surgery else TEXT)
         box = hint.get_rect(topright=(PLAY_W - 14, 44)).inflate(14, 6)
         pygame.draw.rect(surf, (10, 12, 18, 170), box, border_radius=6)
@@ -5292,14 +5352,14 @@ class Game:
         elif action == "surgery":
             self.surgery_open = not self.surgery_open
         elif action == "arena":
-            self.arena_i = (self.arena_i + 1) % len(ARENAS)
-            for slot in self.flies:
-                slot.fly.stuck.clear()
-            if ARENAS[self.arena_i] == "escaperoom":
-                self.reset_escaperoom(now=now)
-            self.note(f"ARENA    {ARENAS[self.arena_i]}")
+            i = (self.arena_i + 1) % len(ARENAS)
+            while not self.three_d and ARENAS[i] in OUTDOOR_ARENAS:     # the 2D game has no outdoor worlds
+                i = (i + 1) % len(ARENAS)
+            self.set_setting("brain.arena", ARENAS[i])
         elif action == "spawn":
             self.spawn_fly()
+        elif action == "recall":
+            self.recall_flies(now)
         elif action == "mute":
             self.set_setting("audio.mute", not self.cfg["audio.mute"])
         elif action == "screenshot":
@@ -5308,8 +5368,7 @@ class Game:
             self.save_gif()
         elif action == "reset":
             self.new_fly()
-            if ARENAS[self.arena_i] == "escaperoom":
-                self.reset_escaperoom(now=now)
+            self.on_arena_changed(now)
         elif action == "big_view":
             self.big_view = not self.big_view
         elif action == "autopilot":
@@ -5615,6 +5674,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--validate", action="store_true", help="run the validation suite (implies --headless)")
     ap.add_argument("--protocol", metavar="FILE", help="run a YAML protocol file (implies --headless)")
     ap.add_argument("--out", metavar="PATH", help="where headless results go")
+    ap.add_argument("--arena", choices=ARENAS, help="start in this arena (saved to config.toml like pressing E)")
     ap.add_argument("--nwb", action="store_true", help="also write each recording as NWB (needs pynwb)")
     ap.add_argument("--workers", type=int, help="worker processes for headless runs (default: up to 4)")
     ap.add_argument("--seeds", help="validation seeds, e.g. 1000-1009")
@@ -5667,9 +5727,11 @@ def main(argv: list[str] | None = None) -> int:
         return headless.main(args)
     cfg = config.Config.load(p.config_file)
     if args.autopilot:
-        cfg["brain.autopilot"] = True
+        cfg.set("brain.autopilot", True)
+    if getattr(args, "arena", None):
+        cfg.set("brain.arena", args.arena)
     if getattr(args, "mirror_weights", False):
-        cfg["brain.mirror_weights"] = True
+        cfg.set("brain.mirror_weights", True)
     seed = args.seed if args.seed is not None else cfg["brain.seed"]
     crash.info["seed"] = str(seed)
     smoke, shot = args.smoke_s, args.shot
@@ -5689,7 +5751,8 @@ def main(argv: list[str] | None = None) -> int:
             for attempt in range(2):
                 try:
                     crash.info["mode"] = "3d"
-                    return kick3d.run(smoke, shot, args.fullscreen or cfg["graphics.fullscreen"], seed=seed, cfg=cfg)
+                    return kick3d.run(smoke, shot, args.fullscreen or cfg["graphics.fullscreen"], seed=seed, cfg=cfg,
+                                     flies=(args.flies[0] if args.flies else 1))
                 except kick3d.GLUnavailable as e:
                     if attempt == 0 and platform_env.reset_to_x11():
                         continue

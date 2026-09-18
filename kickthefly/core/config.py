@@ -131,6 +131,12 @@ SETTINGS: tuple[Setting, ...] = (
       "Slowly orbit the brain view in spectator mode.", tag=GAME_RULE),
     S("brain.autopilot_hide_hud", "Brain", "Autopilot hide HUD", "bool", True,
       "Hide HUD in spectator mode for demo or screensaver use.", tag=GAME_RULE),
+    S("brain.arena", "Brain", "Arena", "choice", "room",
+      "Where the fly lives. Room is the default. Open field and Orchard are large outdoor 3D worlds (the 2D game "
+      "stays indoors). The sensory neurons each arena drives are real; the places themselves are game rules. "
+      "Hotkey E cycles them.",
+      options=("room", "fan", "flypaper", "pool", "lamp", "escaperoom", "field", "orchard"),
+      labels=("Room", "Fan", "Flypaper", "Pool", "Lamp", "Escape room", "Open field", "Orchard"), tag=GAME_RULE),
     S("brain.mirror_weights", "Brain", "Mirror-average weights", "bool", False,
       "Average left and right synaptic weights to enforce bilateral symmetry. Clearly a data modification game rule.",
       tag=GAME_RULE),
@@ -168,6 +174,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("photo_mode", "Photo mode / free camera", "f10"),
     ("stethoscope", "Brain stethoscope", "k"),
     ("timelapse", "Time-lapse record", "l"),
+    ("recall", "Recall a lost fly (outdoors)", "j"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789", "-"}           # the pause menu and the tool keys can't be rebound

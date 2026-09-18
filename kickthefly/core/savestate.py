@@ -210,6 +210,12 @@ def pack_signature(game) -> dict:
                 memory_signature=[float(x) for x in mem.signature] if mem is not None else None)
 
 
+def _arena_name(game) -> str:
+    from kickthefly.game import kick_the_fly as k2
+
+    return k2.ARENAS[int(game.arena_i)]
+
+
 def _wiring_meta(game, arrays: dict) -> dict | None:
     """Lab changes to the connectome itself. The flipped rows go in the arrays; the rest is small enough for JSON."""
     w = getattr(game, "wiring", None)
@@ -234,7 +240,8 @@ def save_game(game, path: Path) -> Path:
     meta = dict(
         format=FORMAT, format_version=FORMAT_VERSION, app_version=__version__, created=time.strftime("%Y-%m-%d %H:%M:%S"),
         platform=platform.system(), mode="3d" if game.three_d else "2d", seed=int(game.cfg["brain.seed"]),
-        signature=pack_signature(game), arena_i=int(game.arena_i), tool=int(game.tool), focus=int(game.focus),
+        signature=pack_signature(game), arena_i=int(game.arena_i), arena=_arena_name(game), tool=int(game.tool),
+        focus=int(game.focus),
         kills=int(game.kills), immortal=bool(game.immortal), pain_level=int(game.pain_level),
         sim_speed=float(game.clock.scale), lab_params=dict(game.lab_params), surgery_modes=list(game.surgery_modes),
         wiring=_wiring_meta(game, arrays),
@@ -289,6 +296,15 @@ def load_game(game, path: Path) -> dict:
         z = dict(np.load(io.BytesIO(zf.read("arrays.npz")), allow_pickle=False))
     now = game.clock.now
     game.prepare_load(len(meta["flies"]), [f["seed"] for f in meta["flies"]])
+    # the arena first, so the world's bounds are right before any body is put back. New arenas are only ever appended
+    # to ARENAS, so an old save's index still names the same one; saves since 2.7 also carry the name.
+    from kickthefly.game import kick_the_fly as k2
+
+    arena = meta.get("arena")
+    arena = arena if arena in k2.ARENAS else k2.ARENAS[min(int(meta["arena_i"]), len(k2.ARENAS) - 1)]
+    game.cfg.set("brain.arena", arena)
+    game.arena_i = k2.ARENAS.index(arena)
+    game.on_arena_changed(now)
     for i, (slot, fm) in enumerate(zip(game.flies, meta["flies"])):
         br = slot.brain
         with br.step_lock:
@@ -297,7 +313,7 @@ def load_game(game, path: Path) -> dict:
         restore_object(slot, fm["slot"], z, now)
         slot.pending_hits, slot.loom_prev = {}, {}
         slot.seed = int(fm["seed"])
-    game.arena_i, game.tool = int(meta["arena_i"]), int(meta["tool"])
+    game.tool = int(meta["tool"])
     game.focus = min(int(meta["focus"]), len(game.flies) - 1)
     game.kills = int(meta["kills"])
     game.set_setting("brain.immortal", bool(meta["immortal"]), save=False)

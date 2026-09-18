@@ -42,6 +42,21 @@ PARAMS = (
      "Angular expansion speed below which approaching objects don't drive LPLC2/LC4 at all."),
     ("loom_full", "Looming: full drive span (rad/s)", "rule", 8.0, 1.0, 20.0, 0.5, "{:.1f}",
      "How much faster than the minimum an object must grow to drive the looming detectors fully."),
+    ("field.wind_dir", "Open field: wind from (deg)", "rule", 180.0, 0.0, 355.0, 5.0, "{:.0f}",
+     "Where the open field's steady wind comes from, in degrees (0 = +x). It drives the real JO-C/E wind neurons; "
+     "how the two antennae split it by heading is a game rule."),
+    ("field.wind_speed", "Open field: wind speed (m/s)", "rule", 3.0, 0.0, 10.0, 0.5, "{:.1f}",
+     "Steady wind strength in the open field. 6 m/s and above drives the wind neurons fully (game rule)."),
+    ("outdoor.sun_az", "Outdoors: sun azimuth (deg)", "rule", 135.0, 0.0, 355.0, 5.0, "{:.0f}",
+     "Where the sun stands. Sunlight drives the real photoreceptors, split between the eyes by heading (game rule)."),
+    ("outdoor.sun_el", "Outdoors: sun elevation (deg)", "rule", 45.0, -10.0, 90.0, 5.0, "{:.0f}",
+     "How high the sun is: brightness of the light drive, and the scene's lighting. Below 0 it is night."),
+    ("orchard.feeds", "Orchard: feeds per fruit", "rule", 4.0, 1.0, 10.0, 1.0, "{:.0f}",
+     "How many feeding bouts one fruit supports before it drops. Applies to fruit that grow from now on."),
+    ("orchard.regrow_s", "Orchard: regrow time (s)", "rule", 75.0, 10.0, 300.0, 5.0, "{:.0f}",
+     "Mean time for a dropped fruit to grow back, jittered +-25% so regrowth is staggered."),
+    ("orchard.cap", "Orchard: fruit per tree (cap)", "rule", 4.0, 1.0, 6.0, 1.0, "{:.0f}",
+     "Most fruit one tree carries at a time."),
 )
 DEFAULTS = {p[0]: p[3] for p in PARAMS}
 BY_NAME = {p[0]: p for p in PARAMS}
@@ -211,6 +226,44 @@ ASSUMPTIONS = (
      "flips flips the least certain ones over randomized trials and reports which validated behaviors survive: in "
      "this release the looming and antennal grooming pathways survive and the sugar -> MN9 pathway does not.",
      "kickthefly/sim/connectome/loader.py:NT_SIGN · kickthefly/sim/wiring.py · Lab > Connectome robustness"),
+
+    ("Outdoor wind and sun reach the neurons through a scripted transduction",
+     "GAME RULE",
+     "In the Open field, steady wind drives the real wind-sensing JO-C/E neurons of each antenna, split by the cosine "
+     "of where the wind comes from relative to the heading; sunlight drives the real photoreceptors, bright by the "
+     "sun's elevation and split between the eyes by its azimuth. Both arenas' neurons are real; the split is a rule.",
+     "Real Johnston's organs sense wind through antennal deflection mechanics that aren't modelled, and real "
+     "photoreceptors see an image, not a luminance number. Wind also drives the head-touch escape DNs through JO "
+     "(as in the fan arena), so a windy field launches the fly repeatedly: that part is the wiring's.",
+     "kickthefly/game/outdoors.py:wind_drive, sun_light · Lab > Parameters (Open field, Outdoors)"),
+
+    ("The orchard: fruit, trees and foraging are game rules",
+     "GAME RULE",
+     "Feeding on a fruit drives the real sugar-pathway taste neurons and the PAM reward neurons exactly as the sugar "
+     "tool does (fermented fruit as the alcohol tool does) and heals the fly. The trees, the fruit, how many feeds a "
+     "fruit holds, regrowth, the per-tree cap, the fly flying to a fruit, one fly per fruit, and landing are rules.",
+     "The fly does not forage through its own circuitry: the game steers it to the nearest ripe fruit. Its neurons "
+     "can still override that (a real escape or take-off abandons the fruit), and several flies notice each other "
+     "only through the existing looming and touch pathways. No competition behaviour is scripted.",
+     "kickthefly/game/outdoors.py:Orchard · kickthefly/game/kick3d.py:_orchard_tick · assay: orchard"),
+
+    ("Alcohol's scent shares glomeruli with the zapper's",
+     "DATASET",
+     "The alcohol tool and fermented fruit smell through the real fermentation glomeruli DM1, DM2 and DP1m. Each "
+     "other tool's scent is 5 glomeruli picked at random (game rule), and DM2 and DP1m happen to be in the zapper's.",
+     "Mushroom-body training on alcohol (or fermented fruit) therefore partly generalises to the zapper and back. "
+     "That follows from using the real glomeruli, not a bug, but anyone running feeding or training experiments in "
+     "the orchard needs to know it.",
+     "kickthefly/game/kick_the_fly.py:Brain (scent sets) · tests/test_outdoors.py"),
+
+    ("No head-direction compass forms, from vision or from wind",
+     "DYNAMICS",
+     "Two tests of the E-PG ring: a driven visual-like wedge, and (2.7) the Open field's steady wind from 8 "
+     "directions. Neither forms a bump: with wind the peak/trough contrast is 1.81x (1.71x without wind; 3.0x needed), "
+     "it persists 101 ms (500 ms needed) and its position doesn't follow the wind beyond chance (p = 0.17).",
+     "Nothing was tuned to make one appear, and no compass HUD ships. The ring's recurrent weights here are raw "
+     "synapse counts with uniform efficacy; whether tuned weights would support a bump isn't tested.",
+     "kickthefly/lab/compass.py:probe_epg_wind · validation: epg_compass_wind"),
 
     ("Left/Right asymmetry as EM reconstruction artifact risk",
      "DATASET",
@@ -716,6 +769,17 @@ def draw_assay_result(m: ui.Menu, surf, area: pygame.Rect, res: dict) -> None:
                 ("fear of CS-", _ci(t["fear_cs_minus"]), _ci(c["fear_cs_minus"]) if c else ""),
                 ("approach MBONs to CS+ (Hz)", _ci(t["mbon_cs_plus_hz"], "{:.1f}"), _ci(c["mbon_cs_plus_hz"], "{:.1f}") if c else ""),
                 ("approach MBONs to CS- (Hz)", _ci(t["mbon_cs_minus_hz"], "{:.1f}"), _ci(c["mbon_cs_minus_hz"], "{:.1f}") if c else "")]
+    elif kind == "orchard":
+        st_ = t["settings"]
+        draw_chart(m, surf, chart, ["MN9", "PAM"], [("feeding / travelling", ui.ACCENT, [t["mn9_ratio"], t["pam_ratio"]])],
+                   "", "firing x travelling", connect=False)
+        rows = [("MN9 feeding / travelling", f"x{_ci(t['mn9_ratio'])}", f"x{_ci(c['mn9_ratio'])}" if c else ""),
+                ("PAM feeding / travelling", f"x{_ci(t['pam_ratio'])}", f"x{_ci(c['pam_ratio'])}" if c else ""),
+                ("feeds", _ci(t["feeds"], "{:.1f}"), _ci(c["feeds"], "{:.1f}") if c else ""),
+                ("fruit emptied", _ci(t["fruit_emptied"], "{:.1f}"), _ci(c["fruit_emptied"], "{:.1f}") if c else ""),
+                ("fermented feeds", _ci(t["fermented_feeds"], "{:.1f}"), ""),
+                ("settings (game rules)", f"{st_['feeds_per_fruit']} feeds/fruit, regrow {st_['regrow_s']:.0f} s, "
+                                          f"cap {st_['cap']}, {st_['duration_s']:.0f} s", "")]
     elif kind == "looming":
         xs = [r["speed"] for r in t["rows"]]
         series = [(tl, ui.ACCENT, [r["escape_probability"] for r in t["rows"]])]
@@ -806,6 +870,12 @@ def page_validation(m: ui.Menu, surf, rect, mouse) -> None:
                     f"{mm['control_pi_sd']:.2f}  ·  fear CS+ {mm['fear_cs_plus']:.2f} vs CS- {mm['fear_cs_minus']:.2f}  ·  "
                     f"approach MBONs {mm['approach_mbon_cs_plus_hz']:.1f} vs {mm['approach_mbon_cs_minus_hz']:.1f} Hz  ·  "
                     f"{labstats.fmt_p(mm['p_value'])}")
+        elif "direction_tracking" in mm:
+            meas = (f"EPG contrast in wind {mm['mean_contrast']:.2f}x (no wind {mm['baseline_contrast']:.2f}x, need "
+                    f">= 3.0x)  ·  persistence {mm['mean_persistence_ms']:.0f} ms (need >= 500)  ·  tracking |r| "
+                    f"{mm['direction_tracking']:.2f} vs {mm['direction_tracking_null']:.2f} shuffled, "
+                    f"p = {mm['direction_tracking_p']:.2f}  ·  EPG {mm['epg_rate_baseline_hz']:.1f} -> "
+                    f"{mm['epg_rate_wind_hz']:.1f} Hz")
         elif "mean_contrast" in mm:
             meas = (f"EPG peak/trough contrast: {mm['mean_contrast']:.2f} ± {mm.get('sd_contrast', 0):.2f}x "
                     f"(required >= 3.0x)  ·  persistence: {mm.get('mean_persistence_ms', 0):.0f} ms (< 500 ms)  ·  "
