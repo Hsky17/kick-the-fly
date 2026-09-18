@@ -1,5 +1,9 @@
 Downloads: **KickTheFly.exe** (Windows) and **KickTheFly-x86_64.AppImage** (Linux). Check them against `SHA256SUMS`.
 
+**2.7.1:** the Linux AppImage opens the 3D game on current distributions again (2.6.0 and 2.7.0 fell back to 2D on
+newer systems such as Arch because they carried their own, too-old copies of libraries the graphics driver needs).
+Everything below is what 2.7 brings.
+
 ## For players
 
 - **Go outside.** Two new places to take the fly, in the 3D game (press **E**, or Settings > Brain > Arena):

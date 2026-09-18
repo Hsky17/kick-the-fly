@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.7.1 (2026-09-18)
+
+### Fixed
+- **The Linux AppImage started in 2D on current distros** (2.6.0 and 2.7.0, seen on Arch with Mesa radeonsi): it
+  bundled the C++ runtime and X11 client libraries from its Ubuntu 22.04 build machine, which are too old for a new
+  graphics driver, so OpenGL failed to load on Wayland and X11 alike. Those libraries now always come from the host,
+  as the AppImage project recommends, and the build fails if any of them slip back in. Native Wayland is still used
+  first, with X11 as the fallback.
+
 ## 2.7.0 (2026-09-17)
 
 ### Added

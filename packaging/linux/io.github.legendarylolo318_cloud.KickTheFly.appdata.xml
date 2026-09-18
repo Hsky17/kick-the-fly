@@ -36,6 +36,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.7.1" date="2026-09-18">
+      <description>
+        <p>The AppImage opens the 3D game on current distributions again instead of falling back to 2D.</p>
+      </description>
+    </release>
     <release version="2.7.0" date="2026-09-17">
       <description>
         <p>Two outdoor arenas: an open field with wind and sun, and an orchard where the fly feeds from fruit that

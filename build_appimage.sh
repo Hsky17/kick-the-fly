@@ -32,7 +32,7 @@ else
 fi
 
 # glcontext.x11/egl are moderngl's Linux GL backends (glcontext.wgl is the Windows-only one build_exe.ps1 uses).
-.venv-build/bin/pyinstaller --noconfirm --clean --onefile --name KickTheFly \
+.venv-build/bin/pyi-makespec --onefile --name KickTheFly \
     "${EXTRA_DATA[@]}" \
     --exclude-module kickthefly.sim.connectome.loader --exclude-module pyarrow \
     --exclude-module tkinter --exclude-module matplotlib --exclude-module pynwb --exclude-module h5py \
@@ -40,6 +40,33 @@ fi
     --hidden-import glcontext.x11 --hidden-import glcontext.egl --hidden-import glcontext.empty \
     --hidden-import yaml --collect-submodules kickthefly \
     kick_the_fly.py
+
+# Never bundle the libraries the host's graphics driver loads next to us. Mesa (radeonsi, iris, llvmpipe...) is loaded
+# into this process and needs the host's own C++ runtime and X11 client libraries; the copies from the old-glibc build
+# machine are too old for a current distro's driver, OpenGL then fails to load and the game drops to 2D (2.6.0 and
+# 2.7.0 did this on Arch). Every desktop Linux ships all of these (Wayland desktops too, through XWayland), and newer
+# versions are backward compatible, so the host's copies always work for the bundled code. This is the same list the
+# AppImage project's own excludelist keeps out.
+HOST_LIBS="libstdc++.so.6 libgcc_s.so.1 libX11.so.6 libX11-xcb.so.1 libxcb.so.1 libXau.so.6 libXdmcp.so.6 libGL.so.1 libEGL.so.1 libGLX.so.0 libdrm.so.2 libgbm.so.1"
+export HOST_LIBS
+python3 - KickTheFly.spec <<'SPEC'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+import os
+host = tuple(os.environ["HOST_LIBS"].split())
+drop = f"a.binaries = [b for b in a.binaries if b[0].split('/')[-1] not in {host!r}]\n"
+s = s.replace("pyz = PYZ(", drop + "pyz = PYZ(", 1)
+open(path, "w").write(s)
+SPEC
+.venv-build/bin/pyinstaller --noconfirm --clean KickTheFly.spec
+bundled=$(.venv-build/bin/pyi-archive_viewer -l -r dist/KickTheFly 2>/dev/null)
+for lib in $HOST_LIBS; do
+    if grep -qE "['/]${lib//+/\\+}'" <<<"$bundled"; then
+        echo "error: $lib got bundled; it must come from the host or OpenGL breaks on newer distros" >&2
+        exit 1
+    fi
+done
 
 # build check without a display: load the brain, run the smoke protocol, exit 0
 rm -rf build/smoke
