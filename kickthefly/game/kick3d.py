@@ -52,10 +52,10 @@ UI_MODES = ("crisp", "large")
 
 def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int, ui_scale: float = 1.0):
     """HUD units -> window pixels. The HUD always fills the window (no black bars). In "crisp" mode the scale is a
-    whole number whenever the window is at least 700 px tall per step (1440p -> 2x), so text maps to whole pixels;
+    whole number whenever the window is at least 760 px tall per step (1520p -> 2x), so text maps to whole pixels;
     "large" keeps the original 760-unit-tall HUD, smoothly scaled. Returns (scale, hud_w, hud_h, play_w, view_w):
     play_w is the HUD area left of the brain panel, view_w how wide the 3D view is."""
-    s = max(1, Hn // 700) if ui_mode == "crisp" and Hn >= 700 else Hn / 760
+    s = max(1, Hn // 760) if ui_mode == "crisp" and Hn >= 760 else Hn / 760
     if ui_scale != 1.0:                             # Settings > UI scale (crisp mode snaps back to whole pixels)
         s = s * ui_scale
         if ui_mode == "crisp" and s >= 1:
@@ -63,6 +63,8 @@ def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int, ui_scale: fl
     need = 1280 if PANEL_MODES[panel_mode][0] != "hidden" else 900
     if Wn / s < need:                               # too narrow for the HUD: scale down to fit the width
         s = Wn / need
+    if Hn / s < 760:                                # ensure minimum vertical HUD units to prevent clipping
+        s = Hn / 760
     hud_w, hud_h = max(1, int(round(Wn / s))), max(1, int(round(Hn / s)))
     hidden = PANEL_MODES[panel_mode][0] == "hidden"
     play_w = hud_w if hidden else hud_w - PANEL_W
@@ -2921,12 +2923,15 @@ class App:
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
+        desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (k2.W, k2.H)
+        fs = bool(fullscreen or desk[0] < k2.W or desk[1] < k2.H + 60)
+        flags = pygame.OPENGL | pygame.DOUBLEBUF | (pygame.FULLSCREEN if fs else pygame.RESIZABLE)
+        size = (0, 0) if fs else (k2.W, k2.H)
         try:
-            flags = pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE
             try:
-                pygame.display.set_mode((k2.W, k2.H), flags, vsync=1 if vsync else 0)
+                pygame.display.set_mode(size, flags, vsync=1 if vsync else 0)
             except pygame.error:                         # the driver refused vsync: run without it
-                pygame.display.set_mode((k2.W, k2.H), flags)
+                pygame.display.set_mode(size, flags)
             self.ctx = moderngl.create_context()
         except Exception as e:
             raise GLUnavailable(f"{type(e).__name__}: {e}") from e
@@ -2937,9 +2942,6 @@ class App:
         pygame.display.set_caption("Kick the Fly")
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.rd = Renderer(self.ctx)
-        desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (k2.W, k2.H)
-        if fullscreen or desk[0] < k2.W or desk[1] < k2.H + 60:
-            pygame.display.toggle_fullscreen()
         self.hud_tex = None
         self.hud_size = None
         self.scene_size = None
@@ -3224,7 +3226,9 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     lay = app.layout(game)
 
     def to_logical(pos):
-        return (int(pos[0] / lay[2]), int(pos[1] / lay[2]))
+        Wn, Hn = pygame.display.get_window_size()
+        s = app.layout(game, (Wn, Hn))[2]
+        return (int(pos[0] / s), int(pos[1] / s))
 
     while running:
         real = time.perf_counter()
@@ -3233,8 +3237,9 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
         ticks = game.clock.frame(real)
         game.mouse_logical = to_logical(pygame.mouse.get_pos())
         for ev in pygame.event.get():
-            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT:
+            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
                 game.toggle_fullscreen()
+                lay = app.layout(game)
                 continue
             running = game.handle3d(ev, game.clock.now, to_logical) and running
         if game.look and (game._overlay_open() or game.menu.open):

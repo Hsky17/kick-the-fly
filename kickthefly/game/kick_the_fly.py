@@ -2072,7 +2072,12 @@ class Game:
             return False
 
     def toggle_fullscreen(self) -> None:
-        pygame.display.toggle_fullscreen()
+        if not pygame.display.toggle_fullscreen():
+            surf = pygame.display.get_surface()
+            if surf is not None:
+                is_fs = bool(surf.get_flags() & pygame.FULLSCREEN)
+                new_flags = pygame.SCALED | (pygame.RESIZABLE if is_fs else pygame.FULLSCREEN)
+                self.screen = pygame.display.set_mode((W, H), new_flags)
         self.cfg.set("graphics.fullscreen", self.is_fullscreen())
         self.cfg.save()
 
@@ -5788,10 +5793,10 @@ def main(argv: list[str] | None = None) -> int:
     pygame.display.set_caption("Kick the Fly")
     # SCALED: the game always draws at 1280x760 and SDL scales that to the window or the whole screen, keeping the
     # aspect ratio (black bars if needed) and mapping the mouse back, so it can go fullscreen at any resolution.
-    screen = pygame.display.set_mode((W, H), pygame.SCALED | pygame.RESIZABLE)
     desk = pygame.display.get_desktop_sizes()[0] if pygame.display.get_desktop_sizes() else (W, H)
-    if args.fullscreen or cfg["graphics.fullscreen"] or desk[0] < W or desk[1] < H + 60:   # asked for, or it wouldn't fit
-        pygame.display.toggle_fullscreen()
+    fs = bool(args.fullscreen or cfg["graphics.fullscreen"] or desk[0] < W or desk[1] < H + 60)
+    flags = pygame.SCALED | (pygame.FULLSCREEN if fs else pygame.RESIZABLE)
+    screen = pygame.display.set_mode((W, H), flags)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
     state: dict = {"stage": "starting"}
@@ -5839,7 +5844,8 @@ def main(argv: list[str] | None = None) -> int:
         mouse = pygame.mouse.get_pos()
         ticks = game.clock.frame(real)
         for ev in pygame.event.get():
-            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT:
+            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_F11 or
+                                              (ev.key == pygame.K_RETURN and ev.mod & pygame.KMOD_ALT)):
                 game.toggle_fullscreen()
                 continue
             running = game.handle(ev, game.clock.now) and running
