@@ -511,12 +511,13 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_assumptions"] = page_assumptions
     menu.pages["lab_asymmetry"] = page_asymmetry
     menu.pages["lab_benchmark"] = page_benchmark
-    from kickthefly.lab import labclamp, labcritical, labdiff, lablaser, labwiring
+    from kickthefly.lab import labclamp, labcritical, labdiff, lablaser, labpsych, labwiring
     menu.pages["lab_wiring"] = labwiring.page
     menu.pages["lab_critical"] = labcritical.page
     menu.pages["lab_clamp"] = labclamp.page
     menu.pages["lab_diff"] = labdiff.page
     menu.pages["lab_laser"] = lablaser.page
+    menu.pages["lab_psych"] = labpsych.page
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 

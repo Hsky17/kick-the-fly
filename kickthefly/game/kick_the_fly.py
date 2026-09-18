@@ -2143,6 +2143,7 @@ class Game:
                 ("Connectome diff mode", "lab_diff", "Run two flies with different configurations from the same seed "
                  "and inputs and diff regional activity live."),
                 ("Optogenetics laser", "lab_laser", "Aimable in-world laser to activate or silence cell types live."),
+                ("Psychometric curves", "lab_psych", "Sweep parameters across trials and export publication-ready SVG/PDF."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
 
     def start_recording(self, groups: list[tuple[str, str]], seconds: float, nwb: bool = False) -> None:
