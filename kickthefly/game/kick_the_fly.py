@@ -791,19 +791,23 @@ class BrainView:
         self.firing = self.hot_firing = 0
         self._cache_front = (self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"])
         self._preset_cache = {"front": self._cache_front}
+        self._dirty_big = False
+        self._lock = threading.Lock()
 
     def toggle_view_mode(self) -> str:
         self.view_mode = "region" if self.view_mode == "neuron" else "neuron"
         return self.view_mode
 
-    def set_camera(self, yaw: float, pitch: float, pan_x: float = 0.0, pan_y: float = 0.0, zoom: float = 1.0, preset: str | None = None) -> None:
+    def set_camera(self, yaw: float, pitch: float, pan_x: float = 0.0, pan_y: float = 0.0, zoom: float = 1.0, preset: str | None = None, recompute: bool = True) -> None:
         self.yaw = float(yaw)
         self.pitch = float(np.clip(pitch, -90.0, 90.0))
         self.pan_x = float(pan_x)
         self.pan_y = float(pan_y)
         self.zoom = float(np.clip(zoom, 0.2, 5.0))
         self.preset = preset or ("front" if self.is_default_view() else "custom")
-        self._recompute_big()
+        self._dirty_big = True
+        if recompute:
+            self._recompute_big()
 
     def orbit(self, dyaw: float, dpitch: float) -> None:
         self.set_camera(self.yaw + dyaw, self.pitch + dpitch, self.pan_x, self.pan_y, self.zoom, preset=None)
@@ -843,38 +847,40 @@ class BrainView:
         return abs(self.yaw) < 1e-4 and abs(self.pitch) < 1e-4 and abs(self.pan_x) < 1e-4 and abs(self.pan_y) < 1e-4 and abs(self.zoom - 1.0) < 1e-4
 
     def _recompute_big(self) -> None:
-        if self.is_default_view():
-            M, b, g, spx = self._cache_front
-            self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
-            return
-        rad_y = math.radians(self.yaw)
-        rad_p = math.radians(self.pitch)
-        cy, sy = math.cos(rad_y), math.sin(rad_y)
-        cp, sp_ = math.cos(rad_p), math.sin(rad_p)
-        R = np.array([[cy, 0.0, sy], [sp_ * sy, cp, -sp_ * cy], [-cp * sy, sp_, cp * cy]], dtype=np.float32)
+        with getattr(self, "_lock", threading.Lock()):
+            self._dirty_big = False
+            if self.is_default_view():
+                M, b, g, spx = self._cache_front
+                self.M["big"], self.base["big"], self.gain["big"], self.spark_pix["big"] = M, b, g, spx
+                return
+            rad_y = math.radians(self.yaw)
+            rad_p = math.radians(self.pitch)
+            cy, sy = math.cos(rad_y), math.sin(rad_y)
+            cp, sp_ = math.cos(rad_p), math.sin(rad_p)
+            R = np.array([[cy, 0.0, sy], [sp_ * sy, cp, -sp_ * cy], [-cp * sy, sp_, cp * cy]], dtype=np.float32)
 
-        rot = (self.pts - self.center) @ R.T
-        w, h = VIEW_SIZES["big"]
-        span_x = VIEW_X[1] - VIEW_X[0]
-        span_y = VIEW_Y[1] - VIEW_Y[0]
+            rot = (self.pts - self.center) @ R.T
+            w, h = VIEW_SIZES["big"]
+            span_x = VIEW_X[1] - VIEW_X[0]
+            span_y = VIEW_Y[1] - VIEW_Y[0]
 
-        rx = rot[..., 0] * self.zoom + self.pan_x + span_x * 0.5
-        ry = rot[..., 1] * self.zoom + self.pan_y + span_y * 0.5
-        rz = rot[..., 2] * self.zoom + self.center[2]
+            rx = rot[..., 0] * self.zoom + self.pan_x + span_x * 0.5
+            ry = rot[..., 1] * self.zoom + self.pan_y + span_y * 0.5
+            rz = rot[..., 2] * self.zoom + self.center[2]
 
-        px = (rx / span_x * w).astype(np.int32)
-        py = (ry / span_y * h).astype(np.int32)
+            px = (rx / span_x * w).astype(np.int32)
+            py = (ry / span_y * h).astype(np.int32)
 
-        depth = np.clip(1.2 - (rz - 5000.0) / 50000.0, 0.35, 1.0)
-        m = self.ok[:, None] & (px >= 0) & (px < w) & (py >= 0) & (py < h)
+            depth = np.clip(1.2 - (rz - 5000.0) / 50000.0, 0.35, 1.0)
+            m = self.ok[:, None] & (px >= 0) & (px < w) & (py >= 0) & (py < h)
 
-        P = sp.coo_array(((self.wts * depth)[m], ((py * w + px)[m], self.nid[m])), shape=(w * h, self.n)).tocsr()
-        self.M["big"] = P
-        struct = P @ self.col
-        p99 = float(np.percentile(struct.max(1), 99.0)) or 1.0
-        self.base["big"] = struct * (0.5 / p99)
-        self.gain["big"] = 3.4 / p99
-        self.spark_pix["big"] = np.where(m[:, 0], py[:, 0] * w + px[:, 0], -1)
+            P = sp.coo_array(((self.wts * depth)[m], ((py * w + px)[m], self.nid[m])), shape=(w * h, self.n)).tocsr()
+            self.M["big"] = P
+            struct = P @ self.col
+            p99 = float(np.percentile(struct.max(1), 99.0)) or 1.0
+            self.base["big"] = struct * (0.5 / p99)
+            self.gain["big"] = 3.4 / p99
+            self.spark_pix["big"] = np.where(m[:, 0], py[:, 0] * w + px[:, 0], -1)
 
     def set_palette(self, name: str) -> None:
         hot, cool_base = self.PALETTES.get(name, self.PALETTES["default"])
@@ -884,6 +890,8 @@ class BrainView:
         self.legend = (tuple(int(255 * c) for c in hot), tuple(int(min(255, 255 * c * 1.1)) for c in cool_base))
 
     def render(self, key: str, rates: np.ndarray, spiked: np.ndarray, t: float, learn: bool) -> pygame.Surface:
+        if key == "big" and getattr(self, "_dirty_big", False):
+            self._recompute_big()
         if learn:
             self.calm += (rates - self.calm) * 0.01
         excess = np.maximum(rates / 0.025 - self.calm / 0.025 - np.where(self.hot_mask, 1.0, 0.6), 0)
@@ -3581,6 +3589,8 @@ class Game:
 
     # --- neuron inspector ----------------------------------------------------------------
     def _inspect_at(self, pos) -> None:
+        if getattr(self.view, "_dirty_big", False):
+            self.view._recompute_big()
         w, h = VIEW_SIZES["big"]
         px, py = pos[0] - self.big_rect.x, pos[1] - self.big_rect.y
         pix = self.view.spark_pix["big"]
@@ -3604,9 +3614,13 @@ class Game:
 
         ins = top(Wr.indices[Wr.indptr[i]:Wr.indptr[i + 1]], Wr.data[Wr.indptr[i]:Wr.indptr[i + 1]])
         outs = top(Wc.indices[Wc.indptr[i]:Wc.indptr[i + 1]], Wc.data[Wc.indptr[i]:Wc.indptr[i + 1]])
-        pop = br.pop_id[i]
-        return {"i": i, "type": br.types[i] or "untyped", "instance": br.instance[i],
-                "pop": [n for n, _ in POPS][pop] if pop >= 0 else br.superclass[i], "ins": ins, "outs": outs,
+        pop = br.pop_id[i] if hasattr(br, "pop_id") and i < len(br.pop_id) else -1
+        pop_str = [n for n, _ in POPS][pop] if 0 <= pop < len(POPS) else (
+            str(br.superclass[i]) if getattr(br, "superclass", None) is not None and i < len(br.superclass) and br.superclass[i] else "unknown"
+        )
+        inst_str = str(br.instance[i]) if hasattr(br, "instance") and i < len(br.instance) and br.instance[i] else ""
+        return {"i": i, "type": br.types[i] or "untyped", "instance": inst_str,
+                "pop": pop_str, "ins": ins, "outs": outs,
                 "n_in": int(Wr.indptr[i + 1] - Wr.indptr[i]), "n_out": int(Wc.indptr[i + 1] - Wc.indptr[i])}
 
     def _draw_inspect(self, surf, rect: pygame.Rect, now: float) -> None:
@@ -3615,6 +3629,8 @@ class Game:
         pix = self.view.spark_pix["big"]
 
         def at(j):
+            if j is None or j < 0 or j >= len(pix):
+                return None
             q = pix[j]
             return None if q < 0 else (rect.x + q % w, rect.y + q // w)
 
@@ -3626,7 +3642,7 @@ class Game:
                     pygame.draw.aaline(surf, col, me, q)
                     aacircle(surf, q, 3, col)
         if me:
-            r = 8 + 3 * math.sin(now * 8)
+            r = max(1.0, 8.0 + 3.0 * math.sin(now * 8))
             gfxdraw.aacircle(surf, int(me[0]), int(me[1]), int(r), (255, 255, 255))
             gfxdraw.aacircle(surf, int(me[0]), int(me[1]), int(r + 4), (255, 255, 255, 120))
         card = pygame.Rect(rect.right - 318, rect.y + 10, 308, 348)
@@ -3638,7 +3654,8 @@ class Game:
         rate = float(br.sim.activity.rates()[i]) / 0.005
         calm = float(self.view.calm[i]) / 0.005
         self._text(surf, info["type"], (x, y), INK, self.f_head)
-        self._text(surf, f"{info['pop']}   {info['instance']}", (x, y + 26), LABEL, self.f_small)
+        inst_label = f"   {info['instance']}" if info.get("instance") else ""
+        self._text(surf, f"{info['pop']}{inst_label}", (x, y + 26), LABEL, self.f_small)
         self._text(surf, f"firing {rate:5.1f} spikes/s   (calm {calm:4.1f})", (x, y + 44),
                    (255, 170, 90) if rate > calm + 2 else TEXT, self.f_small)
         self._text(surf, f"{info['n_in']} input partners, {info['n_out']} output partners", (x, y + 60), LABEL, self.f_small)
@@ -3662,7 +3679,8 @@ class Game:
             yy += 15
             for j, v in lst[:4]:
                 name = br.types[j] or "untyped"
-                side = br.instance[j][-2:] if br.instance[j].endswith(("_L", "_R")) else ""
+                inst = br.instance[j] or "" if j < len(br.instance) else ""
+                side = inst[-2:] if (isinstance(inst, str) and inst.endswith(("_L", "_R"))) else ""
                 sign = "+" if v > 0 else "-"
                 self._text(surf, f"{sign}{abs(v) * 100:4.1f}%  {name}{side}", (x + 6, yy), TEXT, self.f_small)
                 yy += 14
@@ -3678,7 +3696,7 @@ class Game:
         self.inspect_flip_button = None
         if self.cfg.lab and nt in ("acetylcholine", "gaba", "glutamate", "histamine"):
             r = pygame.Rect(card.x + 12, card.bottom - 32, 188, 24)
-            on = i in self._flipped_set
+            on = i in getattr(self, "_flipped_set", ())
             pygame.draw.rect(surf, (190, 70, 70) if on else (40, 46, 58), r, border_radius=6)
             self._text(surf, "UNFLIP THIS NEURON" if on else "FLIP THIS NEURON'S SIGN", r.center, INK, self.f_small,
                        "center")
@@ -5432,9 +5450,9 @@ class Game:
             dx = ev.pos[0] - start_pos[0]
             dy = ev.pos[1] - start_pos[1]
             if (pygame.key.get_mods() & pygame.KMOD_SHIFT) or btn == 2:
-                self.view.set_camera(y0, p0, px0 + dx * 120.0, py0 + dy * 120.0, self.view.zoom)
+                self.view.set_camera(y0, p0, px0 + dx * 120.0, py0 + dy * 120.0, self.view.zoom, recompute=False)
             else:
-                self.view.set_camera(y0 + dx * 0.4, p0 - dy * 0.4, px0, py0, self.view.zoom)
+                self.view.set_camera(y0 + dx * 0.4, p0 - dy * 0.4, px0, py0, self.view.zoom, recompute=False)
             return True
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
             if self.science_card is not None and self.science_rect().collidepoint(ev.pos):
@@ -5544,6 +5562,8 @@ class Game:
             if self.big_view and getattr(self, "big_drag", None):
                 start_pos, btn, _, _, _, _ = self.big_drag
                 self.big_drag = None
+                if getattr(self.view, "_dirty_big", False):
+                    self.view._recompute_big()
                 if btn == 1 and math.hypot(ev.pos[0] - start_pos[0], ev.pos[1] - start_pos[1]) < 6:
                     if self.inspect is not None:
                         flip = getattr(self, "inspect_flip_button", None)
