@@ -1611,6 +1611,7 @@ def draw_source_chip(surf, pos, source: str, font, anchor: str = "midtop", alpha
 
 
 TOOL_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0, pygame.K_MINUS, pygame.K_EQUALS)
+TOOL_KEY_LABELS = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=")      # what the toolbar shows for each
 TORCH_KEYS = (("head", None), ("body", None), ("legs", "L"), ("legs", "R"), ("wing", "L"), ("wing", "R"), ("heat", None))
 OUCH = ("BONK!", "OOF!", "SPLAT!", "THWACK!", "BZZT!", "OW!")
 CURSOR_SIZE = {"flick": 12, "swatter": 38, "bomb": 16, "torch": 18, "cleaner": 22, "zapper": 16, "freeze": 22, "spider": 20, "laser": 14}
@@ -1873,7 +1874,7 @@ SURGERY = (  # label, how to find the neurons (see Game._surgery_rows)
     ("Every neuron", ("all", ())),
 )
 HELP = (
-    ("1-9, 0, -", "pick a tool (or click the toolbar)"),
+    ("1-9, 0, -, =", "pick a tool (or click the toolbar; = is the laser)"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery: silence or stimulate neuron groups"),
     ("E", "change arena: room, fan, flypaper, pool, lamp, escaperoom"),
@@ -5147,7 +5148,7 @@ class Game:
             surf.blit(card, r)
             pygame.draw.rect(surf, AMBER if on else BORDER, r, 2, border_radius=10)
             draw_icon(surf, name, (r.centerx, r.y + 24), AMBER if on else TEXT)
-            k_lbl = "0" if k == 9 else ("-" if k == 10 else str(k + 1))
+            k_lbl = TOOL_KEY_LABELS[k] if k < len(TOOL_KEY_LABELS) else ""
             self._text(surf, k_lbl, (r.x + 7, r.y + 4), LABEL, self.f_small)
             self._text(surf, label, (r.centerx, r.y + 44), AMBER if on else INK, self.f_small, "midtop")
 

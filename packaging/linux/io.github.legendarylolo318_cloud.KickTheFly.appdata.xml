@@ -36,6 +36,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.7.2" date="2026-09-18">
+      <description>
+        <p>The blowtorch and the spray cans fire from the tool in your hand, and the laser's key shows as "=".</p>
+      </description>
+    </release>
     <release version="2.7.1" date="2026-09-18">
       <description>
         <p>The AppImage opens the 3D game on current distributions again instead of falling back to 2D.</p>

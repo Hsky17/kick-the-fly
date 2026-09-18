@@ -179,14 +179,14 @@ Releases are built by `.github/workflows/release.yml` on a tag push: the brain p
 
 ## Controls
 
-Every key below can be rebound in Settings > Controls (a key that's already taken swaps with that action). Esc and the tool keys 0-9 are fixed.
+Every key below can be rebound in Settings > Controls (a key that's already taken swaps with that action). Esc and the tool keys (1-9, 0, - and =) are fixed.
 
 | key | what it does |
 |---|---|
 | Esc | close a panel, or open the pause menu: Resume, Challenges (Play) or Lab tools (Lab), Settings, Save State, Load State, Mode, Quit |
 | WASD | walk (Shift sprint, Ctrl or C crouch); walk into the fly to kick it |
 | Mouse | look around; left click uses the tool in your hand |
-| 1-9, 0, - or mouse wheel | pick a tool: hand, flick, swatter, bomb, blowtorch, brake cleaner, zapper, freeze spray, spider, sugar, alcohol |
+| 1-9, 0, -, = or mouse wheel | pick a tool: hand, flick, swatter, bomb, blowtorch, brake cleaner, zapper, freeze spray, spider, sugar, alcohol, laser |
 | Tab | free the mouse to click the brain panel and menus (click the room to look again) |
 | B | big live brain view; click a neuron to inspect it |
 | O | brain surgery |

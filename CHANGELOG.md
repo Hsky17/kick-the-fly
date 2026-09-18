@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.2 (2026-09-18)
+
+### Fixed
+- **The blowtorch flame and the brake cleaner and freeze sprays now come out of the tool in your hand** (3D). They
+  were started 0.7 m behind your head and flew forward through the camera. Thrown bombs, sugar and alcohol, the
+  zapper and the laser also start at your hand now. The fire point follows the tool's nozzle on screen at any field
+  of view.
+- **The laser's key shows as "=" on the toolbar** instead of "12". It always worked on =; `=` is now also reserved so
+  it can't be bound to another action.
+
 ## 2.7.1 (2026-09-18)
 
 ### Fixed

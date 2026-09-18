@@ -99,6 +99,12 @@ OUTDOOR_FAR = 90.0                          # far plane outdoors, metres; the ro
 DRAW_DIST = 38.0                            # scenery further than this from the camera isn't drawn
 TUFT_DIST = 16.0                            # grass tufts are only drawn this close (they are small and many)
 SPIDER_TOP = 3.0                            # outdoors the spider drops from a branch height, not from the sky
+# The tool in your hand (draw_viewmodel): where it's held, in camera space (x right, y up, -z forward), the lens it's
+# drawn with, and each tool's nozzle relative to that. tool_tip() fires effects from these same points.
+VIEW_BASE = np.array([0.27, -0.26, -0.55])
+VIEWMODEL_FOV = 60.0
+NOZZLE = {"torch": (0.0, 0.07, -0.26), "cleaner": (0.0, 0.15, -0.06), "freeze": (0.0, 0.15, -0.06),
+          "laser": (0.0, 0.062, -0.285), "zapper": (0.0, 0.12, -0.12), "swatter": (0.0, 0.3, -0.2)}
 
 
 def scene_setup(game) -> tuple[dict, tuple, float]:
@@ -133,7 +139,7 @@ def set_world(arena: str, trees=()) -> None:
 HELP3D = (
     ("WASD", "walk (Shift sprint, Ctrl crouch)"),
     ("Mouse", "look; left click uses the tool in your hand"),
-    ("1-9, 0, - / wheel", "pick a tool"),
+    ("1-9, 0, -, = / wheel", "pick a tool (= is the laser)"),
     ("Tab", "free the mouse to click the brain panel and menus"),
     ("B", "big live brain view; click a neuron to inspect it"),
     ("O", "brain surgery"),
@@ -880,10 +886,17 @@ class Game3D(k2.Game):
         return self.player.eye, f
 
     def tool_tip(self) -> np.ndarray:
+        """Where the tool in your hand fires from, in the world: the nozzle of the model draw_viewmodel draws.
+
+        The held tool is drawn in camera space (x right, y up, -z forward) through its own 60 degree lens, while the
+        world uses your field-of-view setting, so the point is scaled sideways by the ratio of the two lenses to land
+        on the same spot on screen. (Before 2.7.2 these points had +z, i.e. behind your head, so flames and sprays
+        started behind you and flew through the camera instead of out of the can.)"""
         name = TOOLS[self.tool][0]
-        local = {"torch": (0.26, -0.2, 0.78), "cleaner": (0.26, -0.17, 0.66), "freeze": (0.26, -0.17, 0.66),
-                 "zapper": (0.26, -0.1, 0.78), "swatter": (0.22, -0.02, 0.8), "laser": (0.26, -0.2, 0.78)}.get(name, (0.26, -0.2, 0.62))
-        return self.player.to_world(local)
+        bob = 0.012 * math.sin(self.player.walk_phase * 2)
+        x, y, z = VIEW_BASE + (0.0, bob, 0.0) + NOZZLE.get(name, (0.0, 0.05, -0.1))
+        k = math.tan(math.radians(float(self.cfg["controls.fov"])) / 2) / math.tan(math.radians(VIEWMODEL_FOV) / 2)
+        return self.player.to_world((x * k, y * k, z))
 
     def _overlay_open(self) -> bool:
         ch = getattr(self, "challenge", None)
@@ -2492,7 +2505,7 @@ class Game3D(k2.Game):
         """The tool in your hand, in camera space (x right, y up, -z forward)."""
         name = TOOLS[self.tool][0]
         bob = 0.012 * math.sin(self.player.walk_phase * 2)
-        base = np.array([0.27, -0.26 + bob, -0.55])
+        base = VIEW_BASE + (0.0, bob, 0.0)
         skin = (0.93, 0.74, 0.6)
 
         def hand(pos, curl: float, point: bool = False, flick: float = 0.0):
@@ -3080,7 +3093,8 @@ class App:
             cam_lights["u_lp0"] = (view @ np.append(lights["u_lp0"], 1))[:3]
             cam_lights["u_lp1"] = (view @ np.append(lights["u_lp1"], 1))[:3]
             squeeze = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.1, -0.9], [0, 0, 0, 1.0]])
-            rd.set_scene(np.eye(4), squeeze @ lens @ perspective(math.radians(60), vw / vh, 0.01, 5.0), (0, 0, 0), cam_lights, now)
+            rd.set_scene(np.eye(4), squeeze @ lens @ perspective(math.radians(VIEWMODEL_FOV), vw / vh, 0.01, 5.0), (0, 0, 0),
+                         cam_lights, now)
             rd.draw_layer("view")
             rd.draw_layer("view_blend")
         if self.ms is not None:
