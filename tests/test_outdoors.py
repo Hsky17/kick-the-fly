@@ -197,7 +197,13 @@ def test_field_is_big_and_has_no_ceiling(game3d):
         _run(game3d, 2)
     assert peak > k2_thresh("jump"), f"driving the head-touch DNs should read above threshold ({peak:.2f})"
     assert any(n.startswith("FLY AWAY") for n in notes), notes
-    assert top > 3.2, f"escape flight should climb past where the room's ceiling was (max {top:.2f} m)"
+    # no ceiling: where a given escape goes is random (a game rule), so test the bound itself. Indoors this target
+    # would be clamped at the 3 m ceiling; outdoors the fly has to be able to reach it.
+    game3d._fly_to(fly, game3d.clock.now, fly.p[kick3d.THX] + np.array([0.0, 6.0, 0.0]), 8.0)
+    for _ in range(60):
+        _run(game3d, 0.1)
+        top = max(top, float(fly.p[kick3d.THX, 1]))
+    assert top > 3.5, f"a flight 6 m up should pass where the room's ceiling was (max {top:.2f} m)"
 
 
 @needs_pack
