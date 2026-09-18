@@ -34,6 +34,9 @@ INFO = (
     ("reverse_surgery", "Mystery defect (Reverse surgery)",
      "One brain circuit is turned off! Test the fly with tools, ask for hints, and deduce what's missing.",
      "stars", "high"),
+    ("predict", "Predict the move (Motor readouts)",
+     "A descending motor spike surge flashes on the monitor. Can you predict the fly's move before it triggers?",
+     "correct predictions", "high"),
 )
 
 
@@ -71,6 +74,8 @@ def stars(key: str, value: float) -> int:
         return 3 if value <= 1.0 else 2 if value <= 2.0 else 1 if value <= 3.5 else 0
     if key in ("reverse_surgery", "mystery"):
         return 3 if value >= 3 else 2 if value >= 2 else 1 if value >= 1 else 0
+    if key == "predict":
+        return 3 if value >= 8 else 2 if value >= 6 else 1 if value >= 4 else 0
     return 3 if value <= 10 else 2 if value <= 25 else 1 if value <= 50 else 0
 
 
@@ -770,7 +775,262 @@ class ReverseSurgery(Challenge):
         self.draw_buttons(surf, mouse)
 
 
-CLASSES = {"tmaze": TMaze, "sneak": Sneak, "sweet": Sweet, "reverse_surgery": ReverseSurgery}
+# --- Predict the move (Descending motor readouts) ---------------------------------------------------------------------
+class PredictNeuron(Challenge):
+    key = "predict"
+    overlay = False
+    ROUNDS = 10
+    CUE_TIME = 2.2
+
+    READOUTS = [
+        dict(
+            id="jump",
+            label="Jump!",
+            target="jump",
+            cue_text="HEAD-TOUCH DN SPIKE SURGE",
+            action_desc="Jumped up!",
+        ),
+        dict(
+            id="run",
+            label="Run!",
+            target="run",
+            cue_text="BODY-TOUCH DN SPIKE SURGE",
+            action_desc="Darted forward!",
+        ),
+        dict(
+            id="kick",
+            label="Kick!",
+            target="kick",
+            cue_text="LEG-TOUCH DN SPIKE SURGE",
+            action_desc="Kicked its legs!",
+        ),
+        dict(
+            id="back",
+            label="Back up!",
+            target="back",
+            cue_text="MOONWALKER (MDN) SPIKE SURGE",
+            action_desc="Walked backward!",
+        ),
+        dict(
+            id="takeoff",
+            label="Take off!",
+            target="fly",
+            cue_text="WING-POWER (DNg02) SPIKE SURGE",
+            action_desc="Launched into flight!",
+        ),
+    ]
+
+    def __init__(self, game):
+        super().__init__(game)
+        self.round_idx = 0
+        self.score = 0
+        self.state = "ready"  # ready | cue | result | done
+        self.current_readout = self.READOUTS[0]
+        self.timer = 0.0
+        self.guess: str | None = None
+        self.panel_rect = pygame.Rect(40, 40, 480, 240)
+        self.history: list[tuple[str, str, bool]] = []
+        seed = int(getattr(getattr(game, "brain", None), "seed", 0)) + 999
+        self.rng = np.random.default_rng(seed)
+        self.driven_rows = np.array([], dtype=int)
+        self.pulse_phase = 0.0
+
+    def start_round(self, now: float) -> None:
+        if self.round_idx >= self.ROUNDS:
+            self.state = "done"
+            record_score("predict", self.score, "high")
+            return
+        idx = int(self.rng.integers(0, len(self.READOUTS)))
+        self.current_readout = self.READOUTS[idx]
+        self.state = "cue"
+        self.timer = now + self.CUE_TIME
+        self.guess = None
+        self._drive_cue(self.current_readout["target"])
+
+    def _drive_cue(self, target_name: str) -> None:
+        br = getattr(self.game, "brain", None)
+        if br is None:
+            return
+        from kickthefly.core import simcore
+        from kickthefly.game.kick_the_fly import MOTOR
+        tys = ()
+        for name, tys_, _, _ in MOTOR:
+            if name == target_name:
+                tys = tys_
+                break
+        if tys:
+            rows = np.flatnonzero(np.isin(br.types, tys))
+            if len(rows) > 0:
+                self.driven_rows = rows
+                simcore.drive(br, rows, 0.6)
+
+    def _clear_cue(self) -> None:
+        br = getattr(self.game, "brain", None)
+        if br is not None and len(self.driven_rows) > 0:
+            from kickthefly.core import simcore
+            simcore.undrive(br, self.driven_rows)
+            self.driven_rows = np.array([], dtype=int)
+
+    def predict(self, choice_id: str, now: float) -> bool:
+        if self.state != "cue":
+            return False
+        self.guess = choice_id
+        is_correct = (choice_id == self.current_readout["id"])
+        if is_correct:
+            self.score += 1
+            self.game.sound.play("yum")
+        else:
+            self.game.sound.play("click")
+        self.history.append((self.current_readout["id"], choice_id, is_correct))
+        self._trigger_motor_action(self.current_readout["target"], now)
+        self._clear_cue()
+        self.state = "result"
+        self.timer = now + 1.2
+        return is_correct
+
+    def _trigger_motor_action(self, target_name: str, now: float) -> None:
+        slot = getattr(self, "slot", None)
+        if slot is None or not hasattr(slot, "fly"):
+            return
+        fly = slot.fly
+        away = 1.0 if fly.p[0, 0] >= getattr(slot, "threat_x", fly.p[0, 0]) else -1.0
+        if target_name == "jump":
+            fly.escape(now, seconds=1.0)
+        elif target_name == "fly":
+            fly.escape(now, seconds=2.5, wander=True)
+        elif target_name == "run":
+            fly.facing, fly.walk_until, fly.back_until, fly.run = away, now + 1.2, 0.0, True
+        elif target_name == "kick":
+            fly.flail_until = now + 0.8
+        elif target_name == "back":
+            fly.back_until = now + 1.0
+
+    def update(self, now: float) -> None:
+        self.pulse_phase = (now * 6.0) % (2 * math.pi)
+        if self.state == "ready":
+            self.start_round(now)
+        elif self.state == "cue":
+            if now >= self.timer:
+                self.predict("timeout", now)
+        elif self.state == "result":
+            if now >= self.timer:
+                self.round_idx += 1
+                if self.round_idx >= self.ROUNDS:
+                    self.state = "done"
+                    record_score("predict", self.score, "high")
+                else:
+                    self.start_round(now)
+
+    def end(self) -> None:
+        self._clear_cue()
+        super().end()
+
+    def click(self, pos) -> bool:
+        for b in self.buttons:
+            if b.enabled and b.rect.collidepoint(pos):
+                self.game.sound.play("click")
+                b.action()
+                return True
+        if hasattr(self, "panel_rect") and self.panel_rect.collidepoint(pos):
+            return True
+        return False
+
+    def draw(self, surf, now, mouse) -> None:
+        from kickthefly.game.kick_the_fly import PLAY_W
+        g = self.game
+        cx = min(PLAY_W - 260, max(260, PLAY_W // 2))
+        self.buttons = []
+
+        if self.state == "cue":
+            w, h = 500, 230
+            self.panel_rect = pygame.Rect(cx - w // 2, 70, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (12, 16, 24, 235), card.get_rect(), border_radius=12)
+            pygame.draw.rect(card, (70, 110, 170), card.get_rect(), 1, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            g._text(surf, f"PREDICT THE MOVE  ·  Round {self.round_idx + 1}/{self.ROUNDS}",
+                    (self.panel_rect.x + 16, self.panel_rect.y + 12), AMBER, g.f_bold)
+            g._text(surf, f"Score: {self.score}", (self.panel_rect.right - 16, self.panel_rect.y + 12), INK, g.f_bold, "topright")
+
+            # Pulsing neural flash indicator
+            pulse_r = int(14 + 4 * math.sin(self.pulse_phase))
+            p_center = (self.panel_rect.x + 36, self.panel_rect.y + 54)
+            pygame.draw.circle(surf, (255, 180, 50), p_center, pulse_r)
+            pygame.draw.circle(surf, (255, 235, 150), p_center, max(4, pulse_r - 6))
+
+            g._text(surf, "DESCENDING MOTOR SURGE DETECTED!", (self.panel_rect.x + 64, self.panel_rect.y + 42), (255, 220, 120), g.f_bold)
+            g._text(surf, "What will the fly do before it moves?", (self.panel_rect.x + 64, self.panel_rect.y + 60), TEXT, g.f_small)
+
+            # Time bar
+            rem = max(0.0, self.timer - now)
+            frac = rem / self.CUE_TIME
+            bar_rect = pygame.Rect(self.panel_rect.x + 20, self.panel_rect.y + 86, self.panel_rect.w - 40, 8)
+            pygame.draw.rect(surf, (30, 36, 48), bar_rect, border_radius=4)
+            pygame.draw.rect(surf, (80, 180, 240), (bar_rect.x, bar_rect.y, int(bar_rect.w * frac), 8), border_radius=4)
+
+            # 5 descending motor action buttons
+            bw = (self.panel_rect.w - 48) // 5
+            for i, r in enumerate(self.READOUTS):
+                bx = self.panel_rect.x + 18 + i * (bw + 3)
+                rid = r["id"]
+                self.buttons.append(Button(
+                    (bx, self.panel_rect.y + 110, bw, 52),
+                    r["label"],
+                    lambda rid=rid: self.predict(rid, now),
+                    style="primary",
+                ))
+
+            self.buttons.append(Button(
+                (self.panel_rect.right - 100, self.panel_rect.bottom - 46, 84, 32),
+                "Quit",
+                self.end,
+            ))
+
+        elif self.state == "result":
+            w, h = 480, 180
+            self.panel_rect = pygame.Rect(cx - w // 2, 80, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (14, 18, 28, 235), card.get_rect(), border_radius=12)
+            last_ok = bool(self.history and self.history[-1][2])
+            border_col = GOOD if last_ok else BAD
+            pygame.draw.rect(card, border_col, card.get_rect(), 2, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            res_hdr = "CORRECT PREDICTION!" if last_ok else "MISSED!"
+            g._text(surf, res_hdr, (self.panel_rect.centerx, self.panel_rect.y + 16), border_col, g.f_head, "midtop")
+            g._text(surf, f"The fly {self.current_readout['action_desc']}", (self.panel_rect.centerx, self.panel_rect.y + 54), INK, g.f_bold, "midtop")
+            g._text(surf, f"Circuit: {self.current_readout['desc']}", (self.panel_rect.centerx, self.panel_rect.y + 82), LABEL, g.f_small, "midtop")
+            g._text(surf, f"Score: {self.score}/{self.round_idx + 1}", (self.panel_rect.centerx, self.panel_rect.y + 110), AMBER, g.f_bold, "midtop")
+
+        elif self.state == "done":
+            w, h = 480, 240
+            self.panel_rect = pygame.Rect(cx - w // 2, 80, w, h)
+            card = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(card, (16, 20, 32, 245), card.get_rect(), border_radius=12)
+            pygame.draw.rect(card, (80, 120, 180), card.get_rect(), 2, border_radius=12)
+            surf.blit(card, self.panel_rect)
+
+            g._text(surf, "CHALLENGE COMPLETE!", (self.panel_rect.centerx, self.panel_rect.y + 16), INK, g.f_head, "midtop")
+            g._text(surf, f"Final Score: {self.score} / {self.ROUNDS} correct predictions", (self.panel_rect.centerx, self.panel_rect.y + 54), AMBER, g.f_bold, "midtop")
+            draw_stars(surf, (self.panel_rect.centerx, self.panel_rect.y + 96), stars("predict", self.score), 14)
+
+            self.buttons.append(Button(
+                (self.panel_rect.centerx - 170, self.panel_rect.bottom - 56, 160, 42),
+                "Play Again",
+                lambda: self.game.start_challenge("predict"),
+                style="primary",
+            ))
+            self.buttons.append(Button(
+                (self.panel_rect.centerx + 20, self.panel_rect.bottom - 56, 140, 42),
+                "Close",
+                self.end,
+            ))
+
+        self.draw_buttons(surf, mouse)
+
+
+CLASSES = {"tmaze": TMaze, "sneak": Sneak, "sweet": Sweet, "reverse_surgery": ReverseSurgery, "predict": PredictNeuron}
 
 
 def page_challenges(m, surf, rect, mouse) -> None:
