@@ -84,13 +84,21 @@ TESTS = (
          drive="", drive_label="odor + shock (6 cycles)", readout="", readout_label="T-maze choices",
          control="", control_label="same odors and shocks, unpaired", popup_event="AVOID",
          note="The plasticity rule, the shock's link to dopamine, and the choice at the T-maze are game rules on top of "
-              "the connectome's real KC -> MBON synapses; this tests that they produce odor-specific memory."),
+               "the connectome's real KC -> MBON synapses; this tests that they produce odor-specific memory."),
+    dict(id="epg_compass", name="E-PG central complex compass forms an orientation bump",
+         play="",
+         claim="E-PG / PEN / Delta7 recurrent ring attractor forms a persistent head-direction bump.",
+         citation="Seelig & Jayaraman 2015, Nature 521:186; Green et al. 2017, Nature 546:101",
+         drive="", drive_label="localized wedge stimulation", readout="epg", readout_label="EPG (46)",
+         control="", control_label="none", popup_event=None,
+         note="Under raw unweighted LIF dynamics without tuned E/I balance, bump contrast and persistence fail; "
+              "reported honestly as a negative validation result."),
 )
 BY_ID = {t["id"]: t for t in TESTS}
 # The held-out results of this release (README "Validation"). tests/test_validation.py and --strict flag any change,
 # in either direction, so a regression (or a newly reproduced behavior) never goes unnoticed.
 EXPECTED = {"looming_escape": True, "mdn_backward": False, "sugar_feeding": True, "antenna_grooming_circuit": True,
-            "adn_grooming_motor": False, "mb_conditioning": True}
+            "adn_grooming_motor": False, "mb_conditioning": True, "epg_compass": False}
 
 
 def _ratio(base: float, driven: float) -> float:
@@ -157,7 +165,7 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
     t0 = time.time()
     workers = workers or min(4, os.cpu_count() or 1)
     include = set(include or BY_ID)
-    jobs_path = [s for s in seeds] if include - {"mb_conditioning"} else []
+    jobs_path = [s for s in seeds] if include - {"mb_conditioning", "epg_compass"} else []
     jobs_tmaze = [(s, cs, paired) for s in seeds for paired in (True, False) for cs in ("odor_a", "odor_b")] \
         if "mb_conditioning" in include else []
     total, done = len(jobs_path) + len(jobs_tmaze), 0
@@ -195,7 +203,21 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
         if t["id"] not in include:
             continue
         r = {k_: v for k_, v in t.items()}
-        if t["drive"]:
+        if t["id"] == "epg_compass":
+            from kickthefly.lab import compass
+            res_epg = compass.probe_epg_compass(seeds=seeds)
+            r["measured"] = dict(
+                mean_contrast=res_epg["mean_contrast"],
+                sd_contrast=res_epg["sd_contrast"],
+                mean_persistence_ms=res_epg["mean_persistence_ms"],
+                mean_baseline_hz=res_epg["mean_baseline_hz"],
+                mean_baseline_sd_hz=res_epg["mean_baseline_sd_hz"],
+                n=len(seeds),
+            )
+            r["criteria"] = res_epg["criteria"]
+            r["passed"] = res_epg["passed"]
+            r["finding"] = res_epg["finding"]
+        elif t["drive"]:
             per = [dict(seed=s, **path_res[s][t["id"]]) for s in seeds]
             dr = [p["drive"]["ratio"] for p in per]
             cr = [p["control"]["ratio"] for p in per]
@@ -247,8 +269,12 @@ def summary(res: dict) -> str:
         if "drive_ratio_mean" in m:
             nums = (f"{t['readout_label']}: x{m['drive_ratio_mean']:.2f} when driving {t['drive_label']} vs "
                     f"x{m['control_ratio_mean']:.2f} for {t['control_label']}, p={m['p_value']:.4f}")
-        else:
+        elif "pi_mean" in m:
             nums = f"PI {m['pi_mean']:.2f} ± {m['pi_sd']:.2f} vs unpaired {m['control_pi_mean']:.2f}, p={m['p_value']:.4f}"
+        elif "mean_contrast" in m:
+            nums = f"contrast {m['mean_contrast']:.2f} ± {m.get('sd_contrast', 0):.2f}x, persist {m['mean_persistence_ms']:.0f} ms"
+        else:
+            nums = str(m)
         lines.append(f"  [{'PASS' if t['passed'] else 'FAIL'}] {t['name']}: {nums}")
     return "\n".join(lines)
 

@@ -235,6 +235,12 @@ ASSUMPTIONS = (
      "One-click surgery silences visual pathways (LC10, LPLC2, LC4, LPTC, VS, HS) on one hemifield or an entire hemibrain, reported strictly as a wiring outcome.",
      "Physical brain lesions in Drosophila trigger axotomy, Wallerian degeneration, glial immune responses, and homeostatic synaptic compensation. The simulation models pure static silencing of cell rows without injury pathology.",
      "kickthefly/lab/lesions.py · kickthefly/game/kick_the_fly.py · Lab > Brain surgery"),
+
+    ("Central complex head-direction ring attractor requires fine-tuned E/I balance",
+     "BIOPHYSICS",
+     "The sim tests the EPG/PEN/Delta7 compass network directly under raw connectome weights, without weight-tuning.",
+     "Biological head-direction tracking in the central complex relies on precisely balanced recurrent excitation and broad Delta7 lateral inhibition to sustain a localized activity bump and track rotational visual/wind cues. Under raw unweighted LIF dynamics, bump contrast and persistence fail; reported as a negative validation result rather than tuned.",
+     "kickthefly/lab/compass.py · kickthefly/lab/validation.py:epg_compass"),
 )
 
 
