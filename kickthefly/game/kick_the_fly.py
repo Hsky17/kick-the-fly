@@ -4551,6 +4551,10 @@ class Game:
             self._spray(mouse, now, TOOLS[self.tool][0])
         if (self.torching or getattr(self, "laser_state", None) and self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser" and self.report is None:
             self._laser_step(mouse, now)
+        elif hasattr(self, "laser_state"):
+            for slot in self.flies:
+                if len(getattr(slot.brain, "_laser_rows", [])):
+                    self.laser_state.apply(slot.brain, now, is_hitting=False)
         self._effects(now)
         for sh in self.shards:
             sh[0] += sh[2]
@@ -5590,8 +5594,6 @@ class Game:
                 self.torching = False
                 if hasattr(self, "laser_state"):
                     self.laser_state.trigger_release()
-                    for slot in self.flies:
-                        self.laser_state.clear(slot.brain)
         return True
 
 

@@ -120,19 +120,25 @@ class LaserState:
         """
         active = self.is_active(now) and is_hitting
         target_current = self.current_value() if active else 0.0
+        applied = getattr(brain, "_laser_rows", np.array([], dtype=int))
 
         if active:
             rows = self.resolve_target_rows(brain)
+            if hasattr(brain, "override"):
+                if len(applied):
+                    brain.override[applied] = 0.0
+                if len(rows):
+                    brain.override[rows] = target_current
+                brain.surgery = bool(np.any(brain.override))
+            brain._laser_rows = rows
             self.last_applied_rows = rows
             self.last_applied_current = target_current
-            if len(rows) and hasattr(brain, "override"):
-                brain.override[rows] = target_current
-                brain.surgery = bool(np.any(brain.override))
         else:
-            if len(self.last_applied_rows) and hasattr(brain, "override"):
-                # Clear previous laser override on these specific rows
-                brain.override[self.last_applied_rows] = 0.0
+            if len(applied) and hasattr(brain, "override"):
+                brain.override[applied] = 0.0
                 brain.surgery = bool(np.any(brain.override))
+                brain._laser_rows = np.array([], dtype=int)
+            if not self.is_active(now):
                 self.last_applied_rows = np.array([], dtype=int)
                 self.last_applied_current = 0.0
 
@@ -141,9 +147,11 @@ class LaserState:
 
     def clear(self, brain) -> None:
         """Completely clear any laser overrides on the brain."""
-        if len(self.last_applied_rows) and hasattr(brain, "override"):
-            brain.override[self.last_applied_rows] = 0.0
+        applied = getattr(brain, "_laser_rows", self.last_applied_rows)
+        if len(applied) and hasattr(brain, "override"):
+            brain.override[applied] = 0.0
             brain.surgery = bool(np.any(brain.override))
+        brain._laser_rows = np.array([], dtype=int)
         self.last_applied_rows = np.array([], dtype=int)
         self.last_applied_current = 0.0
         self.hit_fly = False

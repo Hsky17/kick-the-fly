@@ -71,7 +71,7 @@ def compute_layout(Wn: int, Hn: int, ui_mode: str, panel_mode: int, ui_scale: fl
     view_w = play_w if PANEL_MODES[panel_mode][0] == "solid" else hud_w
     return s, hud_w, hud_h, play_w, view_w
 TOOL_SIZE = {"flick": 0.06, "swatter": 0.2, "bomb": 0.08, "torch": 0.09, "cleaner": 0.09, "zapper": 0.12,
-             "freeze": 0.09, "spider": 0.08, "alcohol": 0.07}
+             "freeze": 0.09, "spider": 0.08, "alcohol": 0.07, "laser": 0.08}
 SKY_CLEAR = (0.08, 0.09, 0.11)
 PLAYER_HP, PLAYER_RADIUS = 100.0, 0.32
 PELLET_SPEED, PELLET_SPREAD, PELLET_DAMAGE = 9.0, 0.035, 9.0     # m/s, radians of scatter, health per hit
@@ -882,7 +882,7 @@ class Game3D(k2.Game):
     def tool_tip(self) -> np.ndarray:
         name = TOOLS[self.tool][0]
         local = {"torch": (0.26, -0.2, 0.78), "cleaner": (0.26, -0.17, 0.66), "freeze": (0.26, -0.17, 0.66),
-                 "zapper": (0.26, -0.1, 0.78), "swatter": (0.22, -0.02, 0.8)}.get(name, (0.26, -0.2, 0.62))
+                 "zapper": (0.26, -0.1, 0.78), "swatter": (0.22, -0.02, 0.8), "laser": (0.26, -0.2, 0.78)}.get(name, (0.26, -0.2, 0.62))
         return self.player.to_world(local)
 
     def _overlay_open(self) -> bool:
@@ -960,6 +960,10 @@ class Game3D(k2.Game):
             self.throw_t = now
             self.bombs3.append(dict(p=self.tool_tip(), v=d * 0.1 + np.array([0, 0.025, 0]), t=now))
         elif name in ("torch", "cleaner", "freeze"):
+            self.torching = True
+        elif name == "laser":
+            if hasattr(self, "laser_state"):
+                self.laser_state.trigger_press(now)
             self.torching = True
         elif name == "zapper" and now >= self.zap_ready:
             self._zap3d(now)
@@ -1916,6 +1920,26 @@ class Game3D(k2.Game):
                 self._explode3d(b, now)
         if self.torching and self.report is None and TOOLS[self.tool][0] in ("torch", "cleaner", "freeze"):
             self._jet(now, TOOLS[self.tool][0])
+        if hasattr(self, "laser_state") and (self.torching or self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser" and self.report is None:
+            eye, d = self.aim()
+            hit_slot, hit_part, hit_t = self._nearest_fly3d(eye, d, 15.0, 0.25)
+            hit_any = False
+            for slot in self.flies:
+                if slot is hit_slot and not slot.fly.dead:
+                    hit_any = True
+                    cur = self.laser_state.apply(slot.brain, now, is_hitting=True)
+                    if random.random() < 0.04:
+                        act_txt = "STIM" if self.laser_state.mode == "activate" else "SILENCE"
+                        self.popup(slot.fly.p[HEAD] + (0, 0.3, 0), f"LASER {act_txt} {self.laser_state.target_type}",
+                                   (255, 180, 80) if self.laser_state.mode == "activate" else (80, 200, 255))
+                else:
+                    self.laser_state.apply(slot.brain, now, is_hitting=False)
+            self.laser_state.hit_fly = hit_any
+            self.laser_state.hit_pos = tuple(eye + d * hit_t) if (hit_any and hit_t is not None) else tuple(eye + d * 15.0)
+        elif hasattr(self, "laser_state"):
+            for slot in self.flies:
+                if len(getattr(slot.brain, "_laser_rows", [])):
+                    self.laser_state.apply(slot.brain, now, is_hitting=False)
         self._effects(now)
         for p in self.parts:
             p["p"] = p["p"] + p["v"]
@@ -2447,6 +2471,22 @@ class Game3D(k2.Game):
                 rd.particle(pt["p"], 0.04, (0.4, 1.0, 0.35, 0.4 * (1 - e)), additive=True)
             elif kind == "streak":
                 rd.particle(pt["p"], 0.025, (0.9, 0.95, 1.0, 0.35 * (1 - e)))
+        if hasattr(self, "laser_state") and (self.torching or self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser" and self.report is None:
+            tip = self.tool_tip()
+            hit_pos = getattr(self.laser_state, "hit_pos", None)
+            if hit_pos is None:
+                eye, d = self.aim()
+                hit_pos = eye + d * 15.0
+            else:
+                hit_pos = np.array(hit_pos)
+            ls = self.laser_state
+            is_stim = (ls.mode == "activate")
+            beam_col = (1.0, 0.45, 0.15) if is_stim else (0.2, 0.65, 1.0)
+            core_col = (1.0, 1.0, 0.85) if is_stim else (0.85, 0.95, 1.0)
+            rd.add("cylinder", segment(tip, hit_pos, 0.008), beam_col, P_NONE, 2.5)
+            rd.add("cylinder", segment(tip, hit_pos, 0.003), core_col, P_NONE, 3.5)
+            rd.particle(hit_pos, 0.08, beam_col + (0.7,), additive=True)
+            rd.particle(hit_pos, 0.03, core_col + (0.9,), additive=True)
 
     def draw_viewmodel(self, rd: Renderer, now: float) -> None:
         """The tool in your hand, in camera space (x right, y up, -z forward)."""
@@ -2507,6 +2547,12 @@ class Game3D(k2.Game):
             if now - self.throw_t > 0.3:
                 rd.add("cube", trs(base + (0, 0.05, -0.05), rot_y(0.5), (0.055, 0.055, 0.055)), (0.98, 0.98, 1.0), layer="view")
             hand(base, 0.6)
+        elif name == "laser":
+            rd.add("cylinder", segment(base + (0, 0, 0.05), base + (0, 0.05, -0.22), 0.025), (0.2, 0.22, 0.26), layer="view")
+            rd.add("cylinder", segment(base + (0, 0.05, -0.22), base + (0, 0.06, -0.28), 0.015), (0.7, 0.75, 0.8), layer="view")
+            col_led = (1.0, 0.5, 0.1) if (getattr(self, "laser_state", None) and self.laser_state.mode == "activate") else (0.2, 0.7, 1.0)
+            rd.add("sphere", trs(base + (0, 0.062, -0.285), None, (0.008, 0.008, 0.008)), col_led, layer="view")
+            hand(base + (0, -0.02, 0.04), 1.0)
 
     # --- 1v1 duel ------------------------------------------------------------------------------------------------------------------
     def toggle_duel(self) -> None:
@@ -2734,6 +2780,11 @@ class Game3D(k2.Game):
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 pygame.draw.line(hud, (0, 0, 0, 120), (cx + dx * 5 + 1, cy + dy * 5 + 1), (cx + dx * 13 + 1, cy + dy * 13 + 1), 3)
                 pygame.draw.line(hud, col, (cx + dx * 5, cy + dy * 5), (cx + dx * 13, cy + dy * 13), 2)
+            if hasattr(self, "laser_state") and (self.torching or self.laser_state.is_active(now)) and TOOLS[self.tool][0] == "laser":
+                ls = self.laser_state
+                col_b = (255, 140, 50) if ls.mode == "activate" else (60, 190, 255)
+                badge = f"LASER: {ls.target_type} ({'STIM' if ls.mode == 'activate' else 'SILENCE'})"
+                self._text(hud, badge, (cx + 18, cy - 18), col_b, self.f_small)
         self._draw_toolbar(hud)
         self._draw_hud(hud, now)
         if self.duel:
@@ -2899,6 +2950,8 @@ class Game3D(k2.Game):
             if not self.fly.wrapped:
                 self.fly.grabbed = None
             self.torching = False
+            if hasattr(self, "laser_state"):
+                self.laser_state.trigger_release()
             return True
         return True
 

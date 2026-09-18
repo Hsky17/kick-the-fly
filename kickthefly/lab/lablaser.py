@@ -56,11 +56,8 @@ def page(m: ui.Menu, surf, rect, mouse) -> None:
             y += 30
         on = ls.target_type.lower() == tgt.lower()
         r = pygame.Rect(chip_x, y, tw, 24)
-        pygame.draw.rect(surf, (220, 140, 40) if on else (28, 32, 44), r, border_radius=5)
-        pygame.draw.rect(surf, (255, 200, 120) if on else (50, 58, 76), r, 1, border_radius=5)
-        m.text(surf, tgt, r.center, (10, 12, 16) if on else ui.TEXT, m.f_small, "center")
-        if r.collidepoint(mouse) and pygame.mouse.get_pressed()[0]:
-            ls.set_target(tgt)
+        m.button(surf, r, tgt, (lambda t=tgt: ls.set_target(t)),
+                 style="good" if on else "quiet", id=("chip", tgt), font=m.f_small)
         chip_x += tw + 8
 
     y += 44
