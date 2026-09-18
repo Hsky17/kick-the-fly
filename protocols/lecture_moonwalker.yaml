@@ -1,0 +1,48 @@
+# Lecture Protocol: Moonwalker Backward Walking Circuit
+# Demonstrates how Moonwalker Descending Neurons (MDN) coordinate reversal of leg motor rhythms.
+name: lecture-moonwalker
+title: "Moonwalker Backward Walking Circuit"
+description: "Pedagogical walkthrough of Drosophila backward walking coordination by MDN."
+classroom: true
+steps:
+  - title: "1. Forward Walking Default State"
+    explanation: "In foraging flies, descending neurons like DNp09 promote forward walking, driving tripod leg motor patterns."
+    key_takeaway: "Forward locomotion is driven by forward-promoting descending command neurons."
+    citation: "Bidaye et al. 2014, Science 344:97; Bidaye et al. 2020, Neuron 108:109"
+    neurons:
+      - label: "DNp09 (Forward DN)"
+        spec: "type:DNp09"
+        role: "Promotes forward walking"
+    action:
+      kind: "drive"
+      target: "type:DNp09"
+      amp: 0.6
+      for_s: 0.5
+
+  - title: "2. Collision & MDN Activation"
+    explanation: "Physical obstacles or mechanosensory antennal touch activate the bilateral pair of Moonwalker Descending Neurons (MDN)."
+    key_takeaway: "Obstacle collision rapidly excites MDN command neurons."
+    citation: "Bidaye et al. 2014, Science 344:97"
+    neurons:
+      - label: "MDN"
+        spec: "mdn"
+        role: "Bilateral descending neurons directing backward walking"
+    action:
+      kind: "drive"
+      target: "mdn"
+      amp: 0.8
+      for_s: 0.5
+
+  - title: "3. Stepping Rhythm Inversion"
+    explanation: "MDN simultaneously inhibits forward walking central pattern generators and activates backward motor rhythms, inverting stepping phase."
+    key_takeaway: "MDN acts as an executive toggle switching gait polarity."
+    citation: "Bidaye et al. 2014, Science 344:97; Feng et al. 2020, Nature 585:395"
+    neurons:
+      - label: "MDN & Thoracic Motor Pools"
+        spec: "mn_legs"
+        role: "Reverse leg phase coordination"
+    action:
+      kind: "drive"
+      target: "mdn"
+      amp: 1.0
+      for_s: 0.6

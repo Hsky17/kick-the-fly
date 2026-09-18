@@ -1,0 +1,60 @@
+# Lecture Protocol: Mushroom Body Olfactory Conditioning
+# Demonstrates dopamine-gated depression of KC-to-MBON synapses in learned odor avoidance.
+name: lecture-tmaze
+title: "Mushroom Body Olfactory Conditioning"
+description: "Pedagogical walkthrough of Drosophila olfactory associative learning in the mushroom body."
+classroom: true
+steps:
+  - title: "1. Sparse Odor Encoding by Kenyon Cells"
+    explanation: "Antennal lobe projection neurons diverge onto ~2,000 intrinsic Kenyon Cells (KCs). Odors activate sparse, decorrelated ~5% subsets of KCs in the mushroom body calyx."
+    key_takeaway: "Kenyon cells form sparse, distinct odor representations."
+    citation: "Aso et al. 2014, eLife 3:e04577; Turner et al. 2008, Nature 454:493"
+    neurons:
+      - label: "Kenyon Cells"
+        spec: "prefix:KC"
+        role: "Sparse intrinsic odor representation"
+    action:
+      kind: "stimulus"
+      target: "odor_a"
+      strength: 0.7
+      for_s: 0.5
+
+  - title: "2. Dopaminergic Reinforcement (PPL1 / Electric Shock)"
+    explanation: "Pairing CS+ odor with electric shock recruits PPL1 dopaminergic neurons, releasing dopamine coincident with active Kenyon cell presynaptic boutons."
+    key_takeaway: "PPL1 DANs signal negative reinforcement to specific mushroom body compartments."
+    citation: "Claridge-Chang et al. 2009, Cell 139:405; Aso et al. 2014, eLife 3:e04577"
+    neurons:
+      - label: "PPL1 Dopaminergic Neurons"
+        spec: "type:PPL101,PPL103"
+        role: "Aversive dopamine reinforcement"
+    action:
+      kind: "drive"
+      target: "type:PPL101,PPL103"
+      amp: 0.8
+      for_s: 0.5
+
+  - title: "3. Long-Term Depression at KC-to-MBON Synapses"
+    explanation: "Coincident KC spikes and dopamine drive selective long-term depression (LTD) of synapses from active KCs onto approach-directing MBONs."
+    key_takeaway: "LTD of approach MBONs tips circuit balance toward avoidance."
+    citation: "Hige et al. 2015, Neuron 88:985; Owald & Waddell 2015, Curr Opin Neurobiol 35:178"
+    neurons:
+      - label: "Mushroom Body Output Neurons"
+        spec: "mbon"
+        role: "Readout neurons projecting to motor systems"
+    action:
+      kind: "assay_step"
+      target: "tmaze_condition"
+
+  - title: "4. Memory Recall & T-Maze Choice"
+    explanation: "At the choice point, CS+ odor evokes depressed approach MBON firing. Unbalanced avoidance signals steer the fly into the safe odor arm."
+    key_takeaway: "Flies avoid the shock-paired odor with statistically significant avoidance (PI > 0.5)."
+    citation: "Tully & Quinn 1985, J Comp Physiol A 157:263"
+    neurons:
+      - label: "MBONs (Approach vs Avoidance)"
+        spec: "mbon"
+        role: "Differential population steering"
+    action:
+      kind: "stimulus"
+      target: "odor_a"
+      strength: 0.8
+      for_s: 0.5

@@ -1,0 +1,48 @@
+# Lecture Protocol: Sugar Gustatory Pathway & Proboscis Extension
+# Demonstrates how sweet gustatory neurons project via SEL PNs to motor neuron MN9.
+name: lecture-sugar
+title: "Sugar Gustatory Pathway & Proboscis Extension"
+description: "Pedagogical walkthrough of Drosophila sugar taste sensing and feeding reflex."
+classroom: true
+steps:
+  - title: "1. Gustatory Detection by Sugar Receptors"
+    explanation: "Sucrose contact excites gustatory receptor neurons (GRNs) on labellum and tarsi, sending action potentials into the subesophageal zone."
+    key_takeaway: "Sugar contact activates gustatory sensory neurons innervating the SEZ."
+    citation: "Shiu et al. 2024, Nature 634:210; Yao & Scott 2022, Cell 185:2472"
+    neurons:
+      - label: "Sugar Gustatory Neurons"
+        spec: "sweet"
+        role: "Sensory detection of sweet tastants"
+    action:
+      kind: "stimulus"
+      target: "sweet"
+      strength: 0.8
+      for_s: 0.5
+
+  - title: "2. Relay via Sugar SEL Projection Neurons"
+    explanation: "Sugar sensory afferents synapse onto subesophageal layer projection neurons (Sugar SEL PNs: GNG540/GNG550), relaying excitation to motor command pools."
+    key_takeaway: "Sugar SEL PNs relay taste signals to feeding motor circuits."
+    citation: "Yao & Scott 2022, Cell 185:2472; Shiu et al. 2024, Nature 634:210"
+    neurons:
+      - label: "Sugar SEL PNs"
+        spec: "type:GNG540,GNG550"
+        role: "Second-order gustatory relay neurons"
+    action:
+      kind: "drive"
+      target: "type:GNG540,GNG550"
+      amp: 0.7
+      for_s: 0.5
+
+  - title: "3. Motor Neuron 9 (MN9) Proboscis Extension"
+    explanation: "Excitatory signals reach MN9, innervating the retractor bulbi muscle to trigger the Proboscis Extension Response (PER). Bitter taste pathways do not excite MN9."
+    key_takeaway: "MN9 drives proboscis extension; bitter inputs fail to activate MN9."
+    citation: "Shiu et al. 2024, Nature 634:210; Schwarz et al. 2017, eLife 6:e19892"
+    neurons:
+      - label: "MN9"
+        spec: "mn9"
+        role: "Proboscis extension motor neuron"
+    action:
+      kind: "drive"
+      target: "sweet"
+      amp: 0.9
+      for_s: 0.5

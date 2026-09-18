@@ -517,13 +517,14 @@ def install(menu: ui.Menu) -> None:
     menu.pages["lab_assumptions"] = page_assumptions
     menu.pages["lab_asymmetry"] = page_asymmetry
     menu.pages["lab_benchmark"] = page_benchmark
-    from kickthefly.lab import labclamp, labcritical, labdiff, lablaser, labpsych, labwiring
+    from kickthefly.lab import labclassroom, labclamp, labcritical, labdiff, lablaser, labpsych, labwiring
     menu.pages["lab_wiring"] = labwiring.page
     menu.pages["lab_critical"] = labcritical.page
     menu.pages["lab_clamp"] = labclamp.page
     menu.pages["lab_diff"] = labdiff.page
     menu.pages["lab_laser"] = lablaser.page
     menu.pages["lab_psych"] = labpsych.page
+    menu.pages["lab_classroom"] = labclassroom.page
     ui.TAG_COLORS.setdefault("MODEL", (150, 120, 220))
 
 
@@ -800,11 +801,17 @@ def page_validation(m: ui.Menu, surf, rect, mouse) -> None:
             meas = (f"{t['readout_label']}: x{mm['drive_ratio_mean']:.2f} ± {mm['drive_ratio_sd']:.2f} driving "
                     f"{t['drive_label']}  vs  x{mm['control_ratio_mean']:.2f} ± {mm['control_ratio_sd']:.2f} for "
                     f"{t['control_label']}  ·  {labstats.fmt_p(mm['p_value'])}")
-        else:
+        elif "pi_mean" in mm:
             meas = (f"PI {mm['pi_mean']:.2f} ± {mm['pi_sd']:.2f} vs unpaired {mm['control_pi_mean']:.2f} ± "
                     f"{mm['control_pi_sd']:.2f}  ·  fear CS+ {mm['fear_cs_plus']:.2f} vs CS- {mm['fear_cs_minus']:.2f}  ·  "
                     f"approach MBONs {mm['approach_mbon_cs_plus_hz']:.1f} vs {mm['approach_mbon_cs_minus_hz']:.1f} Hz  ·  "
                     f"{labstats.fmt_p(mm['p_value'])}")
+        elif "mean_contrast" in mm:
+            meas = (f"EPG peak/trough contrast: {mm['mean_contrast']:.2f} ± {mm.get('sd_contrast', 0):.2f}x "
+                    f"(required >= 3.0x)  ·  persistence: {mm.get('mean_persistence_ms', 0):.0f} ms (< 500 ms)  ·  "
+                    f"baseline: {mm.get('mean_baseline_hz', 0):.1f} ± {mm.get('mean_baseline_sd_hz', 0):.1f} Hz")
+        else:
+            meas = t.get("finding", str(mm))
         yy = m.wrapped(surf, meas, (card.x + 90, card.y + 58), card.w - 110, ui.INK, m.f_small, 2)
         m.text(surf, f"Pass if: {t['criteria']}", (card.x + 90, yy + 4), ui.LABEL, m.f_small)
         m.text(surf, t["citation"], (card.x + 90, yy + 24), (150, 180, 220), m.f_small)

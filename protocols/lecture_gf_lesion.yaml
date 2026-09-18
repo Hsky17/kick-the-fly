@@ -1,0 +1,64 @@
+# Lecture Protocol: Giant Fiber Lesion: Visual vs Tactile Escape Pathways
+# Demonstrates how DNp01 silencing abolishes looming visual escape while leaving tactile escape intact.
+name: lecture-gf-lesion
+title: "Giant Fiber Lesion: Visual vs Tactile Escape"
+description: "Pedagogical walkthrough comparing visual looming vs mechanosensory escape under giant fiber lesion."
+classroom: true
+steps:
+  - title: "1. Dual Parallel Escape Pathways"
+    explanation: "Drosophila uses parallel escape pathways: fast visual escape via the giant fiber (DNp01), and tactile escape via antennal/leg mechanoreceptors through non-giant DNs."
+    key_takeaway: "Parallel neural circuits mediate escape from looming shadows vs physical touch."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962; Hampel et al. 2015, eLife 4:e08758"
+    neurons:
+      - label: "DNp01 (Giant Fiber)"
+        spec: "dnp01"
+        role: "Visual looming escape command"
+      - label: "JO-C/E Mechanoreceptors"
+        spec: "jo_ce"
+        role: "Tactile air puff / touch detectors"
+    action:
+      kind: "reset"
+
+  - title: "2. Silencing the Giant Fiber (DNp01 Lesion)"
+    explanation: "Silencing DNp01 severs the direct link from looming detectors to thoracic jump motor neurons."
+    key_takeaway: "DNp01 lesion selectively disables the visual looming escape circuit."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962"
+    neurons:
+      - label: "DNp01 (Silenced)"
+        spec: "dnp01"
+        role: "Clamped silent (override 0.0)"
+    action:
+      kind: "surgery"
+      target: "dnp01"
+      mode: -1
+
+  - title: "3. Looming Visual Cue (Fails)"
+    explanation: "With DNp01 silenced, an optical looming stimulus excites LPLC2/LC4, but the signal cannot reach motor neurons. Escape jump fails."
+    key_takeaway: "Visual looming stimuli fail to trigger escape when DNp01 is silenced."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962"
+    neurons:
+      - label: "LPLC2 + LC4"
+        spec: "type:LPLC2,LC4"
+        role: "Active detectors blocked by severed DNp01"
+    action:
+      kind: "stimulus"
+      target: "type:LPLC2,LC4"
+      strength: 0.85
+      for_s: 0.6
+
+  - title: "4. Tactile Mechanosensory Cue (Preserved)"
+    explanation: "Presenting tactile air puff / touch to antennae (JO-C/E) recruits alternative non-giant descending pathways. Tactile escape remains fully functional."
+    key_takeaway: "Non-giant tactile escape pathways remain completely functional despite DNp01 ablation."
+    citation: "Hampel et al. 2015, eLife 4:e08758; Allen et al. 2006, J Neurosci 26:1565"
+    neurons:
+      - label: "JO-C/E Mechanosensory"
+        spec: "jo_ce"
+        role: "Tactile sensory neurons"
+      - label: "Alternative Descending Neurons"
+        spec: "adn"
+        role: "Intact tactile descending pathways"
+    action:
+      kind: "stimulus"
+      target: "jo_ce"
+      strength: 0.9
+      for_s: 0.5

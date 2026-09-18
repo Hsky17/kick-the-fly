@@ -1,0 +1,65 @@
+# Lecture Protocol: Looming Visual Escape Circuit
+# Demonstrates how visual projection neurons LPLC2 and LC4 drive giant fiber DNp01.
+name: lecture-looming
+title: "Looming Visual Escape Circuit"
+description: "Pedagogical walkthrough of Drosophila looming escape from retina to giant fiber."
+classroom: true
+steps:
+  - title: "1. Spontaneous Baseline State"
+    explanation: "Resting activity across optic lobe visual projection neurons and descending motor pathways is calm (~5-8 Hz baseline spontaneous firing). Inhibitory and excitatory inputs maintain homeostatic equilibrium."
+    key_takeaway: "Baseline state is calm stochastic firing without premature escape trigger."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962; Ache et al. 2019, Curr Biol 29:1073"
+    neurons:
+      - label: "LPLC2 + LC4"
+        spec: "type:LPLC2,LC4"
+        role: "Visual projection neurons sensitive to optical expansion"
+      - label: "DNp01 (Giant Fiber)"
+        spec: "dnp01"
+        role: "Descending escape command neuron"
+    action:
+      kind: "reset"
+
+  - title: "2. Expanding Retinal Loom Detection"
+    explanation: "An approaching threat expands on the retina. LPLC2 and LC4 compute non-linear angular expansion rates and fire high-frequency action potentials."
+    key_takeaway: "LPLC2 and LC4 selectively encode optical looming expansion."
+    citation: "Ache et al. 2019, Curr Biol 29:1073"
+    neurons:
+      - label: "LPLC2, LC4"
+        spec: "type:LPLC2,LC4"
+        role: "Visual detectors driven by looming edge expansion"
+    action:
+      kind: "stimulus"
+      target: "type:LPLC2,LC4"
+      strength: 0.85
+      for_s: 0.6
+
+  - title: "3. Synaptic Convergence onto Giant Fiber"
+    explanation: "LPLC2 and LC4 terminate directly in the posterior slope, forming hundreds of chemical synapses onto giant dendrites of descending neuron DNp01."
+    key_takeaway: "Summation of hundreds of inputs rapidly depolarizes DNp01 toward firing threshold."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962"
+    neurons:
+      - label: "DNp01"
+        spec: "dnp01"
+        role: "Giant fiber receiving posterior slope synaptic convergence"
+    action:
+      kind: "drive"
+      target: "type:LPLC2,LC4"
+      amp: 0.65
+      for_s: 0.5
+
+  - title: "4. Escape Jump Motor Readout"
+    explanation: "Once DNp01 fires, its action potential propagates down the cervical connective into the thoracic ganglion, activating tergotrochanteral motor neurons."
+    key_takeaway: "DNp01 activation triggers an unguided, explosive jump takeoff in <5 ms."
+    citation: "von Reyn et al. 2014, Nat Neurosci 17:962; Allen et al. 2006, J Neurosci 26:1565"
+    neurons:
+      - label: "DNp01"
+        spec: "dnp01"
+        role: "Descending command trigger"
+      - label: "Leg Motor Neurons"
+        spec: "mn_legs"
+        role: "Thoracic jump motor pool"
+    action:
+      kind: "drive"
+      target: "dnp01"
+      amp: 1.0
+      for_s: 0.4

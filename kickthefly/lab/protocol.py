@@ -47,7 +47,7 @@ from pathlib import Path
 
 import numpy as np
 
-TOP_KEYS = {"name", "description", "seed", "seeds", "flies", "warmup_s", "duration_s", "params", "surgery", "control",
+TOP_KEYS = {"name", "description", "title", "classroom", "steps", "seed", "seeds", "flies", "warmup_s", "duration_s", "params", "surgery", "control",
             "stimuli", "recordings", "assay", "assay_options", "workers", "nwb"}
 STIM_KEYS = {"at_s", "for_s", "target", "strength", "recruit", "mode", "amp", "side"}
 
@@ -101,6 +101,8 @@ def check(data, where: str = "protocol") -> dict:
     if "assay" in p:
         if p["assay"] not in labjobs.ASSAYS:
             raise ProtocolError(f"{where}: assay must be one of {list(labjobs.ASSAYS)}")
+        return p
+    if p.get("classroom"):
         return p
     for key, default in (("warmup_s", 1.0), ("duration_s", 2.0)):
         v = p.setdefault(key, default)

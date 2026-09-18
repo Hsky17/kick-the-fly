@@ -2144,6 +2144,7 @@ class Game:
                  "and inputs and diff regional activity live."),
                 ("Optogenetics laser", "lab_laser", "Aimable in-world laser to activate or silence cell types live."),
                 ("Psychometric curves", "lab_psych", "Sweep parameters across trials and export publication-ready SVG/PDF."),
+                ("Classroom mode", "lab_classroom", "Sequential step-by-step lecture walkthroughs of connectome circuits with citations."),
                 ("Protocols", "lab_protocols", "Load and run YAML protocol files.")]
 
     def start_recording(self, groups: list[tuple[str, str]], seconds: float, nwb: bool = False) -> None:
