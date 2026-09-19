@@ -318,7 +318,29 @@ TOOL_NAMES = ("hand", "flick", "swatter", "bomb", "torch", "cleaner", "zapper", 
 STIM_AMP = 0.5              # x ext_gain 4 = 2.0 per step: a driven neuron fires every refractory cycle
 HIST = 1500                  # history samples, one per 20 ms = 30 s
 CALM_STEPS = 400             # 2 s without a touch before the baseline learns again
-MAX_FLIES = 16                # each is a full independent connectome sim thread; see docs/ for the perf budget
+
+
+def get_max_flies(backend: str | None = None) -> int:
+    """Dynamic fly cap adapting to compute backend: 64 on GPU, 32 on Numba, 16 on baseline CPU."""
+    if backend is None or backend == "auto":
+        from kickthefly.sim.connectome.backends import detect_available_backends
+        avail = detect_available_backends()
+        if avail.get("torch-cuda") or avail.get("torch-rocm"):
+            return 64
+        if avail.get("numba"):
+            return 32
+        return 16
+    backend = str(backend).lower()
+    if "cuda" in backend or "rocm" in backend:
+        return 64
+    if "numba" in backend:
+        return 32
+    if "torch" in backend:
+        return 24
+    return 16
+
+
+MAX_FLIES = get_max_flies()
 FLY_TOUCH_RADIUS = 40.0       # how close two flies' thoraxes get before they bump (game rule, not a measurement)
 
 
@@ -1884,7 +1906,8 @@ HELP = (
     ("L", "time-lapse record (2x-20x to GIF/MP4)"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
-    ("N", "spawn another fly, up to 16, each with its own brain"),
+    ("N", "spawn another fly (up to 16-64 backend-adaptive), each with its own brain"),
+    ("F", "cycle focused fly (brain panel / surgery / training)"),
     ("R", "reset to a single fresh fly"),
     ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
     ("T", "training: teach it to fear or like a smell (saved between sessions)"),
@@ -1928,6 +1951,11 @@ class Game:
         self._spawning = False
         self._new_slot: FlySlot | None = None
         self._reset_gen = 0    # bumped by new_fly(), so a spawn_fly() build in flight during an R can't reappear after
+        backend_choice = getattr(self, "backend_choice", None)
+        if backend_choice is None and hasattr(self, "cfg") and self.cfg is not None:
+            backend_choice = self.cfg.get("brain.backend", "auto")
+        self.max_flies = get_max_flies(backend_choice)
+        self._manual_focus_until = 0.0
         self.tool = 0
         self.kills = 0
         self.make_fonts()
@@ -2498,9 +2526,10 @@ class Game:
         self.streaks: list[list] = []
 
     def spawn_fly(self) -> None:
-        """N: add another fly, each with its own fully independent connectome brain thread, up to MAX_FLIES. The
+        """N: add another fly, each with its own fully independent connectome brain thread, up to max_flies. The
         brain build + warm-up (~600 steps) runs on a background thread so it never hitches a frame."""
-        if self._spawning or len(self.flies) >= MAX_FLIES or self.graph is None or self.weights is None:
+        max_f = getattr(self, "max_flies", MAX_FLIES)
+        if self._spawning or len(self.flies) >= max_f or self.graph is None or self.weights is None:
             return
         self._spawning = True
         seed = self._next_seed
@@ -2695,13 +2724,21 @@ class Game:
         """Reference point for 'closest to you'; Game3D overrides this with the player's eye."""
         return np.asarray(self.mouse, float)
 
+    def cycle_focus(self, step: int = 1) -> None:
+        """Cycle focus to the next/prev fly. Overrides auto-nearest-tracking for 5 seconds."""
+        if len(self.flies) > 1:
+            self.focus = (self.focus + step) % len(self.flies)
+            self._manual_focus_until = time.perf_counter() + 5.0
+            self.note(f"FOCUS    fly #{self.focus + 1}/{len(self.flies)}")
+
     def _update_focus(self) -> None:
         """The brain panel (and whichever fly training/surgery act on) always follows the fly nearest to you,
         except while a panel is open or mid-training/duel, where switching brains under the player would be
         confusing or apply an action to the wrong fly."""
         if len(self.flies) <= 1 or getattr(self, "duel", False) or self._overlay_open() or self.train is not None \
                 or getattr(self, "challenge", None) is not None \
-                or all(s.fly.dead for s in self.flies):
+                or all(s.fly.dead for s in self.flies) \
+                or getattr(self, "_manual_focus_until", 0.0) > time.perf_counter():
             return
         you = self._you_pos()
         self.focus = min(range(len(self.flies)),
@@ -5015,9 +5052,10 @@ class Game:
         card = pygame.Surface((236, 62), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 170), card.get_rect(), border_radius=10)
         surf.blit(card, (10, 8))
-        self._text(surf, self._fly_state(now).upper(), (22, 12), AMBER, self.f_head)
-        flies_txt = f"   flies {len(self.flies)}/{MAX_FLIES} (N)  fly #{self.focus + 1} (nearest)" if len(self.flies) > 1 \
-            else f"   flies 1/{MAX_FLIES} (N)"
+        max_f = getattr(self, "max_flies", MAX_FLIES)
+        focus_suffix = "manual, F" if getattr(self, "_manual_focus_until", 0.0) > now else "nearest, F"
+        flies_txt = f"   flies {len(self.flies)}/{max_f} (N)  fly #{self.focus + 1} ({focus_suffix})" if len(self.flies) > 1 \
+            else f"   flies 1/{max_f} (N)"
         self._text(surf, f"hits {self.hits}   kills {self.kills}{flies_txt}", (22, 42), TEXT, self.f_text)
         # health
         bw, bx, by = 300, PLAY_W // 2 - 150, 16
@@ -5409,6 +5447,8 @@ class Game:
             self.set_setting("brain.arena", ARENAS[i])
         elif action == "spawn":
             self.spawn_fly()
+        elif action == "cycle_fly":
+            self.cycle_focus()
         elif action == "recall":
             self.recall_flies(now)
         elif action == "mute":

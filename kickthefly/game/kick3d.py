@@ -153,7 +153,8 @@ HELP3D = (
     ("V", "brain panel: solid, see-through, faint, hidden"),
     ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
-    ("N", "spawn another fly, up to 16, each with its own brain"),
+    ("N", "spawn another fly (up to 16-64 backend-adaptive), each with its own brain"),
+    ("F", "cycle focused fly (in photo mode: autofocus)"),
     ("R", "reset to a single fresh fly"),
     ("Z  [  ]  .", "pause time, slower, faster, single step"),
     ("Esc", "close a panel, or open the menu (settings, save, quit)"),
@@ -3313,7 +3314,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             game.set_look(False)
         rel = pygame.mouse.get_rel() if game.look else (0, 0)
         keys = game.held(pygame.key.get_pressed())
-        if to_spawn and not game._spawning and len(game.flies) < k2.MAX_FLIES:
+        if to_spawn and not game._spawning and len(game.flies) < getattr(game, "max_flies", k2.MAX_FLIES):
             game.spawn_fly()
             to_spawn -= 1
         game.sync_time()

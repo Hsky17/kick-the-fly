@@ -185,6 +185,7 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("stethoscope", "Brain stethoscope", "k"),
     ("timelapse", "Time-lapse record", "l"),
     ("recall", "Recall a lost fly (outdoors)", "j"),
+    ("cycle_fly", "Cycle focused fly", "f"),
 )
 ACTION_LABEL = {a: label for a, label, _ in ACTIONS}
 RESERVED_KEYS = {"escape", *"0123456789", "-", "="}      # the pause menu and the tool keys can't be rebound
