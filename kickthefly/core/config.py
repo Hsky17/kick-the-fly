@@ -141,12 +141,12 @@ SETTINGS: tuple[Setting, ...] = (
       "Average left and right synaptic weights to enforce bilateral symmetry. Clearly a data modification game rule.",
       tag=GAME_RULE),
     S("brain.dtype", "Brain", "State precision", "choice", "float32",
-      "Precision for neural membrane voltage and state update. float32 is fast and bit-exact across validation; "
-      "float64 uses 64-bit doubles.", options=("float32", "float64"), labels=("float32 (Fast)", "float64 (Double)"),
+      "Precision of each neuron's membrane voltage. float32 (the default) is what validation used; float64 changes "
+      "the numbers slightly; validation hasn't been run in it.", options=("float32", "float64"), labels=("float32 (Fast)", "float64 (Double)"),
       tag=CONNECTOME),
     S("brain.backend", "Brain", "Compute backend", "choice", "auto",
-      "Compute engine for connectome simulation: auto selects fastest available (GPU, Numba, or CPU). "
-      "Falls back cleanly to CPU if hardware or libraries are missing.",
+      "What runs the brain simulation. Auto picks a GPU, then Numba, then NumPy. Numba and PyTorch are optional "
+      "(from source only); anything missing falls back to NumPy. Applies to every fly right away.",
       options=("auto", "cpu", "numba", "torch-cuda", "torch-rocm"),
       labels=("Auto", "CPU (NumPy)", "Numba (JIT)", "PyTorch (CUDA)", "PyTorch (ROCm)"),
       tag=CONNECTOME),

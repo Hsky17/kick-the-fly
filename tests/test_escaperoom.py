@@ -121,3 +121,29 @@ def test_escaperoom_reset():
     assert len(fly.stuck) == 0
     # Fly should be repositioned near x = 130
     assert abs(fly.p[k2.HEAD, 0] - 130.0) < 1e-4
+
+
+def test_escaperoom_timer_starts_at_the_game_clock():
+    """Starting in the escape room (config or --arena) resets it without a time; the timer used to start at 0 on a
+    clock that doesn't, and showed the machine's uptime (e.g. 7841 s) as the run time."""
+    game = SimpleNamespace(cfg={"brain.seed": 1}, clock=SimpleNamespace(now=7841.0))
+    game.flies = [SimpleNamespace(fly=k2.Fly(500.0))]
+    k2.Game.reset_escaperoom(game)
+    assert game.escaperoom_start_t == 7841.0
+
+
+def test_game_started_in_the_escaperoom_times_from_now():
+    """The same bug through the real constructor: a game started in the escape room (saved arena or --arena) showed
+    thousands of seconds on its speedrun timer, because __init__ set the start to 0 after new_fly() had run."""
+    import pygame
+    pygame.init()
+    from kickthefly.core.config import Config
+    from kickthefly.core.simcore import pack
+    from kickthefly.sim.connectome.sim import LIFParams, LIFSim
+    g, W, soma = pack()
+    br = k2.Brain(g, LIFSim(None, LIFParams(backend="cpu"), W_in=W, seed=1), seed=1)
+    cfg = Config()
+    cfg.set("brain.arena", "escaperoom")
+    game = k2.Game(None, br, k2.BrainView(soma, W, np.zeros(g.n, bool)), graph=g, weights=W, cfg=cfg)
+    assert k2.ARENAS[game.arena_i] == "escaperoom"
+    assert 0 <= game.clock.now - game.escaperoom_start_t < 5.0

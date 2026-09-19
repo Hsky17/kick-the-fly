@@ -12,15 +12,20 @@ Measures:
 - Neurons/second and synapse-evaluations/second
 - Current data layout (format, dtype, sharing across flies)
 """
+import sys
 import time
+from pathlib import Path
+
 import numpy as np
 import scipy.sparse as sp
 import pygame
 
-from kickthefly.core import simcore
-from kickthefly.game import kick_the_fly as k
-from kickthefly.sim.connectome.sim import LIFParams, LIFSim
-from kickthefly.core import memory as mem_mod
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))     # run as `python tools/profile_sim.py`
+
+from kickthefly.core import simcore  # noqa: E402
+from kickthefly.game import kick_the_fly as k  # noqa: E402
+from kickthefly.sim.connectome.sim import LIFParams, LIFSim  # noqa: E402
+from kickthefly.core import memory as mem_mod  # noqa: E402
 
 
 def inspect_data_layout():

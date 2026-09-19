@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 import numpy as np
+
+from kickthefly.core.version import __version__
 
 log = logging.getLogger("kickthefly")
 
@@ -33,16 +36,19 @@ _last_request_time = 0.0
 
 
 def default_cache_dir() -> Path:
-    """Path to local skeleton cache in data/skeletons or user state directory."""
-    repo_cache = Path(__file__).resolve().parent.parent.parent / "data" / "skeletons"
-    try:
-        repo_cache.mkdir(parents=True, exist_ok=True)
-        return repo_cache
-    except OSError:
-        from kickthefly.core import paths
-        p = paths.get().cache_dir / "skeletons"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+    """Where downloaded skeletons are kept. From a source checkout: data/skeletons next to the brain pack. In the exe
+    and the AppImage (whose own folders are temporary or read-only): a skeletons folder in the user's data folder
+    (~/.local/share/kickthefly/skeletons, Documents\\Kick the Fly\\skeletons)."""
+    from kickthefly.core import paths
+    user = paths.get().data_dir / "skeletons"
+    if getattr(sys, "frozen", False) or os.environ.get("APPIMAGE"):
+        return paths.ensure_dir(user)
+    return paths.ensure_dir(Path(__file__).resolve().parent.parent.parent / "data" / "skeletons", user)
+
+
+def network_allowed() -> bool:
+    """KICK_THE_FLY_OFFLINE=1 keeps the game (and the test suite) from contacting neuPrint; cached skeletons still load."""
+    return os.environ.get("KICK_THE_FLY_OFFLINE", "").strip() not in ("1", "true", "yes")
 
 
 def parse_swc(text: str, n_samples: int = 21) -> np.ndarray | None:
@@ -72,7 +78,7 @@ def parse_swc(text: str, n_samples: int = 21) -> np.ndarray | None:
 
 
 def fetch_or_load_skeleton(body_id: int, cache_dir: Path | None = None,
-                           allow_network: bool = True) -> np.ndarray | None:
+                           allow_network: bool = True, n_samples: int = 21) -> np.ndarray | None:
     """Returns (n_samples, 3) coordinates for a body_id, checking cache first then neuPrint."""
     global _last_request_time
     if cache_dir is None:
@@ -81,11 +87,11 @@ def fetch_or_load_skeleton(body_id: int, cache_dir: Path | None = None,
     cache_file = cache_dir / f"{body_id}.swc"
     if cache_file.exists():
         try:
-            return parse_swc(cache_file.read_text(encoding="utf-8", errors="ignore"))
+            return parse_swc(cache_file.read_text(encoding="utf-8", errors="ignore"), n_samples)
         except Exception as e:
             log.warning("Failed to read cached skeleton %s: %s", cache_file, e)
 
-    if not allow_network:
+    if not allow_network or not network_allowed():
         return None
 
     # Rate limiting
@@ -95,7 +101,7 @@ def fetch_or_load_skeleton(body_id: int, cache_dir: Path | None = None,
         time.sleep(RATE_LIMIT_S - elapsed)
 
     url = f"{NEUPRINT_BASE_URL}/{DATASET}/{body_id}?format=swc"
-    req = urllib.request.Request(url, headers={"User-Agent": "KickTheFly/2.8 (connectome-research)"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"KickTheFly/{__version__} (+https://github.com/legendarylolo318-cloud/kick-the-fly)"})
     try:
         _last_request_time = time.perf_counter()
         with urllib.request.urlopen(req, timeout=4.0) as resp:
@@ -104,14 +110,14 @@ def fetch_or_load_skeleton(body_id: int, cache_dir: Path | None = None,
                 cache_file.write_bytes(content)
             except OSError:
                 pass
-            return parse_swc(content.decode("utf-8", errors="ignore"))
+            return parse_swc(content.decode("utf-8", errors="ignore"), n_samples)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         log.info("neuPrint skeleton fetch failed for body %d (%s); using synthetic fibers", body_id, e)
         return None
 
 
-def load_key_skeletons(graph, cache_dir: Path | None = None,
-                       allow_network: bool = True) -> tuple[dict[int, np.ndarray], str]:
+def load_key_skeletons(graph, cache_dir: Path | None = None, allow_network: bool = True,
+                       n_samples: int = 21) -> tuple[dict[int, np.ndarray], str]:
     """Loads skeletons for key neurons (DNp01, DNa02, MBONs, KCs).
 
     Returns:
@@ -132,7 +138,8 @@ def load_key_skeletons(graph, cache_dir: Path | None = None,
             bid = int(bodies[idx])
             if bid <= 0:
                 continue
-            coords = fetch_or_load_skeleton(bid, cache_dir=cache_dir, allow_network=allow_network and not network_failed)
+            coords = fetch_or_load_skeleton(bid, cache_dir=cache_dir, n_samples=n_samples,
+                                            allow_network=allow_network and not network_failed)
             if coords is not None:
                 skeletons[int(idx)] = coords
             else:
@@ -140,7 +147,7 @@ def load_key_skeletons(graph, cache_dir: Path | None = None,
                     network_failed = True
 
     if skeletons:
-        status = f"Real morphology: {len(skeletons)} neuPrint skeletons active"
+        status = f"Real morphology: {len(skeletons)} neurons drawn from neuPrint skeletons"
     else:
         status = "Skeletons offline - using synthetic fibers"
 

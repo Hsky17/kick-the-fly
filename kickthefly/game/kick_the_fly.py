@@ -25,12 +25,29 @@ when the sim was probed (40 hits per site, 400 ms before vs after). Which move
 each group triggers is a game choice. The giant fiber DNp01 barely reacts to
 touch in this model, so it isn't used. Wing touches mostly raise DNp09.
 
-Brain view: a front view built from the neurons' real cell-body positions. Key
-neuron classes (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) load real
-EM reconstruction morphology skeletons (SWC) from Janelia neuPrint (MaleCNS v1.0),
-cached in data/skeletons/ with offline fallback to synthetic fibers. Other neurons
-are drawn as fibers from cell body toward synaptic partner centroids, colored by
-direction and shaded by depth. Neurons firing above their calm rate glow. B toggles big view.
+Brain view: a front view built from the neurons' real cell-body positions. Almost
+every neuron is drawn as an estimated fiber from its cell body toward the center of
+its synaptic partners, colored by direction and shaded by depth. Ten of them (two
+each of the giant fiber DNp01, the steering neuron DNa02, MBON01, MBON14 and KCg,
+the first two of each type in the pack) are drawn instead from 21 points sampled
+along their real EM skeletons, downloaded from neuPrint (MaleCNS v1.0) and cached
+(sim/morphology.py); offline and uncached, they fall back to estimated fibers. The
+shapes are only drawn: the simulation is point neurons either way. Neurons firing
+above their calm rate glow. B toggles the big view.
+
+Compute backends (sim/connectome/backends.py): the same LIF step runs on NumPy
+(cpu, the reference), Numba (numba), or PyTorch (torch-cpu, torch-cuda, torch-rocm);
+auto picks a GPU, then Numba, then NumPy, and a missing library falls back to NumPy
+with a logged reason. numba and torch-cpu are bit-exact with cpu (same float32
+operations in the same order; tested over 1000 steps in float32 and float64), so
+validation, assays and save states give identical spikes on any of them. GPU sparse
+kernels may add a neuron's inputs in another order, so torch-cuda/torch-rocm are only
+held to a statistical tolerance. The backend that actually ran is recorded in
+benchmarks, validation results, exports, save states and crash reports. The fly cap
+(N) depends on it. The exe and AppImage bundle neither Numba nor PyTorch.
+
+Video (Shift+R, --record-video): MP4 through ffmpeg (WebM by name), else a capped,
+downscaled GIF, paced by the wall clock so it plays back at real speed.
 
 Pain neurons (P): the connectome can't be given extra neurons, so this setting
 listens to more of the fly's real ones and makes each hit fire more of them.
@@ -321,26 +338,36 @@ CALM_STEPS = 400             # 2 s without a touch before the baseline learns ag
 
 
 def get_max_flies(backend: str | None = None) -> int:
-    """Dynamic fly cap adapting to compute backend: 64 on GPU, 32 on Numba, 16 on baseline CPU."""
+    """How many flies N may spawn, for the backend that actually runs (measured in README: Performance).
+
+    NumPy (cpu) and torch-cpu: 16, as before; brains share Python's interpreter lock, and torch on a CPU is slower
+    than NumPy. Numba releases the lock, so each brain can have a core: one per core, between 16 and 32 (24 on a
+    24-core machine, where 16 brains still keep real time headless). GPU backends: 32, not yet measured on a GPU.
+    Every spawn also needs free memory (BRAIN_MB each), checked when you press N."""
     if backend is None or backend == "auto":
         from kickthefly.sim.connectome.backends import detect_available_backends
         avail = detect_available_backends()
-        if avail.get("torch-cuda") or avail.get("torch-rocm"):
-            return 64
-        if avail.get("numba"):
-            return 32
-        return 16
+        backend = next((b for b in ("torch-cuda", "torch-rocm", "numba") if b in avail), "cpu")
     backend = str(backend).lower()
-    if "cuda" in backend or "rocm" in backend:
-        return 64
-    if "numba" in backend:
+    if backend in ("torch-cuda", "torch-rocm"):
         return 32
-    if "torch" in backend:
-        return 24
+    if backend == "numba":
+        return int(min(32, max(16, os.cpu_count() or 16)))
     return 16
 
 
+def save_image(surf: "pygame.Surface", path) -> None:
+    """pygame.image.save, falling back to Pillow when this pygame was built without PNG/JPEG support (some distro
+    packages are)."""
+    try:
+        pygame.image.save(surf, str(path))
+    except (NotImplementedError, pygame.error):
+        from PIL import Image
+        Image.frombytes("RGB", surf.get_size(), pygame.image.tobytes(surf, "RGB")).save(str(path))
+
+
 MAX_FLIES = get_max_flies()
+BRAIN_MB = 350                # resident memory per extra brain (310-390 MB measured; its own weight matrices)
 FLY_TOUCH_RADIUS = 40.0       # how close two flies' thoraxes get before they bump (game rule, not a measurement)
 
 
@@ -1917,10 +1944,10 @@ HELP = (
     ("I", "immortal mode"),
     ("K", "brain stethoscope (spike sonification clicks)"),
     ("L", "time-lapse record (2x-20x to GIF/MP4)"),
-    ("Shift+R", "record video (MP4/WebM/GIF to videos/; toggle on/off)"),
+    ("Shift+R", "record a video (MP4 with ffmpeg, else GIF; again to stop)"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
-    ("N", "spawn another fly (up to 16-64 backend-adaptive), each with its own brain"),
+    ("N", "spawn another fly, each with its own brain (16; one per CPU core, up to 32, on Numba)"),
     ("F", "cycle focused fly (brain panel / surgery / training)"),
     ("R", "reset to a single fresh fly"),
     ("F11", "fullscreen (or Alt+Enter); drag the window edge to resize"),
@@ -1965,10 +1992,8 @@ class Game:
         self._spawning = False
         self._new_slot: FlySlot | None = None
         self._reset_gen = 0    # bumped by new_fly(), so a spawn_fly() build in flight during an R can't reappear after
-        backend_choice = getattr(self, "backend_choice", None)
-        if backend_choice is None and hasattr(self, "cfg") and self.cfg is not None:
-            backend_choice = self.cfg.get("brain.backend", "auto")
-        self.max_flies = get_max_flies(backend_choice)
+        running = getattr(getattr(getattr(brain, "sim", None), "backend", None), "name", None)
+        self.max_flies = get_max_flies(running or self.cfg.get("brain.backend", "auto"))   # the backend that runs
         self._manual_focus_until = 0.0
         self.tool = 0
         self.kills = 0
@@ -2001,7 +2026,7 @@ class Game:
         self.inspect: dict | None = None
         from kickthefly.lab.laser import LaserState
         self.laser_state = LaserState()
-        self.escaperoom_start_t = 0.0
+        self.escaperoom_start_t = self.clock.now          # the game clock runs on perf_counter, not from 0
         self.escaperoom_seed = 0
         self.escaperoom_completed = False
         self.escaperoom_finish_t = 0.0
@@ -2122,6 +2147,8 @@ class Game:
                 sim.p.backend = b_choice
                 sim.backend_choice = b_choice
                 sim.backend = backends.create_backend(sim, b_choice)
+            if getattr(self, "flies", None):
+                self.max_flies = get_max_flies(self.flies[0].brain.sim.backend.name)
 
     def toggle_mirror_weights(self) -> None:
         val = not bool(self.cfg["brain.mirror_weights"])
@@ -2505,8 +2532,9 @@ class Game:
         if ARENAS[self.arena_i] == "escaperoom":
             self.reset_escaperoom(now=now)
 
-    def reset_escaperoom(self, now: float = 0.0, seed: int | None = None) -> None:
-        self.escaperoom_start_t = now
+    def reset_escaperoom(self, now: float | None = None, seed: int | None = None) -> None:
+        # the game clock doesn't start at 0: without a time the timer used to show the machine's uptime
+        self.escaperoom_start_t = self.clock.now if now is None else now
         self.escaperoom_seed = seed if seed is not None else int(self.cfg.get("brain.seed", 0))
         self.escaperoom_completed = False
         self.escaperoom_finish_t = 0.0
@@ -2547,13 +2575,23 @@ class Game:
         max_f = getattr(self, "max_flies", MAX_FLIES)
         if self._spawning or len(self.flies) >= max_f or self.graph is None or self.weights is None:
             return
+        free = platform_env.available_memory_mb()
+        if free is not None and free < 2 * BRAIN_MB:     # each fly holds its own copy of the connectome
+            self.note(f"N        no room for another brain: each needs about {BRAIN_MB} MB, {free:,.0f} MB free",
+                      source="rule")
+            return
         self._spawning = True
         seed = self._next_seed
         self._next_seed += 1
         gen = self._reset_gen
 
         def build() -> None:
-            new_brain = self.build_brain(seed)
+            try:
+                new_brain = self.build_brain(seed)
+            except Exception:                   # never leave N dead for the rest of the session
+                log.exception("building fly #%d's brain failed", seed)
+                self._spawning = False
+                return
             if gen != self._reset_gen:          # R was pressed while this build was in flight: discard it
                 new_brain.stop()
                 return
@@ -2565,6 +2603,8 @@ class Game:
     def build_brain(self, seed: int) -> "Brain":
         """A fresh, warmed-up, not-yet-started brain for another fly (its own LIFSim and mushroom body)."""
         from kickthefly.lab import lab
+        from kickthefly.sim.connectome.sim import LIFParams, LIFSim
+
         lif_params = LIFParams()
         if hasattr(self, "cfg") and self.cfg:
             lif_params.backend = str(self.cfg.get("brain.backend", "auto"))
@@ -2831,11 +2871,13 @@ class Game:
         self._text(surf, "LIVE CONNECTOME", (22, 16), INK, self.f_head)
         v = self.view
         pulse = 1.0 if self.calm_fx else 0.5 + 0.5 * math.sin(now * 6)
-        self._text(surf, f"{v.firing:,} firing", (195, 20), (150, 215, 240), self.f_bold)
-        self._text(surf, f"{v.hot_firing:,} pain", (325, 20), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
+        # Header: title and the recording/stethoscope/mode controls on the first row, the live counts and the camera
+        # presets on the second; status and help lines go under the brain so nothing overlaps.
+        r = self._text(surf, f"{v.firing:,} firing", (24, 38), (150, 215, 240), self.f_bold)
+        self._text(surf, f"{v.hot_firing:,} pain", (r.right + 18, 38), tuple(int(c * (0.7 + 0.3 * pulse)) for c in (255, 150, 70)), self.f_bold)
 
         # Time-lapse recording button:
-        tl_btn = pygame.Rect(rect.right - 805, 15, 105, 22)
+        tl_btn = pygame.Rect(232, 13, 105, 22)
         rec_active = getattr(self, "timelapse_recording", False)
         sp = int(self.cfg.get("graphics.timelapse_speedup", 5))
         pygame.draw.rect(surf, (65, 25, 25) if rec_active else (24, 28, 38), tl_btn, border_radius=4)
@@ -2845,7 +2887,7 @@ class Game:
         self.big_timelapse_button = tl_btn
 
         # Stethoscope buttons:
-        steth_target_btn = pygame.Rect(rect.right - 690, 15, 145, 22)
+        steth_target_btn = pygame.Rect(tl_btn.right + 8, 13, 145, 22)
         steth_tgt_lbl = self.stethoscope_target_label()
         if len(steth_tgt_lbl) > 13:
             steth_tgt_lbl = steth_tgt_lbl[:12] + "…"
@@ -2854,7 +2896,7 @@ class Game:
         self._text(surf, f"Probe: {steth_tgt_lbl} ▾", steth_target_btn.center, (170, 205, 235), self.f_small, "center")
         self.big_steth_target_button = steth_target_btn
 
-        steth_btn = pygame.Rect(rect.right - 535, 15, 125, 22)
+        steth_btn = pygame.Rect(steth_target_btn.right + 8, 13, 125, 22)
         steth_active = bool(self.cfg["audio.stethoscope_enabled"])
         pygame.draw.rect(surf, (30, 65, 40) if steth_active else (24, 28, 38), steth_btn, border_radius=4)
         pygame.draw.rect(surf, (80, 220, 120) if steth_active else BORDER, steth_btn, 1, border_radius=4)
@@ -2864,9 +2906,9 @@ class Game:
 
         # Camera presets & status:
         self.big_preset_buttons = []
-        bx = rect.right - 260
+        bx = PLAY_W - 22 - (4 * 58 + 3 * 6)
         for name, key_label in (("front", "1:Front"), ("side", "2:Side"), ("top", "3:Top"), ("reset", "0:Reset")):
-            btn_rect = pygame.Rect(bx, 15, 58, 22)
+            btn_rect = pygame.Rect(bx, 37, 58, 20)
             active = (v.preset == name) if name != "reset" else False
             bg = (45, 65, 95) if active else (24, 28, 38)
             border_c = ACCENT if active else BORDER
@@ -2884,17 +2926,13 @@ class Game:
         else:
             self._last_big_orbit = time.perf_counter()
 
-        cam_info = f"View: {v.preset.upper()} (yaw {v.yaw:+.0f}° pitch {v.pitch:+.0f}° zoom {v.zoom:.1f}x)"
+        cam_info = f"{v.preset.upper()}  yaw {v.yaw:+.0f}°  pitch {v.pitch:+.0f}°  zoom {v.zoom:.1f}x"
         if self.cfg["brain.autopilot"]:
-            cam_info += " [AUTOPILOT ORBIT]" if self.cfg["brain.autopilot_orbit"] else " [AUTOPILOT]"
-        self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
-
-        skel_status = getattr(v, "skeleton_status", "Skeletons offline - using synthetic fibers")
-        skel_col = (130, 220, 180) if "Real" in skel_status else (210, 160, 120)
-        self._text(surf, skel_status, (PLAY_W // 2, 40), skel_col, self.f_small, "center")
+            cam_info += "  AUTOPILOT"
+        self._text(surf, cam_info, (r.right + 150, 40), (150, 200, 225), self.f_small)
 
         # Mode toggle button:
-        mode_btn = pygame.Rect(rect.right - 400, 15, 130, 22)
+        mode_btn = pygame.Rect(steth_btn.right + 8, 13, 130, 22)
         mode_label = "Mode: Per-Region" if v.view_mode == "region" else "Mode: Per-Neuron"
         mode_active = (v.view_mode == "region")
         pygame.draw.rect(surf, (50, 75, 110) if mode_active else (24, 28, 38), mode_btn, border_radius=4)
@@ -2927,25 +2965,25 @@ class Game:
         if getattr(self, "selected_region", None):
             self._draw_region_neuron_list(surf, rect, now)
 
-        self._text(surf, "click neuron to inspect  |  drag orbit  |  Shift+drag pan  |  wheel zoom  |  B to close",
-                   (PLAY_W - 22, 40), LABEL, self.f_small, "topright")
-        ly = rect.bottom + 12
+        ly = rect.bottom + 6
         if v.view_mode == "region":
             self._text(surf, "click a region above to browse neurons  |  colors: dataset region labels  |  glow: live region activity heat",
                        (30, ly), TEXT, self.f_small)
             self._text(surf, "Neurons without region annotations in MaleCNS v1.0 are kept in an explicit 'unassigned' bucket.",
-                       (30, ly + 20), DIM, self.f_small)
+                       (30, ly + 18), DIM, self.f_small)
         else:
             hot_c, cool_c = self.view.legend
             aacircle(surf, (30, ly + 7), 5, hot_c)
             r = self._text(surf, "pain-sensing neurons firing", (42, ly), TEXT, self.f_small)
             aacircle(surf, (r.right + 22, ly + 7), 5, cool_c)
             r = self._text(surf, "other neurons firing", (r.right + 34, ly), TEXT, self.f_small)
-            self._text(surf, "dim wiring colored by fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
-            self._text(surf, "Fibers run from each neuron's real cell body toward its synaptic partners (estimated shapes).",
-                       (24, ly + 20), DIM, self.f_small)
-        self._text(surf, "Stethoscope: K toggle  |  clicks sonify spikes in probe target [GAME RULE: synthetic sonification, not an LFP]",
-                   (PLAY_W - 24, ly + 20), (140, 180, 200), self.f_small, "topright")
+            self._text(surf, "dim wiring: fiber direction, front brighter", (r.right + 22, ly), LABEL, self.f_small)
+            skel_status = getattr(v, "skeleton_status", "Skeletons offline - using synthetic fibers")
+            real = skel_status.startswith("Real")
+            self._text(surf, skel_status + ("; every other fiber is estimated" if real else ""), (24, ly + 18),
+                       (130, 220, 180) if real else (210, 160, 120), self.f_small)
+        self._text(surf, "click: inspect · drag: orbit · Shift+drag: pan · wheel: zoom · K: stethoscope (a GAME RULE) "
+                   "· B: close", (24, ly + 36), LABEL, self.f_small)
 
     def _draw_region_neuron_list(self, surf, rect: pygame.Rect, now: float) -> None:
         rname = self.selected_region
@@ -3941,7 +3979,7 @@ class Game:
         if scale > 1:
             w, h = surf.get_size()
             surf = pygame.transform.smoothscale(surf, (w * scale, h * scale))
-        pygame.image.save(surf, str(path))
+        save_image(surf, path)
         self.saved_note(path)
         self.sound.play("shutter")
 
@@ -3998,24 +4036,28 @@ class Game:
         return getattr(self, "video_recorder", None) is not None and self.video_recorder.is_recording
 
     def toggle_video_recording(self, output_path: str | Path | None = None) -> None:
+        """Shift+R: start or stop a video of any length (MP4 through ffmpeg, else a GIF), saved with the screenshots
+        unless output_path (--record-video PATH) says otherwise."""
         if not getattr(self, "video_recorder", None):
             from kickthefly.game.video_recorder import VideoRecorder
             self.video_recorder = VideoRecorder()
-
-        if not self.video_recorder.is_recording:
+        rec = self.video_recorder
+        if not rec.is_recording:
+            from kickthefly.game.video_recorder import VIDEO_FPS
             disp = pygame.display.get_surface()
             w, h = disp.get_size() if disp else self.screen.get_size()
-            fps = int(self.cfg.get("graphics.fps_cap", 30))
-            out = self.video_recorder.start(output_path, width=w, height=h, fps=fps)
+            out = rec.start(output_path or self.media_path("mp4"), width=w, height=h, fps=VIDEO_FPS)
             fmt = out.suffix.upper().lstrip(".")
-            self.note(f"VIDEO RECORDING ({fmt}) -> {out.name}  (R / Shift+R: stop)", source="rule")
+            self.note(f"VIDEO RECORDING ({fmt}) -> {out.name}  (Shift+R: stop)", source="rule")
             self.sound.play("click")
         else:
-            out = self.video_recorder.stop()
+            out = rec.stop()
             self.sound.play("shutter")
             if out:
                 self.saved_note(out)
                 self.note(f"VIDEO SAVED: {out.name}", source="rule")
+            else:
+                self.note("VIDEO FAILED: nothing was saved (see the log)", source="rule")
 
     def capture_video_frame(self) -> None:
         if getattr(self, "video_recorder", None) and self.video_recorder.is_recording:
@@ -4101,7 +4143,7 @@ class Game:
             self._bar(surf, x + 84, yy, w - 150, v, (255, 150, 190) if good else (240, 150, 60))
             self._text(surf, f"{'likes' if good else 'fears'} {v:.2f}", (x + w - 12, yy - 3), TEXT, self.f_small, "topright")
             yy += 16
-        self._text(surf, "real synapses, saved   T: train", (x + 12, y + h - 16), DIM, self.f_small)
+        self._text(surf, "real synapses · T: train", (x + 12, y + h - 16), DIM, self.f_small)
 
     def _above_head(self):
         """Where a popup over the fly goes (the 3D game overrides this)."""
@@ -5100,9 +5142,9 @@ class Game:
         card = pygame.Surface((236, 62), pygame.SRCALPHA)
         pygame.draw.rect(card, (10, 12, 18, 170), card.get_rect(), border_radius=10)
         surf.blit(card, (10, 8))
+        self._text(surf, self._fly_state(now).upper(), (22, 12), AMBER, self.f_head)
         max_f = getattr(self, "max_flies", MAX_FLIES)
-        focus_suffix = "manual, F" if getattr(self, "_manual_focus_until", 0.0) > now else "nearest, F"
-        flies_txt = f"   flies {len(self.flies)}/{max_f} (N)  fly #{self.focus + 1} ({focus_suffix})" if len(self.flies) > 1 \
+        flies_txt = f"   flies {len(self.flies)}/{max_f} · #{self.focus + 1}" if len(self.flies) > 1 \
             else f"   flies 1/{max_f} (N)"
         self._text(surf, f"hits {self.hits}   kills {self.kills}{flies_txt}", (22, 42), TEXT, self.f_text)
         # health
@@ -5145,8 +5187,8 @@ class Game:
             badge_txt = self.video_recorder.badge_text(now)
             pulse = 0.5 + 0.5 * math.sin(now * 8)
             col = (int(255 * (0.6 + 0.4 * pulse)), 40, 40)
-            rec_str = f"● {badge_txt} [R: stop]"
-            vbox = pygame.Rect(PLAY_W // 2 - 75, 62, 150, 24)
+            rec_str = f"● {badge_txt} [Shift+R]"
+            vbox = pygame.Rect(PLAY_W // 2 - 100, 62, 200, 24)
             pygame.draw.rect(surf, (15, 18, 26, 220), vbox, border_radius=6)
             pygame.draw.rect(surf, col, vbox, 1, border_radius=6)
             self._text(surf, rec_str, vbox.center, col, self.f_small, "center")
@@ -5565,9 +5607,6 @@ class Game:
             if (ev.key == pygame.K_r and (ev.mod & pygame.KMOD_SHIFT)) or getattr(ev, "unicode", "") == "R":
                 self.toggle_video_recording()
                 return True
-            if getattr(self, "video_recorder", None) and self.video_recorder.is_recording and ev.key == pygame.K_r:
-                self.toggle_video_recording()
-                return True
             if ev.key == pygame.K_s and self.cfg.action_for("s") in (None, *config.MOVEMENT_3D_ONLY):
                 self.save_png()                          # S has always saved a screenshot in the 2D game
                 return True
@@ -5830,6 +5869,7 @@ def parse_args(argv: list[str] | None = None):
     from kickthefly.sim.connectome import backends as sim_backends
     ap.add_argument("--backend", help="Compute backend (auto, cpu, numba, torch-cuda, torch-rocm) or Linux display backend (wayland, x11)")
     ap.add_argument("--sim-backend", choices=sim_backends.BACKEND_NAMES, help="Simulation compute backend")
+    ap.add_argument("--dtype", choices=("float32", "float64"), help="simulation state precision (default float32)")
     ap.add_argument("--seed", type=int, help="random seed for the brains and the game")
     ap.add_argument("--smoke", nargs="+", metavar="ARG", help="build check: SECONDS [SCREENSHOT.png]")
     ap.add_argument("--verbose", action="store_true")
@@ -5865,7 +5905,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
     ap.add_argument("--record-video", dest="record_video", nargs="?", const="default", metavar="PATH",
-                    help="record gameplay video to PATH or videos/ (MP4/WebM with ffmpeg, else GIF)")
+                    help="start recording a video at launch, to PATH or the screenshots folder (MP4/WebM with ffmpeg, else GIF)")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
         log.warning("ignoring unknown arguments: %s", " ".join(unknown))
@@ -5903,6 +5943,8 @@ def main(argv: list[str] | None = None) -> int:
             sim_backend_choice = "auto"
     if sim_backend_choice:
         cfg.set("brain.backend", sim_backend_choice)
+    if getattr(args, "dtype", None):
+        cfg.set("brain.dtype", args.dtype)
     args.display_backend = display_backend_choice
     args.sim_backend = sim_backend_choice
     if args.autopilot:
@@ -5996,7 +6038,7 @@ def main(argv: list[str] | None = None) -> int:
             status = f"smoke ok: {brain.n:,} neurons, {brain.steps_per_s:.0f} steps/s, sound {game.sound.ok}, {gif}"
             print(status)
             if shot:                                      # optional screenshot path; the exe has no console
-                pygame.image.save(screen, shot)
+                save_image(screen, shot)
                 with open(shot + ".txt", "w") as f:
                     f.write(status)
             break

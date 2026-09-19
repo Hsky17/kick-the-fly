@@ -163,7 +163,56 @@ def test_game_hotkey_toggle():
     game.handle(ev_press, 0.0)
     assert game.video_recording
 
-    # Press 'r' while recording to stop it
-    ev_stop = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r, mod=0, unicode="r")
+    # Shift+R again stops it; plain R is left to "reset the fly" (and respawn in the duel)
+    ev_stop = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r, mod=pygame.KMOD_SHIFT, unicode="R")
     game.handle(ev_stop, 1.0)
     assert not game.video_recording
+
+
+def test_recorder_paces_by_wall_clock(tmp_path: Path, monkeypatch):
+    """A game drawing at 10 fps still gives a 30 fps video that lasts as long as the recording (frames repeated),
+    and one drawing at 120 fps doesn't speed the video up (frames skipped)."""
+    monkeypatch.setattr("kickthefly.game.video_recorder.ffmpeg_available", lambda: False)
+    rec = VideoRecorder()
+    rec.start(tmp_path / "slow.gif", width=64, height=48)
+    t0 = rec.start_time
+    frame = (b"\x10" * (64 * 48 * 3), (64, 48))
+    grabs = []
+    for i in range(20):                                      # 2 s at 10 fps
+        rec.capture(lambda: grabs.append(1) or frame, now=t0 + i / 10)
+    assert len(grabs) == 20
+    from kickthefly.game.video_recorder import GIF_FPS
+    assert abs(len(rec._gif_frames) - 1.9 * GIF_FPS) <= 2
+    rec.stop()
+
+    rec = VideoRecorder()
+    rec.start(tmp_path / "fast.gif", width=64, height=48)
+    t0 = rec.start_time
+    grabs = []
+    for i in range(240):                                     # 2 s at 120 fps
+        rec.capture(lambda: grabs.append(1) or frame, now=t0 + i / 120)
+    assert abs(len(rec._gif_frames) - 2 * GIF_FPS) <= 2
+    assert len(grabs) < 240                                  # the readback is skipped when no frame is due
+    rec.stop()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_recorder_survives_resize(tmp_path: Path):
+    rec = VideoRecorder()
+    out = rec.start(tmp_path / "resize.mp4", width=320, height=240)
+    rec.write_frame_bytes(b"\x00" * (320 * 240 * 3))
+    rec.write_frame_bytes(b"\x80" * (640 * 360 * 3), size=(640, 360))    # the window grew mid-recording
+    assert rec.stop() == out and out.stat().st_size > 500
+
+
+def test_gif_fallback_is_capped(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("kickthefly.game.video_recorder.ffmpeg_available", lambda: False)
+    from kickthefly.game import video_recorder as vr
+    monkeypatch.setattr(vr, "GIF_MAX_S", 0.5)
+    rec = VideoRecorder()
+    rec.start(tmp_path / "cap.gif", width=64, height=48)
+    for _ in range(40):
+        rec.write_frame_bytes(b"\x20" * (64 * 48 * 3))
+    assert rec.gif_full and len(rec._gif_frames) == int(0.5 * vr.GIF_FPS)
+    assert "GIF FULL" in rec.badge_text()
+    assert rec.stop().exists()

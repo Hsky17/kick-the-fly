@@ -16,11 +16,11 @@ from kickthefly.game.kick_the_fly import get_max_flies
 
 
 def test_dynamic_max_flies():
+    import os
     assert get_max_flies("cpu") == 16
-    assert get_max_flies("numba") == 32
-    assert get_max_flies("torch-cuda") == 64
-    assert get_max_flies("torch-rocm") == 64
-    assert get_max_flies("torch-cpu") == 24
+    assert get_max_flies("torch-cpu") == 16
+    assert get_max_flies("numba") == min(32, max(16, os.cpu_count() or 16))
+    assert get_max_flies("torch-cuda") == get_max_flies("torch-rocm") == 32
 
 
 def test_swarm_and_f_cycling_and_plasticity():
@@ -37,7 +37,7 @@ def test_swarm_and_f_cycling_and_plasticity():
 
     # Create game in headless/dummy mode
     game = k2.Game(None, br1, view, graph=g, weights=W, cfg=cfg)
-    assert game.max_flies == 32
+    assert game.max_flies == get_max_flies(game.brain.sim.backend.name)
 
     # Spawn additional flies up to 4 for testing
     for s in range(2, 6):
@@ -96,3 +96,24 @@ def test_swarm_in_outdoor_arenas():
         game.three_d = True
         game.arena_i = k2.ARENAS.index(arena)
         assert k2.ARENAS[game.arena_i] == arena
+
+
+def test_spawn_builds_a_real_brain_through_the_game():
+    """N goes through Game.spawn_fly -> build_brain on a thread. 2.8's first cut lost an import there, so every spawn
+    died with a NameError on that thread and the swarm never grew; build the brain the same way the key does."""
+    g, W, soma = pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=1)
+    br = k2.Brain(g, sim, seed=1)
+    view = k2.BrainView(soma, W, np.zeros(g.n, bool))
+    cfg = Config()
+    cfg.set("brain.backend", "cpu")
+    game = k2.Game(None, br, view, graph=g, weights=W, cfg=cfg)
+    new = game.build_brain(seed=2)
+    assert new.sim.n == g.n and new.sim.backend.name == "cpu"
+    game.spawn_fly()
+    import time
+    t0 = time.perf_counter()
+    while game._spawning and game._new_slot is None and time.perf_counter() - t0 < 60:
+        time.sleep(0.1)
+    assert game._new_slot is not None, "the spawn thread never produced a fly"
+    game._new_slot.brain.stop()

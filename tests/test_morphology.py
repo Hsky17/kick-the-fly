@@ -47,6 +47,20 @@ def test_brainview_with_skeletons():
     g, W, soma = pack()
     pain_mask = np.zeros(g.n, bool)
     view = k2.BrainView(soma, W, pain_mask, graph=g)
-    assert hasattr(view, "skeleton_status")
-    # Skeletons status should either indicate active real skeletons or offline fallback
-    assert "Real morphology" in view.skeleton_status or "Skeletons offline" in view.skeleton_status
+    cached = [bid for bid in g.body_id[np.char.startswith(g.type.astype(str), "DNp01")][:2]
+              if (morphology.default_cache_dir() / f"{int(bid)}.swc").exists()]
+    if cached:          # a cached skeleton must really be drawn (a signature mismatch once hid this behind the fallback)
+        assert view.skeleton_status.startswith("Real morphology"), view.skeleton_status
+    else:
+        assert "Skeletons offline" in view.skeleton_status
+
+
+def test_load_key_skeletons_takes_the_view_sample_count(tmp_path):
+    g, _, _ = pack()
+    swc = "\n".join(f"{i} 1 {i}.0 {2 * i}.0 {3 * i}.0 1.0 {i - 1 if i > 1 else -1}" for i in range(1, 200))
+    bid = int(g.body_id[np.flatnonzero(g.type.astype(str) == "DNp01")[0]])
+    (tmp_path / f"{bid}.swc").write_text(swc)
+    skels, status = morphology.load_key_skeletons(g, cache_dir=tmp_path, allow_network=False,
+                                                   n_samples=k2.BrainView.FIBER + k2.BrainView.ARBOR)
+    assert status.startswith("Real morphology")
+    assert all(c.shape == (k2.BrainView.FIBER + k2.BrainView.ARBOR, 3) for c in skels.values())

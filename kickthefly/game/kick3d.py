@@ -150,11 +150,11 @@ HELP3D = (
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
     ("F12 / G", "save a screenshot / a GIF of the last 6 s"),
-    ("Shift+R", "record video (MP4/WebM/GIF to videos/; toggle on/off)"),
+    ("Shift+R", "record a video (MP4 with ffmpeg, else GIF; again to stop)"),
     ("V", "brain panel: solid, see-through, faint, hidden"),
     ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
-    ("N", "spawn another fly (up to 16-64 backend-adaptive), each with its own brain"),
+    ("N", "spawn another fly, each with its own brain (16; one per CPU core, up to 32, on Numba)"),
     ("F", "cycle focused fly (in photo mode: autofocus)"),
     ("R", "reset to a single fresh fly"),
     ("Z  [  ]  .", "pause time, slower, faster, single step"),
@@ -642,7 +642,7 @@ class Game3D(k2.Game):
         set_world("room")                              # the room's furniture is built at the room's size
         self._room = self._build_room()
         self.world, self.scenery, self.orchard = "room", outdoors.scenery("room"), None
-        self.on_arena_changed(0.0)                     # config.toml may have chosen an outdoor arena
+        self.on_arena_changed(self.clock.now)          # config.toml may have chosen an outdoor arena (or the escape room)
         self.quit_armed = False
         self.view_w, self.hud_h = k2.PLAY_W, k2.H
         self.hint_extra = "V panel   X 1v1   F11 fullscreen   H help"
@@ -1835,6 +1835,8 @@ class Game3D(k2.Game):
             return "wrapped in silk"
         if f.grabbed is not None:
             return "grabbed"
+        if getattr(f, "perch", None) is not None and now < f.eating_until:
+            return "eating fruit"                    # the orchard holds a feeding fly aloft with escape_until
         if now < f.escape_until:
             return "flying"
         if now < f.eating_until:
@@ -2866,9 +2868,6 @@ class Game3D(k2.Game):
             if (ev.key == pygame.K_r and (ev.mod & pygame.KMOD_SHIFT)) or getattr(ev, "unicode", "") == "R":
                 self.toggle_video_recording()
                 return True
-            if getattr(self, "video_recorder", None) and self.video_recorder.is_recording and ev.key == pygame.K_r:
-                self.toggle_video_recording()
-                return True
             action = self.cfg.action_for(pygame.key.name(ev.key))
             if action == "photo_mode" or ev.key == pygame.K_F10:
                 self.toggle_photo_mode()
@@ -3184,16 +3183,18 @@ class App:
             game.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
 
     def capture_video_frame(self, game: Game3D, lay) -> None:
-        """Capture screen frame for arbitrary-duration video recording."""
-        if not getattr(game, "video_recorder", None) or not game.video_recorder.is_recording:
+        """Hand the recorder the window's pixels, read back from the GPU only when the video needs a frame."""
+        rec = getattr(game, "video_recorder", None)
+        if rec is None or not rec.is_recording:
             return
-        Wn, Hn = lay[0], lay[1]
-        w = Wn - (Wn % 2)
-        h = Hn - (Hn % 2)
-        self.ctx.screen.use()
-        data = self.ctx.screen.read(viewport=(0, 0, w, h), components=3)
-        rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
-        game.video_recorder.write_frame_bytes(rows.tobytes())
+
+        def grab():
+            w, h = lay[0] - lay[0] % 2, lay[1] - lay[1] % 2
+            self.ctx.screen.use()
+            data = self.ctx.screen.read(viewport=(0, 0, w, h), components=3)
+            return np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1].tobytes(), (w, h)
+
+        rec.capture(grab)
 
     def screenshot(self, path: Path, lay, game: Game3D | None = None, now: float = 0.0,
                    scale: int | None = None, clean: bool | None = None) -> None:
@@ -3211,7 +3212,7 @@ class App:
             self.ctx.screen.use()
             data = self.ctx.screen.read(viewport=(0, 0, Wn, Hn), components=3)
             img = pygame.image.frombytes(data, (Wn, Hn), "RGB", True)
-            pygame.image.save(img, str(path))
+            k2.save_image(img, path)
             return
 
         tw, th = int(Wn * scale), int(Hn * scale)
@@ -3264,11 +3265,13 @@ class App:
         depth_tex.release()
 
         img = pygame.image.frombytes(data, (tw, th), "RGB", True)
-        pygame.image.save(img, str(path))
+        k2.save_image(img, path)
 
 
 def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None,
-        flies: int = 1, record_video: str | None = None) -> int:
+        flies: int = 1, record_video: str | None = None, script=None) -> int:
+    """The 3D game. script(game, app, t, lay), if given, is called once per frame after the world updates, with t the
+    seconds since the game started; returning False ends the run. tools/make_screenshots.py drives its scenes with it."""
     from kickthefly.core import config
     cfg = cfg if cfg is not None else config.Config(None)
     app = App(fullscreen, vsync=cfg["graphics.vsync"])
@@ -3344,6 +3347,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             game.clock.now += tick_dt
             game.update3d(game.clock.now, tick_dt, keys, rel)
         now = game.clock.now
+        if script is not None and script(game, app, real - t_game, lay) is False:
+            running = False
         lay = app.render(game, now)
         if ticks and game.frame % 4 == 0:
             app.capture(game)
