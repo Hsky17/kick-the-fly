@@ -1917,6 +1917,7 @@ HELP = (
     ("I", "immortal mode"),
     ("K", "brain stethoscope (spike sonification clicks)"),
     ("L", "time-lapse record (2x-20x to GIF/MP4)"),
+    ("Shift+R", "record video (MP4/WebM/GIF to videos/; toggle on/off)"),
     ("M", "mute sound"),
     ("S / G", "save a screenshot / a GIF of the last 6 seconds"),
     ("N", "spawn another fly (up to 16-64 backend-adaptive), each with its own brain"),
@@ -2013,6 +2014,8 @@ class Game:
         self.timelapse_frames: list[bytes] = []
         self.timelapse_start_t = 0.0
         self.timelapse_size = (600, 340)
+        from kickthefly.game.video_recorder import VideoRecorder
+        self.video_recorder = VideoRecorder()
         self.saved_msg: tuple[str, float] | None = None
         self.mouse = (0, 0)
         self.new_fly()                              # self.fly/self.brain (below) proxy to self.flies; build it first
@@ -3990,6 +3993,34 @@ class Game:
             scaled = pygame.transform.smoothscale(surf, (w, h))
         self.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
 
+    @property
+    def video_recording(self) -> bool:
+        return getattr(self, "video_recorder", None) is not None and self.video_recorder.is_recording
+
+    def toggle_video_recording(self, output_path: str | Path | None = None) -> None:
+        if not getattr(self, "video_recorder", None):
+            from kickthefly.game.video_recorder import VideoRecorder
+            self.video_recorder = VideoRecorder()
+
+        if not self.video_recorder.is_recording:
+            disp = pygame.display.get_surface()
+            w, h = disp.get_size() if disp else self.screen.get_size()
+            fps = int(self.cfg.get("graphics.fps_cap", 30))
+            out = self.video_recorder.start(output_path, width=w, height=h, fps=fps)
+            fmt = out.suffix.upper().lstrip(".")
+            self.note(f"VIDEO RECORDING ({fmt}) -> {out.name}  (R / Shift+R: stop)", source="rule")
+            self.sound.play("click")
+        else:
+            out = self.video_recorder.stop()
+            self.sound.play("shutter")
+            if out:
+                self.saved_note(out)
+                self.note(f"VIDEO SAVED: {out.name}", source="rule")
+
+    def capture_video_frame(self) -> None:
+        if getattr(self, "video_recorder", None) and self.video_recorder.is_recording:
+            self.video_recorder.write_frame_surface(self.screen)
+
     def save_timelapse(self) -> None:
         frames = list(getattr(self, "timelapse_frames", []))
         if len(frames) < 3:
@@ -5110,6 +5141,15 @@ class Game:
             pygame.draw.rect(surf, (15, 18, 26, 220), rbox, border_radius=6)
             pygame.draw.rect(surf, col, rbox, 1, border_radius=6)
             self._text(surf, rec_str, rbox.center, col, self.f_small, "center")
+        if getattr(self, "video_recorder", None) and self.video_recorder.is_recording:
+            badge_txt = self.video_recorder.badge_text(now)
+            pulse = 0.5 + 0.5 * math.sin(now * 8)
+            col = (int(255 * (0.6 + 0.4 * pulse)), 40, 40)
+            rec_str = f"● {badge_txt} [R: stop]"
+            vbox = pygame.Rect(PLAY_W // 2 - 75, 62, 150, 24)
+            pygame.draw.rect(surf, (15, 18, 26, 220), vbox, border_radius=6)
+            pygame.draw.rect(surf, col, vbox, 1, border_radius=6)
+            self._text(surf, rec_str, vbox.center, col, self.f_small, "center")
         self._draw_pain(surf)
         self._draw_reward(surf)
         self._draw_memory(surf)
@@ -5490,6 +5530,8 @@ class Game:
             self.toggle_stethoscope()
         elif action == "timelapse":
             self.toggle_timelapse()
+        elif action == "record_video":
+            self.toggle_video_recording()
         elif action == "immortal":
             self.set_setting("brain.immortal", not self.immortal)
             self.note(f"IMMORTAL {'on: it can feel pain but never die' if self.immortal else 'off'}")
@@ -5520,6 +5562,12 @@ class Game:
                 if ev.key in (pygame.K_0, pygame.K_KP0):
                     self.view.set_preset("reset")
                     return True
+            if (ev.key == pygame.K_r and (ev.mod & pygame.KMOD_SHIFT)) or getattr(ev, "unicode", "") == "R":
+                self.toggle_video_recording()
+                return True
+            if getattr(self, "video_recorder", None) and self.video_recorder.is_recording and ev.key == pygame.K_r:
+                self.toggle_video_recording()
+                return True
             if ev.key == pygame.K_s and self.cfg.action_for("s") in (None, *config.MOVEMENT_3D_ONLY):
                 self.save_png()                          # S has always saved a screenshot in the 2D game
                 return True
@@ -5816,6 +5864,8 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--flies", type=int, nargs="+", help="flies count list for benchmark (default: 1 8 16)")
     ap.add_argument("--seconds", type=float, help="duration per benchmark condition in seconds")
     ap.add_argument("--strict", action="store_true", help="exit 1 if validation differs from the expected results")
+    ap.add_argument("--record-video", dest="record_video", nargs="?", const="default", metavar="PATH",
+                    help="record gameplay video to PATH or videos/ (MP4/WebM with ffmpeg, else GIF)")
     args, unknown = ap.parse_known_args(argv)
     if unknown:
         log.warning("ignoring unknown arguments: %s", " ".join(unknown))
@@ -5881,7 +5931,8 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     crash.info["mode"] = "3d"
                     return kick3d.run(smoke, shot, args.fullscreen or cfg["graphics.fullscreen"], seed=seed, cfg=cfg,
-                                     flies=(args.flies[0] if args.flies else 1))
+                                      flies=(args.flies[0] if args.flies else 1),
+                                      record_video=getattr(args, "record_video", None))
                 except kick3d.GLUnavailable as e:
                     if attempt == 0 and platform_env.reset_to_x11():
                         continue
@@ -5930,6 +5981,8 @@ def main(argv: list[str] | None = None) -> int:
     game = Game(screen, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
     if cfg["brain.autopilot"]:
         game.big_view = True
+    if getattr(args, "record_video", None):
+        game.toggle_video_recording(None if args.record_video == "default" else args.record_video)
     running = True
     t_game = time.perf_counter()
     while running:
@@ -5964,6 +6017,8 @@ def main(argv: list[str] | None = None) -> int:
             game.capture()
         if ticks and getattr(game, "timelapse_recording", False) and game.frame % 2 == 0:
             game.capture_timelapse_frame()
+        if ticks and getattr(game, "video_recorder", None) and game.video_recorder.is_recording:
+            game.capture_video_frame()
         pygame.display.flip()
         clock.tick(cfg["graphics.fps_cap"])
     shutdown(game)
@@ -5971,6 +6026,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def shutdown(game) -> None:
+    if getattr(game, "video_recorder", None) and game.video_recorder.is_recording:
+        game.video_recorder.stop()
     if getattr(game, "timelapse_recording", False):
         game.timelapse_recording = False
         game.save_timelapse()

@@ -150,6 +150,7 @@ HELP3D = (
     ("P / I", "pain neurons / immortal mode"),
     ("M", "mute"),
     ("F12 / G", "save a screenshot / a GIF of the last 6 s"),
+    ("Shift+R", "record video (MP4/WebM/GIF to videos/; toggle on/off)"),
     ("V", "brain panel: solid, see-through, faint, hidden"),
     ("U", "menu size: crisp (whole-pixel scaling) or large"),
     ("F11", "fullscreen"),
@@ -2862,6 +2863,12 @@ class Game3D(k2.Game):
             if ev.key in k2.TOOL_KEYS:
                 self.tool = k2.TOOL_KEYS.index(ev.key)
                 return True
+            if (ev.key == pygame.K_r and (ev.mod & pygame.KMOD_SHIFT)) or getattr(ev, "unicode", "") == "R":
+                self.toggle_video_recording()
+                return True
+            if getattr(self, "video_recorder", None) and self.video_recorder.is_recording and ev.key == pygame.K_r:
+                self.toggle_video_recording()
+                return True
             action = self.cfg.action_for(pygame.key.name(ev.key))
             if action == "photo_mode" or ev.key == pygame.K_F10:
                 self.toggle_photo_mode()
@@ -3176,6 +3183,18 @@ class App:
             scaled = pygame.transform.smoothscale(surf, (w, h))
             game.timelapse_frames.append(pygame.image.tobytes(scaled, "RGB"))
 
+    def capture_video_frame(self, game: Game3D, lay) -> None:
+        """Capture screen frame for arbitrary-duration video recording."""
+        if not getattr(game, "video_recorder", None) or not game.video_recorder.is_recording:
+            return
+        Wn, Hn = lay[0], lay[1]
+        w = Wn - (Wn % 2)
+        h = Hn - (Hn % 2)
+        self.ctx.screen.use()
+        data = self.ctx.screen.read(viewport=(0, 0, w, h), components=3)
+        rows = np.frombuffer(data, np.uint8).reshape(h, w, 3)[::-1]
+        game.video_recorder.write_frame_bytes(rows.tobytes())
+
     def screenshot(self, path: Path, lay, game: Game3D | None = None, now: float = 0.0,
                    scale: int | None = None, clean: bool | None = None) -> None:
         Wn, Hn = lay[0], lay[1]
@@ -3249,7 +3268,7 @@ class App:
 
 
 def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, seed: int = 0, cfg=None,
-        flies: int = 1) -> int:
+        flies: int = 1, record_video: str | None = None) -> int:
     from kickthefly.core import config
     cfg = cfg if cfg is not None else config.Config(None)
     app = App(fullscreen, vsync=cfg["graphics.vsync"])
@@ -3286,6 +3305,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     game = Game3D(hud, brain, state["view"], state.get("graph"), state.get("weights"), cfg=cfg)
     if cfg["brain.autopilot"]:
         game.big_view = True
+    if record_video:
+        game.toggle_video_recording(None if record_video == "default" else record_video)
     game.want_png = False
     running = True
     t_game = last = time.perf_counter()
@@ -3328,6 +3349,8 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
             app.capture(game)
         if ticks and getattr(game, "timelapse_recording", False) and game.frame % 2 == 0:
             app.capture_timelapse(game)
+        if getattr(game, "video_recorder", None) and game.video_recorder.is_recording:
+            app.capture_video_frame(game, lay)
         if game.want_png:
             game.want_png = False
             path = game.media_path("png")
