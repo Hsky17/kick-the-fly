@@ -299,11 +299,26 @@ ASSUMPTIONS = (
      "Biological head-direction tracking in the central complex relies on precisely balanced recurrent excitation and broad Delta7 lateral inhibition to sustain a localized activity bump and track rotational visual/wind cues. Under raw unweighted LIF dynamics, bump contrast and persistence fail; reported as a negative validation result rather than tuned.",
      "kickthefly/lab/compass.py · kickthefly/lab/validation.py:epg_compass"),
 
-    ("Neuron morphology: real neuPrint skeletons for key types vs synthetic fibers",
+    ("Neuron morphology: drawn, not simulated; real skeletons for ten neurons only",
      "DATASET",
-     "Key types (MBONs, Kenyon cells, DNa02 steering, DNp01 giant fiber) use real EM reconstruction SWC skeletons cached from Janelia neuPrint (MaleCNS v1.0). Other neurons render as quadratic Bezier fibers from soma to partner centroid.",
-     "Living Drosophila neurons exhibit intricate arborizations, dendritic spines, axonal varicosities, and active dendritic integration. The point-neuron LIF model treats each cell as isopotential regardless of rendered arbor geometry.",
-     "kickthefly/sim/morphology.py · kickthefly/game/kick_the_fly.py:BrainView · data/skeletons/"),
+     "Ten neurons (two each of DNp01, DNa02, MBON01, MBON14 and KCg) are drawn from 21 points sampled along their real "
+     "EM skeletons from neuPrint (MaleCNS v1.0), cached after one download. Every other neuron is drawn as an estimated "
+     "fiber from its real cell body toward its synaptic partners. Either way the simulation treats each neuron as a "
+     "single point.",
+     "Real Drosophila neurons have extensive arbors, and where on the arbor a synapse sits shapes its effect. The LIF "
+     "point-neuron model ignores geometry entirely, so the drawn shape never changes what a neuron does.",
+     "kickthefly/sim/morphology.py · kickthefly/game/kick_the_fly.py:BrainView"),
+
+    ("Compute backends and float precision",
+     "DYNAMICS",
+     "NumPy (cpu) is the reference. numba and torch-cpu reproduce it bit for bit (same float32 operations in the same "
+     "order), so results are identical on them. GPU backends (torch-cuda, torch-rocm) may sum a neuron's inputs in a "
+     "different order; single-precision rounding then differs and, the network being chaotic, individual spikes diverge "
+     "after a few hundred steps while firing statistics agree (within 2% brain-wide in the tests). State precision "
+     "float32 (default) or float64 changes the numbers the same way.",
+     "Real neurons are not deterministic at all; the point of bit-exactness is reproducibility of this model, not "
+     "biological fidelity. The backend that ran is recorded with every result.",
+     "kickthefly/sim/connectome/backends.py · tests/test_backends.py"),
 )
 
 

@@ -1,0 +1,15 @@
+{
+  "title": "Kick the Fly: a game and lab bench running the complete MaleCNS v1.0 fruit fly connectome",
+  "upload_type": "software",
+  "description": "<p>Kick the Fly is a kick-the-buddy game whose buddy is a live leaky integrate-and-fire simulation of the complete Janelia FlyEM MaleCNS v1.0 connectome (166,700 neurons, 10.3 million signed connections). Every hit drives the real sensory neurons it would touch, and the fly's reactions are read from its real descending neurons. A Lab mode adds a validation suite that reports which published fly behaviours the simulation reproduces and which it does not, repeated-trial assays with statistics, connectome robustness tools, NWB export and headless YAML protocols. Every behaviour is either traceable to the connectome or labelled a game rule.</p><p>The connectome data are Janelia FlyEM MaleCNS v1.0 (HHMI Janelia, University of Cambridge, MRC Laboratory of Molecular Biology, Google Research), licensed CC BY 4.0; this archive contains the source code only.</p>",
+  "creators": [
+    {"name": "legendarylolo318-cloud"}
+  ],
+  "license": "mit",
+  "access_right": "open",
+  "keywords": ["connectome", "Drosophila", "MaleCNS", "FlyEM", "spiking neural network", "computational neuroscience", "mushroom body", "game"],
+  "related_identifiers": [
+    {"identifier": "https://github.com/legendarylolo318-cloud/kick-the-fly", "relation": "isSupplementTo", "resource_type": "software"},
+    {"identifier": "https://male-cns.janelia.org/", "relation": "requires", "resource_type": "dataset"}
+  ]
+}

@@ -1,17 +1,56 @@
 # Changelog
 
-## [Unreleased]
+## 2.8.0 (2026-09-19)
 
 ### Added
-- **Pluggable Simulation Backends:** Pluggable compute backend abstraction (`auto`, `cpu`, `numba`, `torch-cuda`, `torch-rocm`) with graceful fallback to standard NumPy CPU. Includes JIT-compiled Numba kernels (`@njit(fastmath=True)`) and PyTorch CUDA/ROCm/CPU tensors while guaranteeing bit-exact determinism for same-seed validation runs.
-- **Dynamic Fly Cap & Multi-Fly Swarm Scaling:** Raised the default fly cap from 16 to dynamically adapt to the active compute backend (16 on baseline CPU, 24 on PyTorch CPU, 32 on Numba, and 64 on GPU). Added **F** cycling key with a 5-second manual focus override before resuming nearest-fly tracking.
-- **Arbitrary-Duration Video Recording:** Fullscreen MP4/WebM video streaming directly to `ffmpeg` via stdin pipe with automatic fallback to Pillow animated GIF when ffmpeg is unavailable. Accessible via hotkey **Shift+R** (or capital **R**) with an on-screen HUD badge `[REC mm:ss]`, saving to `videos/` or a custom path via `--record-video [PATH]`.
-- **Real Neuron Morphology (SWC Skeletons):** Live fetching and caching of authentic EM reconstruction skeletons from Janelia neuPrint (MaleCNS v1.0) for landmark neuron classes (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) with local caching in `data/skeletons/` and synthetic fiber fallback.
-- **Backend & Device Performance Tracking:** Extended `--benchmark`, Lab dashboard, crash reports, save states, and NWB export metadata to record active simulation backend, device name, throughput (neurons/s and syn-evals/s), and execution precision.
+- **Simulation backends** (`--backend`, Settings > Brain > Compute backend): the LIF step runs on NumPy (`cpu`, the
+  reference), Numba (`numba`) or PyTorch (`torch-cpu`, `torch-cuda`, `torch-rocm`). `auto` picks a GPU, then Numba,
+  then NumPy, and a backend that can't start falls back to NumPy with the reason in the log. Numba and PyTorch are
+  optional and only used from source; the exe and AppImage include neither.
+- **Determinism across backends:** `numba` and `torch-cpu` are bit-exact with NumPy (same float32 operations in the same
+  order): `tests/test_backends.py` compares every spike, membrane potential and the gain over 1000 steps in float32 and
+  float64, and the full validation suite gives identical results on all three. GPU backends are held to a statistical
+  tolerance (brain-wide rate within 2%, per-population rates r > 0.95); they were not run on GPU hardware for this
+  release (see the release notes).
+- **State precision** float32 (default) or float64 (`--dtype`, Settings > Brain > State precision).
+- **More flies:** the N cap follows the backend that actually runs: 16 on NumPy and `torch-cpu` (unchanged), one per CPU core between 16 and 32 on Numba, 32 on a GPU
+  (unmeasured); and a spawn is refused, with the reason, when there isn't about 700 MB of memory free. **F** picks which fly the brain panel,
+  surgery and training follow for 5 s.
+- **Video recording of any length** (Shift+R, `--record-video [PATH]`): MP4 through ffmpeg (WebM by name), otherwise a
+  GIF (downscaled, up to 60 s). Frames are paced by the wall clock, so the video plays at real speed; saved with the
+  screenshots.
+- **Real neuron shapes for ten neurons:** two each of DNp01, DNa02, MBON01, MBON14 and KCg are drawn from 21 points
+  sampled along their EM skeletons from neuPrint (MaleCNS v1.0), downloaded once and cached; offline they fall back to
+  estimated fibers, and the big brain view says which. Drawing only: the simulation is point neurons either way.
+- **Benchmark reporting:** `--benchmark` and Lab > Simulation benchmark take a backend and report the one that ran, its
+  device, neuron updates/s, synaptic events/s (measured spikes x mean out-degree; before this it was an estimate from
+  an assumed 2.5% activity), and the process's current memory. Validation results, save states, NWB exports and crash
+  reports record the backend and device too.
+- **Profiler** `tools/profile_sim.py`: where a step's time goes, for 1, 8 and 16 flies.
+- **Citation:** `CITATION.cff` (GitHub's "Cite this repository"), citing the connectome too. `.zenodo.json` holds the
+  metadata for a Zenodo DOI if Zenodo archiving is switched on later; it isn't yet.
+- **Screenshots:** every README image regenerated from this build by `tools/make_screenshots.py`, plus new ones of the
+  open field, the orchard, the escape room, the settings menu, Lab mode, the validation dashboard and the laser, and an
+  animated demo at the top.
 
-### Performance
-- **Sparse Matmul & Precision Optimization:** Configurable simulation precision (`float32` default vs `float64`) via `brain.dtype` setting and `--dtype` CLI flag. Verified bit-exact determinism across CSR/CSC layouts with 2x memory reduction on modern compute hardware.
-- **Simulation Loop Profiler:** Added dedicated sim loop profiler reporting breakdown across sparse matmul, state updates, plasticity, readout, and rendering across 1, 8, and 16 flies.
+### Fixed
+- **Spawning another fly (N) did nothing** in the first cut of this release (a lost import killed the spawn thread);
+  a failed spawn now logs why and N keeps working.
+- **The fly's state title** (FLYING, STUCK ON FLYPAPER, WRAPPED IN SILK...) was missing from the HUD.
+- **Neuron shapes never loaded** in the first cut (a keyword mismatch was hidden by the fallback), and the skeleton
+  cache pointed inside the exe/AppImage; it's in your data folder there now.
+- **The big brain view's header** no longer draws its buttons, counts and status lines over each other.
+- **The Numba kernels** now reproduce NumPy bit for bit (they used fastmath and float64 intermediates, and a run
+  drifted apart after ~300 steps) and release the interpreter lock, so flies' brains run in parallel.
+- **The PyTorch backend** kept its own copy of the brain state, so loading a save, the neural clamp or a float64
+  switch didn't reach it; `torch-cpu` could not be selected at all, so the old backend test compared NumPy with itself.
+- **The video recorder** stopped on plain R (reset fly / respawn in the duel), wrote to the current directory,
+  sped the video up when the game drew slower than 30 fps, broke on a window resize and kept every GIF frame at full
+  size in memory.
+- Screenshots and GIFs save on systems whose pygame lacks PNG support (Pillow fallback).
+- **The escape room's speedrun timer** showed the machine's uptime (thousands of seconds) when the game started in
+  the escape room (from the saved arena or `--arena escaperoom`): the 3D game set its arena up at time 0 on a clock
+  that doesn't start at 0, which also gave an orchard chosen at startup the wrong time. Present since 2.7.0.
 
 ## 2.7.2 (2026-09-18)
 

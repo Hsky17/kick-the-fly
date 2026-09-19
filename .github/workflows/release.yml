@@ -158,7 +158,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title="Kick the Fly ${GITHUB_REF_NAME}: outdoor arenas, Lab robustness tools, NWB export"
+          # The release title is RELEASE_NOTES.md's first line ("# Kick the Fly X.Y.Z: ..."), so it can't go stale
+          title="$(head -n1 RELEASE_NOTES.md | sed 's/^# *//')"
+          case "$title" in "Kick the Fly ${GITHUB_REF_NAME#v}"*) ;; *) echo "RELEASE_NOTES.md is not for ${GITHUB_REF_NAME}: $title"; exit 1;; esac
           files="release/KickTheFly-x86_64.AppImage release/KickTheFly.exe release/SHA256SUMS"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $files --clobber

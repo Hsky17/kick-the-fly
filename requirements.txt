@@ -11,3 +11,8 @@ pyyaml>=6
 #   pip install pynwb
 # Dev extra, for checking an exported file against NWB best practices:
 #   pip install nwbinspector
+
+# Optional, faster simulation (see README > Run from source > Optional): the game uses them by itself when installed.
+#   pip install numba          JIT-compiled CPU backend, bit-exact with NumPy
+#   PyTorch (CUDA or ROCm build from pytorch.org) for the torch-cuda / torch-rocm GPU backends
+# Neither is bundled in the exe or the AppImage.

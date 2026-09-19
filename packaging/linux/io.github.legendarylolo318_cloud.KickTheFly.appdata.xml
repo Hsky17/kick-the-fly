@@ -36,6 +36,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.8.0" date="2026-09-19">
+      <description>
+        <p>Faster simulation with optional Numba or GPU backends (from source), bigger swarms, a video recorder, ten neurons drawn from their real reconstructed shapes, and fixes for spawning extra flies.</p>
+      </description>
+    </release>
     <release version="2.7.2" date="2026-09-18">
       <description>
         <p>The blowtorch and the spray cans fire from the tool in your hand, and the laser's key shows as "=".</p>

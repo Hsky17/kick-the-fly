@@ -8,7 +8,9 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 
 **Play or Lab:** Play is the game, with challenges and scores. Lab mode adds research tools: a validation dashboard showing which published fly behaviors this simulation reproduces (and which it doesn't), repeated trials with statistics, data export and protocol files that also run headless.
 
-![the 3D room](docs/room3d.png)
+![Kick the Fly in the open field: swatting and torching the fly while its live brain lights up on the right](docs/demo.gif)
+
+*12 seconds in the open field, recorded with the in-game video recorder (Shift+R): a swat and the blowtorch fire its real touch and heat neurons, and the brain panel on the right shows all 166,700 neurons responding.*
 
 - **Hits fire real sensory neurons:**
   - head: head bristles and Johnston's organ
@@ -38,7 +40,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - hurting it fires its punishment dopamine neurons, so it learns to fear you, and it runs away and stops shooting.
 
   Silence its tracking neurons in brain surgery and it can't aim.
-- **Multiple flies (N):** press N to spawn another fly (dynamic cap adapting to backend: 16 on baseline CPU, 32 on Numba, 64 on GPU), each running its own complete, independent connectome — 166,700 neurons apiece. They notice each other for real: a fly closing in fast fires another's actual looming detectors (LPLC2/LC4) and makes it dodge, and bumping into each other fires real touch neurons. Press **F** to cycle which fly's brain panel, surgery, and training is tracked (or let it auto-follow nearest). Only the original fly's mushroom-body learning is saved between sessions. Every fly is its own brain thread, so with many flies the brains can fall behind real time (see Performance).
+- **Multiple flies (N):** press N to spawn another fly, each running its own complete, independent connectome — 166,700 neurons apiece. Up to 16 flies (in the exe and AppImage, and from source on plain NumPy), or one per CPU core, up to 32, with the optional Numba backend (see [Performance](#performance)); each needs about 350 MB of free memory. They notice each other for real: a fly closing in fast fires another's actual looming detectors (LPLC2/LC4) and makes it dodge, and bumping into each other fires real touch neurons. Press **F** to pick which fly the brain panel, surgery and training follow (for 5 s; otherwise they follow the fly nearest you). Only the original fly's mushroom-body learning is saved between sessions. Every fly is its own brain thread, so with many flies the brains can fall behind real time (see Performance).
 - **Real training (T):** the fly learns with its actual mushroom body. Pair a smell with a shock or with sugar and dopamine weakens the real Kenyon cell to output neuron synapses for that smell, just like in real flies. The Training panel runs lab-style conditioning and graphs the learning curve. Memory is saved between flies and sessions (see File locations). Hurting the fly while it smells a tool trains it too.
 - **Arenas (E):**
   - **fan:** wind that fires its wind-sensing neurons, which excite its antennal grooming command neurons
@@ -50,31 +52,89 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - **orchard** (3D): a grove of 24 fruit trees. The fly flies to a ripe fruit, lands and feeds, which drives the same real taste and PAM reward neurons sugar does and heals it. Each fruit holds a few feeds and shrinks and browns as it's eaten, then drops; it grows back after about 75 s, staggered, with a cap per tree. Some fruit are fermented and act like the alcohol tool. The fruit, the trees and the flying to them are **game rules**: the fly doesn't forage through its own circuitry. With several flies they end up competing for fruit, but only through the looming and touch neurons they already have; nothing about competing is scripted.
 
   Open field and orchard need the 3D game; the 2D game stays indoors and says so. The arena you pick is saved in `config.toml` (Settings > Brain > Arena, or **E**), in save states and in every export's metadata.
-- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **Shift+R** (or capital **R**) toggles arbitrary-duration video recording (MP4/WebM with ffmpeg or animated GIF fallback) saved to `videos/`. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
+- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **Shift+R** starts a **video** of any length and Shift+R again stops it: an MP4 if [ffmpeg](https://ffmpeg.org/) is installed (on your PATH), otherwise a GIF (smaller, up to 60 s). It plays back at real speed however fast the game draws, and a red badge shows how long you've been recording. `--record-video [PATH]` starts one at launch. **L** toggles time-lapse recording (2x, 5x, 10x or 20x speed-up, to MP4 or GIF). The autopsy can save a GIF of the death. Everything goes to your screenshots folder (see File locations).
 - **Slow motion and save states:** pause time, slow everything to 0.1x, step it 1/60 s at a time, and save or load the whole simulation (see Time controls).
-- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Key neuron types (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) load real EM reconstruction SWC morphology skeletons from Janelia neuPrint (MaleCNS v1.0), cached locally in `data/skeletons/` with graceful offline fallback to synthetic fibers. Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
+- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Almost every neuron is drawn as an estimated fiber toward its synaptic partners; ten of them (two each of the giant fiber DNp01, the DNa02 steering neurons, MBON01, MBON14 and a Kenyon cell type) are drawn from their **real reconstructed shapes**, sampled from their EM skeletons on Janelia's neuPrint and downloaded once, then cached (offline and uncached they fall back to estimated fibers, and the big view says which). Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
 
-![swatting in first person](docs/swat3d.png)
+## Screenshots
 
-![stuck on flypaper](docs/flypaper3d.png)
+All from the current build at 1280x760, made by `tools/make_screenshots.py` (see CONTRIBUTING.md to remake them).
 
-![see-through brain panel](docs/see-through.png)
+**The room.** First person, with the fly's live brain on the right.
 
-![brain lighting up under the blowtorch](docs/brain.png)
+![first person in the 3D room, the fly on the rug and its brain panel on the right](docs/room3d.png)
 
-![spider wrapping the fly](docs/spider.png)
+**Swatting.** Its touch neurons fire, and the head-, body- and leg-touch descending neurons that drive jumping, running and kicking light up.
 
-![1v1 duel](docs/duel.png)
+![swatting the fly in first person; touch neurons and descending neurons light up in the brain panel](docs/swat3d.png)
 
-![training](docs/training.png)
+**Flypaper.** Stuck, it struggles through its own body- and leg-touch neurons and their descending neurons.
 
-![neuron inspector](docs/inspect.png)
+![the fly stuck on flypaper, leg-touch and body-touch descending neurons active](docs/flypaper3d.png)
 
-![brain surgery](docs/surgery.png)
+**The open field.** Grass, rocks and sky; the wind drives its real antennal wind neurons, and escapes carry it away.
 
-![the lamp arena](docs/lamp.png)
+![the fly flying over the open field](docs/field.png)
 
-![autopsy](docs/autopsy.png)
+**The see-through brain panel (V),** here in the open field: the world shows through the brain.
+
+![the see-through brain panel over the open field sky](docs/see-through.png)
+
+**The orchard,** from inside a fruit tree's crown: one of five flies feeding on a fruit. Feeding drives the same taste and PAM reward neurons as the sugar tool, so its REWARD meter reads happy.
+
+![a fly feeding on a fruit inside an orchard tree's crown](docs/orchard.png)
+
+**The blowtorch in the big brain view (B).** Every touch and heat neuron is pinned and the brain lights up.
+
+![big brain view lit up while the fly is torched](docs/brain.png)
+
+**A spider** drops, bites twice and wraps the fly in silk (immortal here, so it breaks free after five bites).
+
+![a spider wrapping the fly in silk](docs/spider.png)
+
+**1v1 duel (X).** The fly aims with its LC10 -> DNa02 steering pathway and fires when its DNp35 object neurons do; each hit fires its reward dopamine neurons, so it learns to like hunting you. Here it has just won the round: 12 hits from 12 shots, and its mushroom body now likes you 0.85.
+
+![the fly has won the 1v1 duel: YOU DIED](docs/duel.png)
+
+**Training (T).** Ten shock pairings with the swatter's smell weaken its real Kenyon cell -> MBON synapses; the curve is its fear after each trial.
+
+![the training panel with a fear learning curve](docs/training.png)
+
+**Neuron inspector.** Click a neuron in the big view for its type, firing, transmitter and strongest connections. The giant fiber shown here is one of the neurons drawn from its real neuPrint skeleton.
+
+![the neuron inspector showing the giant fiber DNp01](docs/inspect.png)
+
+**Brain surgery (O).** Switching the moonwalker neurons (MDN) on makes it back up.
+
+![the brain surgery panel with the moonwalker neurons switched on](docs/surgery.png)
+
+**The lamp.** It's drawn to the light: here it flies up to the bulb (touching the bulb singes it).
+
+![the fly flying up to the lamp's bulb](docs/lamp.png)
+
+**The escape room.** Fan, flypaper and a hot lamp stand between the fly and the sugar dish.
+
+![the escape room arena](docs/escaperoom.png)
+
+**Autopsy.** Every brain region's last 2 s alive against its calm baseline, and pain on a timeline.
+
+![the brain autopsy after the fly died under the blowtorch](docs/autopsy.png)
+
+**Settings (Esc > Settings), Brain tab.** Each setting is tagged Connectome (changes the simulation) or Game rule, including the compute backend and state precision.
+
+![the settings menu, Brain tab](docs/settings.png)
+
+**Lab mode.** The research tools, with the simulation engine that's running shown top right.
+
+![the Lab tools menu](docs/lab.png)
+
+**Lab > Validation.** Which published fly behaviors this simulation reproduces, with the numbers and criteria, and which it doesn't.
+
+![the validation dashboard with PASS and FAIL results](docs/validation.png)
+
+**The optogenetics laser (Lab, key =).** Aim it and it drives, or silences, a chosen cell type; here it drives the giant fiber DNp01.
+
+![the optogenetics laser driving the giant fiber](docs/laser.png)
 
 ## Download and play (Windows)
 
@@ -110,7 +170,8 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 | save states | `Documents\Kick the Fly\saves` | `~/.local/share/kickthefly/saves` |
 | exports, scores, validation runs | `Documents\Kick the Fly` | `~/.local/share/kickthefly` |
 | your protocol files | `Documents\Kick the Fly\protocols` | `~/.local/share/kickthefly/protocols` |
-| screenshots and GIFs | `Pictures\Kick the Fly` | `<xdg-user-dir PICTURES>/Kick the Fly` (`~/Pictures/Kick the Fly`) |
+| screenshots, GIFs and videos | `Pictures\Kick the Fly` | `<xdg-user-dir PICTURES>/Kick the Fly` (`~/Pictures/Kick the Fly`) |
+| neuPrint skeleton cache | `Documents\Kick the Fly\skeletons` | `~/.local/share/kickthefly/skeletons` (from source: `data/skeletons/`) |
 | crash reports and log | `%LOCALAPPDATA%\Kick the Fly` | `$XDG_STATE_HOME/kickthefly` (`~/.local/state/kickthefly`) |
 
 Documents and Pictures on Windows come from the Known Folders API, so redirected and OneDrive folders work. On Linux, versions before 2.6 used `~/Documents/Kick the Fly/memory` and `~/Pictures/Kick the Fly`; on first launch the memory and any screenshots are copied to the new locations and the originals are left alone. A broken or missing `config.toml` falls back to default settings with a warning (a broken one is kept as `config.toml.bad`). `KICK_THE_FLY_HOME=/some/folder` keeps everything in one folder (portable use, tests).
@@ -155,6 +216,29 @@ python3 -m venv .venv
 .venv/bin/python kick_the_fly.py                    # the first run packs data/kick_brain.npz (~30 s)
 ```
 
+### Optional: faster simulation with Numba or PyTorch
+
+The brain simulation runs on plain NumPy by default. Two optional libraries can run it instead; install one and the
+game uses it by itself (`auto`), or pick one in Settings > Brain > Compute backend or with `--backend NAME`:
+
+| backend | install | what it does |
+|---|---|---|
+| `numba` | `pip install numba` | JIT-compiled CPU kernels that release Python's interpreter lock, so several flies' brains run in parallel ([numbers](#performance)) |
+| `torch-cuda` | PyTorch with CUDA, from the selector on [pytorch.org](https://pytorch.org/get-started/locally/) | NVIDIA GPU |
+| `torch-rocm` | PyTorch with ROCm (Linux), from the same selector | AMD GPU |
+| `torch-cpu` | any PyTorch | PyTorch on the CPU; mainly for checking the torch code path |
+
+`auto` prefers a GPU, then Numba, then NumPy. A backend that can't start (library missing, no GPU visible to that
+PyTorch build) falls back to NumPy and logs why; the backend that actually ran is what the Lab header, benchmarks,
+validation results, exports, save states and crash reports record. Numba and `torch-cpu` give **exactly** the same
+spikes as NumPy, so every result in this README is the same on them; GPU backends agree statistically but not spike for
+spike (see [Deterministic runs](#time-controls-and-save-states)). The number of flies you can spawn depends on the
+backend (see Controls: N).
+
+**The exe and the AppImage include neither.** They always run the NumPy backend and don't pick up a Numba or PyTorch
+you've installed on your system (a frozen app can't safely load another Python's packages); choosing another backend
+there falls back to NumPy with a note in the log. For Numba or a GPU, run from source.
+
 Tests (the validation suite takes a few minutes; `-m "not validation"` skips it):
 
 ```bash
@@ -196,7 +280,7 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | P / I | pain neurons / immortal mode |
 | K | brain stethoscope (spike sonification clicks in big brain view / body parts) |
 | L | time-lapse record (2x-20x speedup to MP4/GIF; toggle on/off) |
-| Shift+R | video recording (arbitrary duration MP4/WebM/GIF; toggle on/off) |
+| Shift+R | start or stop a video (MP4 with ffmpeg, else GIF) |
 | Y | autopilot / spectator mode (hands-off orbit camera) |
 | F10 | photo mode / free camera with depth of field |
 | M | mute |
@@ -204,15 +288,15 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | V | brain panel: solid, see-through, faint, hidden (hidden gives the room the whole screen) |
 | U | menu size: crisp (sharp whole-pixel scaling, the default) or large |
 | F11 or Alt+Enter | fullscreen; the game fills any screen with no black bars |
-| N | spawn another fly (dynamic cap adapting to backend: 16-64), each running its own independent brain |
-| F | cycle focused fly (brain panel / surgery / training) |
+| N | spawn another fly, each with its own independent brain (up to 16; up to one per CPU core, max 32, on Numba) |
+| F | pick which fly the brain panel, surgery and training follow (for 5 s, then back to the nearest) |
 | R | reset to a single fresh fly |
 | Z | pause or resume time |
 | [ / ] | slower / faster: 0.1x, 0.25x, 0.5x, 1x |
 | . | single step while paused (1/60 s of the room and the matching brain steps) |
 | H | controls help |
 
-Command line: `--2d`, `--fullscreen`, `--backend auto|cpu|numba|torch-cuda|torch-rocm|wayland|x11`, `--dtype float32|float64`, `--record-video [PATH]`, `--seed N`, `--arena NAME` (room, fan, flypaper, pool, lamp, escaperoom, field, orchard), `--flies N` (start with N flies), and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--nwb`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`, `--threshold-sweep`, `--signflip-test`, `--critical-path TARGET`, `--benchmark`.
+Command line: `--2d`, `--fullscreen`, `--backend NAME` (a simulation backend: `auto`, `cpu`, `numba`, `torch-cpu`, `torch-cuda`, `torch-rocm`; or, on Linux, the display backend `wayland` or `x11` as before), `--sim-backend NAME` (the simulation backend only), `--dtype float32|float64`, `--record-video [PATH]`, `--seed N`, `--arena NAME` (room, fan, flypaper, pool, lamp, escaperoom, field, orchard), `--flies N` (start with N flies), and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--nwb`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`, `--threshold-sweep`, `--signflip-test`, `--critical-path TARGET`, `--benchmark`.
 
 ## Settings
 
@@ -220,7 +304,7 @@ Esc > Settings. Changes apply right away and are saved to `config.toml`; hover a
 
 - **Graphics:** fullscreen, resolution scale (3D drawn smaller and stretched, for weak GPUs), FPS cap, VSync (restart), display backend (Linux only, restart), brain panel style, menu size, UI scale.
 - **Audio:** master, wing buzz and sound effects volume, brain stethoscope (spike sonification clicks, hotkey K), mute.
-- **Brain:** Play/Lab mode, arena, pain neurons, immortal, sim speed, random seed (applies on R), real vs rule tags, real-science popups. Brain settings are tagged **Connectome** (changes how the simulation runs) or **Game rule** (a rule the game adds on top).
+- **Brain:** Play/Lab mode, arena, pain neurons, immortal, sim speed, random seed (applies on R), real vs rule tags, real-science popups, compute backend (see [Optional: faster simulation](#optional-faster-simulation-with-numba-or-pytorch)) and state precision (float32, the default, or float64). Brain settings are tagged **Connectome** (changes how the simulation runs) or **Game rule** (a rule the game adds on top).
 - **Controls:** mouse sensitivity, invert Y, field of view, key bindings.
 - **Accessibility:** colorblind-safe brain view colors (blue/yellow) and a high-contrast palette, reduced flashing (no screen shake, flashes, sparkles, scanning band or blinking), larger text.
 
@@ -247,7 +331,7 @@ In Play mode a short **"Real flies do this too"** card appears the first time th
 - **Record and export:** pick neuron groups and a duration and record the fly you're looking at while you play: spike times and firing rates as CSV and npz, with a metadata JSON (app version, seed, parameters, thresholds, connectome version, brain pack checksum, surgery, arena and its weather/fruit settings). Tick **NWB** to also get one Neurodata Without Borders file (units with spike times and connectome labels, per-group and per-region rates, stimuli, tool events, the fly's movement, surgery, arena, KC->MBON weights before and after, full metadata and the MaleCNS v1.0 / CC BY 4.0 citation). NWB needs `pip install pynwb`; it isn't bundled in the exe or AppImage, and the checkbox says so when it's missing.
 - **Critical path finder:** pick a validated behavior or an assay and it silences each candidate cell type in turn (a shortlist ranked by how much of the readout's input they supply within two synapses), re-runs it over the validation seeds against same-seed unperturbed controls, and ranks the types by effect with 95% CI and a paired Wilcoxon test. Resumable, CSV/JSON export, and a one-click "apply this lesion" in the game. Headless: `--critical-path TARGET`.
 - **Outdoor arena parameters:** open field wind direction and speed, sun azimuth and elevation, and the orchard's feeds per fruit, regrow time and fruit cap (all GAME RULE). They're also valid protocol `params`, and `assay: orchard` runs the orchard's feeding schedule headless and reproducibly (`protocols/orchard-feeding.yaml`).
-- **Simulation benchmark:** measures simulation throughput across 1, 8, and 16 flies: paced real-time ratio, uncapped steps/s, neurons/s, synapse updates/s, and memory footprint.
+- **Simulation benchmark:** runs 1, 8 and 16 flies on the compute backend you picked and reports the one that actually ran and its device, paced and uncapped steps/s and the sim/real ratio, neuron updates/s, synaptic events/s (measured spikes x the mean out-degree of 61.6) and the process's memory. Headless: `--benchmark --backend NAME --flies 1 8 16 32 --seconds 5`.
 - **Connectome robustness & research findings:**
   - **Synapse threshold sweeps:** drops connections below any synapse count and re-runs the validated behaviors with validation's own criteria (seeds 1000-1009). The brain pack is already filtered at 3 synapses, so 1-3 change nothing. Pruning below 10 synapses removes 73.6% of all connections (7,562,973) and every input of 10,151 neurons, yet all 4 validated behaviors survive. Watch the rates, not only the ratios: a pruned brain is quieter at rest, so looming's ratio rises (11.8 -> 20.3) while DNp01's driven rate stays at 66.5 spikes/s.
   - **Transmitter sign flips:** flips a random half of the neurons whose transmitter the dataset is less than 70% sure of (11,013, of which 4,366 have no confidence at all), over randomized trials. In 3 trials on seeds 1000-1006: looming -> giant fiber survives 3/3 (x13.2 vs x11.7 unperturbed) and antennal -> aDN survives 3/3 (x3.6 vs x4.9), while sugar -> MN9 fails 3/3 (x1.06 vs x2.22).
@@ -301,16 +385,16 @@ Run one without a window, from the exe, the AppImage or source:
 ```bash
 ./KickTheFly-x86_64.AppImage --headless --protocol protocols/looming-giant-fiber.yaml --out results
 python kick_the_fly.py --headless --validate --out validation.json --strict
-python kick_the_fly.py --benchmark --flies 1 8 16 --seconds 5
+python kick_the_fly.py --headless --benchmark --backend numba --flies 1 8 16 --seconds 5
 ```
 
-Headless runs need no display (SSH, CI), never open a window or audio device, write their files to `--out` (or the exports folder), and exit 0 on success, 2 for a bad or missing file, and with `--validate --strict` 1 if a validation result differs from the expected one. On Windows use `start /wait KickTheFly.exe ...` from cmd. Runs are seeded and stepped in lockstep, so the same protocol and seed give the same spikes on the same machine.
+`--backend NAME` and `--dtype` apply to headless runs too, including the worker processes of `--validate` and the assays, and the backend that ran is recorded in the results. Headless runs need no display (SSH, CI), never open a window or audio device, write their files to `--out` (or the exports folder), and exit 0 on success, 2 for a bad or missing file, and with `--validate --strict` 1 if a validation result differs from the expected one. On Windows use `start /wait KickTheFly.exe ...` from cmd. Runs are seeded and stepped in lockstep, so the same protocol and seed give the same spikes on the same machine.
 
 ## Time controls and save states
 
 - **Pause (Z), slow motion ([ and ]) and single step (.):** the room and every brain slow down together, so spikes and the reactions they cause stay lined up. An on-screen badge shows the state. You can still look and walk around at full speed.
 - **Save State / Load State** (pause menu) saves the whole simulation: every neuron's membrane potential and refractory state, synaptic gain, the random generators, the learned Kenyon cell to MBON weights, surgery, Lab parameters, the arena, every fly's body and timers, sugar piles, the seed and (3D) you. The `.ktfsave` format is versioned and platform independent, so a save made on Linux loads on Windows and the other way round. Saves from a newer version, from the other (2D/3D) game or from a different brain pack are refused with a reason. Things in flight (bombs, sprays, the spider) aren't saved.
-- **Deterministic runs:** with the same seed and the same inputs a lockstep run (headless, protocols, validation, the tests) replays spike for spike. The live game runs each brain on its own real-time thread, so play itself isn't bit-for-bit repeatable.
+- **Deterministic runs:** with the same seed and the same inputs a lockstep run (headless, protocols, validation, the tests) replays spike for spike. That holds across the NumPy, Numba and PyTorch-CPU backends too: they're bit-exact with each other (`tests/test_backends.py` compares every spike over 1000 steps in float32 and float64, and the full validation suite gives identical numbers on all three). GPU backends (`torch-cuda`, `torch-rocm`) are not bit-exact: a GPU may add up a neuron's inputs in a different order, the last bit of a float32 sum differs, and because the network is chaotic, individual spikes then diverge within a few hundred steps. Their tolerance is statistical: brain-wide firing within 2% of NumPy's and per-population rates correlated at r > 0.95 over 5 s. Results record the backend they ran on. The live game runs each brain on its own real-time thread, so play itself isn't bit-for-bit repeatable.
 
 ## Validation
 
@@ -343,6 +427,51 @@ What the failures and passes mean:
 `pytest` runs the suite and fails if any result changes in either direction.
 
 ## Performance
+
+### 2.8: simulation backends
+
+Measured on an Intel Core Ultra 7 270K Plus (24 cores: 8 performance, 16 efficiency; no hyperthreading), 32 GB,
+Linux, Python 3.14, NumPy 2.5, Numba 0.67, PyTorch 2.14 (CPU build). Headless:
+`python kick_the_fly.py --headless --benchmark --backend NAME --flies 1 8 16 32 --seconds 5`. "Uncapped" is how fast
+each brain steps when it isn't held to real time, as a multiple of real time (200 steps/s); "paced" is whether it keeps
+real time when it is.
+
+| brains | `cpu` (NumPy) paced / uncapped | `numba` paced / uncapped | `torch-cpu` paced / uncapped |
+|---|---|---|---|
+| 1 | 1.00x / 4.17x (834 steps/s) | 1.00x / **4.76x** (951 steps/s) | 0.91x / 0.83x |
+| 8 | 1.00x / 2.21x | 1.00x / **3.11x** | 0.17x / 0.17x |
+| 16 | 0.87x / 0.91x | **1.00x / 1.83x** | 0.08x / 0.08x |
+| 32 | 0.35x / 0.38x | 0.71x / 0.79x | not run |
+| synaptic events/s, best | 915 M (8 brains) | 1,517 M (16 brains) | 93 M |
+| memory, 32 brains | 12.8 GB | 10.5 GB | 7.1 GB at 16 |
+
+- **Numba** gives identical spikes and about twice NumPy's throughput with many brains, because its kernels release
+  Python's interpreter lock so each brain's thread runs on its own core. 16 brains keep real time on it; on NumPy they
+  don't.
+- **`torch-cpu`** is 5-25x slower than NumPy here: PyTorch multiplies the whole weight matrix every step, where NumPy
+  only touches the columns of the ~2.5% of neurons that fired. It exists to test the PyTorch code path on any machine.
+- **GPU backends were not measured**: this machine's GPU (AMD Radeon RX 9070 XT) had no ROCm build of PyTorch installed,
+  and no NVIDIA GPU was available.
+- Every brain holds its own copy of the connectome's weights (learning changes them per fly): about 310-390 MB each.
+  N refuses to spawn another fly when less than 700 MB is free.
+
+The 3D game with N flies, the same machine (`--sim-backend NAME --flies N --smoke S`, offscreen at 1024x768; sim/real
+is each brain's steps/s over 200, mean over flies; flies were still being spawned during part of each measurement, so
+treat these as lower bounds):
+
+| flies in the game | `cpu` | `numba` |
+|---|---|---|
+| 1 | 0.94x real time, 62 fps | 1.00x, 62 fps |
+| 7-8 | 0.33x (slowest 0.31x), 39 fps | 0.52x (slowest 0.51x), 41 fps |
+| 10-14 | 0.36x (slowest 0.33x), 29 fps (10 flies) | 0.53x (slowest 0.51x), 24 fps (14 flies) |
+| 23 | not run | 0.46x (slowest 0.41x), 10 fps |
+
+In the game the renderer and the brain view share the interpreter lock with every brain, so flies fall behind real
+time sooner than headless. So the cap on N is: **16** on NumPy and `torch-cpu` (as before), **one per CPU core between
+16 and 32 on Numba** (24 on this machine; past about 16 the frame rate drops fast), and **32** on a GPU (unmeasured).
+Spawning is one fly at a time, each brain warming up first, so a big swarm takes a minute or two to fill.
+
+### Earlier releases
 
 Measured on an AMD Radeon RX 9070 XT / 24-thread CPU, Python 3.11 (`tools/bench_sim.py`, and the 3D game with flies spawned):
 
@@ -421,7 +550,7 @@ Outdoors, scenery further than 38 m (grass beyond 16 m) or well behind the camer
   The overall fly-brain firing of those output neurons was too noisy in this sim to read a decision from, so the choice is read from the learned synapses themselves.
 - The flight path.
 - Everything about the 3D room: the fly's 3D body, physics, walking and flight, and your tools. They use the 2D game's tuned physics scaled to meters, so the brain gets the same kinds of hits as before. What triggers take-off is from the neurons, but where it flies is not.
-- Fiber shapes in the brain view. Cell-body positions are real, but full neuron shapes aren't bundled, so each neuron is drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back.
+- Fiber shapes in the brain view. Cell-body positions are real, but almost every neuron's shape is estimated: it's drawn from its cell body toward the center of its synaptic partners. Color is the fiber's direction: red left-right, green up-down, blue front-back. Ten neurons (two each of DNp01, DNa02, MBON01, MBON14 and KCg) are drawn instead from 21 points sampled along their real EM skeletons from neuPrint; that's real data, but how few are drawn, and how coarsely, is a display choice. Either way the simulation treats every neuron as a single point.
 - Bilateral symmetry and mirror-averaging. In the raw connectome, bilateral asymmetries arise from both true biology and uneven EM reconstruction/proofreading depth between hemispheres, producing a small spontaneous turning bias in quiet walking (~+0.10 Hz DNa steering bias). The headless audit command (`--audit-asymmetry`) and the Lab Asymmetry page measure L vs R synapse counts and firing rates for key cell types (DNa01, DNa02, LC10, LPLC2, LC4, DNp01). An optional setting (`brain.mirror_weights` or `--mirror-weights`) averages synaptic weights across 77,507 paired bilateral neurons ($W_{sym} = 0.5(W + P W P^T)$). Because this modifies the raw connectome dataset, it is tagged strictly as a Game Rule.
 - Brain stethoscope (spike sonification). Synthetic audio clicks triggered when neurons spike in a user-probed neuropil region (mushroom body, antennal lobe, central complex, optic lobes, motor neurons) or inspected neuron group. Hotkey K or button in the big brain view. Tagged strictly as a Game Rule: this is synthetic audio sonification for intuitive listening, not a biophysical local field potential (LFP) or extracellular microelectrode recording.
 - Dynamic neural clamp override. Forcing recorded reference spike trains overrides target neurons' natural membrane potentials and severs closed-loop sensorimotor feedback (proprioception and visual flow are open-loop).

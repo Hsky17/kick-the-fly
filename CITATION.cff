@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: >-
+  If you use Kick the Fly in research or teaching, please cite it as below, and cite the MaleCNS v1.0
+  connectome it simulates (Janelia FlyEM; CC BY 4.0).
+title: "Kick the Fly: a game and lab bench running the complete MaleCNS v1.0 fruit fly connectome"
+type: software
+authors:
+  - alias: legendarylolo318-cloud
+repository-code: "https://github.com/legendarylolo318-cloud/kick-the-fly"
+license: MIT
+version: 2.8.0
+date-released: "2026-09-19"
+keywords:
+  - connectome
+  - Drosophila
+  - MaleCNS
+  - spiking neural network
+  - computational neuroscience
+references:
+  - type: dataset
+    title: "MaleCNS v1.0: the male Drosophila central nervous system connectome"
+    authors:
+      - name: "Janelia FlyEM (HHMI Janelia, University of Cambridge, MRC Laboratory of Molecular Biology, Google Research)"
+    url: "https://male-cns.janelia.org/"
+    license: CC-BY-4.0
