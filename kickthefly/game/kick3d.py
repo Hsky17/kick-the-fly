@@ -2337,20 +2337,27 @@ class Game3D(k2.Game):
         fa = p[THX] - p[ABD]
         fa = fa / (np.linalg.norm(fa) or 1)
         Ra = np.stack([fa, np.cross(side, fa), side], 1)
-        leg_col = col((86, 58, 26))
+        leg_col = col((132, 95, 50))
         for k in range(6):
             sgn = 1 if k < 3 else -1
             hip = p[THX] + fwd * (14 - 12 * (k % 3)) * S - up * 10 * S + side * sgn * 8 * S
-            rd.add("cylinder", segment(hip, p[KNEE[k]], 2.6 * S), leg_col)
-            rd.add("sphere", trs(p[KNEE[k]], None, (2.7 * S,) * 3), leg_col)
-            rd.add("cylinder", segment(p[KNEE[k]], p[FOOT[k]], 1.8 * S), leg_col)
-            rd.add("sphere", trs(p[FOOT[k]], None, (2.4 * S,) * 3), col((60, 40, 18)))
-        rd.add("sphere", trs(p[ABD], Ra, (30 * S * k_, 21 * S * k_, 21 * S * k_)), col((176, 116, 44)), P_STRIPES)
-        rd.add("sphere", trs(p[THX], Rb, (23 * S * k_, 19 * S * k_, 19 * S * k_)), col((156, 102, 40)))
-        rd.add("sphere", trs(p[HEAD], Rb, (15 * S * k_,) * 3), col((146, 96, 38)))
+            rd.add("cylinder", segment(hip, p[KNEE[k]], 2.0 * S), leg_col)
+            rd.add("sphere", trs(p[KNEE[k]], None, (2.1 * S,) * 3), leg_col)
+            rd.add("cylinder", segment(p[KNEE[k]], p[FOOT[k]], 1.3 * S), leg_col)
+            rd.add("sphere", trs(p[FOOT[k]], None, (1.8 * S,) * 3), col((96, 66, 32)))
+        # Drosophila melanogaster, not a bee: a pale yellow-tan body, a short abdomen tapering to a dark tip with
+        # bands only across the top of each segment (the shader's P_STRIPES), and eyes that fill most of the head.
+        abd_l, abd_r = 24 * S * k_, 17.5 * S * k_
+        rd.add("sphere", trs(p[ABD], Ra, (abd_l, abd_r, abd_r)), col((206, 172, 104)), P_STRIPES)
+        rd.add("sphere", trs(p[ABD] - fa * abd_l * 0.52, Ra, (abd_l * 0.42, abd_r * 0.78, abd_r * 0.78)),
+               col((96, 70, 38)))                                    # the tapered, dark tip
+        rd.add("sphere", trs(p[THX], Rb, (23 * S * k_, 19.5 * S * k_, 19 * S * k_)), col((176, 146, 92)))
+        rd.add("sphere", trs(p[THX] - fwd * 6 * S + up * 9 * S, Rb, (13 * S * k_, 7 * S * k_, 15 * S * k_)),
+               col((150, 120, 74)))                                  # the scutellum behind the wing bases
+        rd.add("sphere", trs(p[HEAD], Rb, (13 * S * k_, 14 * S * k_, 15 * S * k_)), col((186, 154, 96)))
         for sgn in (1, -1):
-            eye = p[HEAD] + fwd * 3 * S + up * 2 * S + side * sgn * 9 * S * k_
-            rd.add("sphere", trs(eye, Rb, (8 * S * k_, 11 * S * k_, 9 * S * k_)), col((196, 30, 26)), P_EYE)
+            eye = p[HEAD] + fwd * 1.5 * S + up * 2.5 * S + side * sgn * 8.5 * S * k_
+            rd.add("sphere", trs(eye, Rb, (12 * S * k_, 14 * S * k_, 11.5 * S * k_)), col((222, 44, 30)), P_EYE)
             if dead:
                 for a in (0.8, -0.8):
                     rd.add("cube", trs(eye + side * sgn * 8 * S, Rb @ rot_z(a), (18 * S, 3 * S, 3 * S)), (0.12, 0.08, 0.08))
@@ -2359,6 +2366,15 @@ class Game3D(k2.Game):
             a0 = p[HEAD] + fwd * 11 * S + up * 8 * S + side * sgn * 4 * S
             rd.add("cylinder", segment(a0, a0 + fwd * 10 * S + up * 10 * S + side * sgn * 5 * S, 1.2 * S), col((70, 45, 20)))
         rd.add("cylinder", segment(p[HEAD] + fwd * 8 * S - up * 10 * S, p[HEAD] + fwd * 14 * S - up * 20 * S, 1.8 * S), col((70, 45, 20)))
+        if not fly.wrapped:                     # bristles: a real fly is covered in them, a bee is furry instead
+            bristle = col((74, 52, 28))
+            for bx, by, bs, bl in ((-2, 15, 0, 7), (4, 15, 5, 6), (4, 15, -5, 6), (-8, 13, 7, 7), (-8, 13, -7, 7),
+                                   (-13, 9, 0, 8)):
+                root = p[THX] + fwd * bx * S + up * by * S + side * bs * S * k_
+                rd.add("cylinder", segment(root, root + (up * 0.8 - fwd * 0.6) * bl * S, 0.7 * S), bristle)
+            for sgn in (1, -1):
+                root = p[HEAD] + fwd * 4 * S + up * 9 * S + side * sgn * 4 * S * k_
+                rd.add("cylinder", segment(root, root + (up * 0.9 + fwd * 0.4) * 6 * S, 0.6 * S), bristle)
         flap = not dead and (now < fly.escape_until or (fly.grabbed is not None and random.random() < 0.3))
         for i, sgn in ((0, 1), (1, -1)):
             base = p[THX] + up * 12 * S + side * sgn * 5 * S
@@ -2366,8 +2382,8 @@ class Game3D(k2.Game):
             if flap:
                 tip = base + (tip - base) * 0.8 + up * 38 * S * math.sin(now * 90 + i) + side * sgn * 10 * S
             span = float(np.linalg.norm(tip - base))
-            rd.add("sphere", trs((base + tip) / 2, frame_from_x(tip - base), (span / 2 + 6 * S, 1.2 * S, 13 * S)),
-                   (0.82, 0.87, 0.95, 0.38 if not fly.melt else 0.2), P_NONE, 0.15)
+            rd.add("sphere", trs((base + tip) / 2, frame_from_x(tip - base), (span / 2 + 9 * S, 0.9 * S, 12 * S)),
+                   (0.90, 0.94, 0.99, 0.34 if not fly.melt else 0.18), P_NONE, 0.12)
         if self.duel and not dead and fly is self.fly:             # the blaster, strapped under its head (duelist only)
             muzzle, _ = self._muzzle()
             base = p[THX] + fwd * 10 * S - up * 4 * S

@@ -248,15 +248,31 @@ def test_a_fly_that_leaves_is_lost_and_can_be_recalled(game3d):
 
 @needs_pack
 def test_orchard_feeding_drives_the_real_reward_neurons(game3d):
+    import random
+
     from kickthefly.game import kick3d
 
+    # Earlier tests in this module run the game for a wall-clock duration, so both the random stream and where they
+    # leave the fly depend on the machine's speed. Seed the generators and put the fly in a known state next to a
+    # ripe fruit, or this passes or fails with the load.
+    random.seed(17)
+    np.random.seed(17)
     game3d.set_setting("brain.arena", "orchard", save=False)
     assert game3d.orchard is not None and kick3d.COLLIDERS, "trees are obstacles"
     slot, br = game3d.flies[0], game3d.brain
+    fly = slot.fly
+    fly.wet = fly.frost = fly.melt = fly.venom = fly.char = fly.soak = 0.0
+    fly.stuck.clear()
+    fly.escape_until = fly.stun_until = fly.walk_until = 0.0
+    fly.health, fly.dead_at, fly.perch = kick3d.MAX_HEALTH, None, None
+    slot.lost, slot.fruit, slot.landed = False, None, False
+    slot.fruit_ready = 0.0
+    ripe = next(f for f in game3d.orchard.fruit if f.ripe)
+    game3d._move_fly(fly, (float(ripe.pos[0]) + 0.4, float(ripe.pos[2]) + 0.4))
     pam = br.sense[("reward", None)]
     fed = False
     before = after = None
-    for _ in range(90):
+    for _ in range(180):                                     # 90 s of game time: it has to find a fruit and land
         was = getattr(slot, "landed", False)
         spikes = 0
         steps = 0
@@ -273,7 +289,7 @@ def test_orchard_feeding_drives_the_real_reward_neurons(game3d):
             fed = True
             break
         before = rate if before is None else 0.8 * before + 0.2 * rate
-    assert fed, "the fly never landed on a fruit in 45 s of game time"
+    assert fed, "the fly never landed on a fruit in 90 s of game time"
     assert after > 1.5 * before, f"feeding should drive PAM like sugar does ({before:.1f} -> {after:.1f} Hz)"
     assert slot.fruit is not None and slot.fruit.eater is slot
 

@@ -76,6 +76,7 @@ python kick_the_fly.py --headless --validate --out data/validation_results.json 
 python tools/make_screenshots.py              # every screenshot into docs/ (about 5 minutes)
 python tools/make_screenshots.py lamp duel    # just some of them; --list shows them all
 python tools/make_screenshots.py demo         # docs/demo.gif, recorded with the in-game video recorder
+python tools/make_screenshots.py portrait --out /tmp    # a close-up of the fly model, for checking it after a change
 ```
 
 Each scene is a short script (seed 7, a fixed arena, camera and inputs) that runs inside the real game loop through

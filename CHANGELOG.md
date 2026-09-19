@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.8.1 (2026-09-19)
+
+### Changed
+- **The fly looks like a fruit fly, not a bee.** It was a honey-gold body with wasp bands wrapped all the way around a
+  round abdomen, and small eyes. Now: eyes about three times the area and bright red, filling most of the head as a real
+  *Drosophila*'s do; a pale yellow-tan body instead of honey gold; a shorter abdomen tapering to a dark tip; dark bands
+  only across the top of each segment, fading out underneath and at the tip, instead of wrapping right around; thinner,
+  paler legs; clearer, longer wings; bristles on the thorax and head; and a scutellum behind the wing bases. Only the
+  drawing changed; the simulation, physics and hit detection are untouched.
+- Every README screenshot and the demo GIF regenerated with the new model.
+- The orchard feeding test seeds the random generators itself: earlier tests in its module run for a wall-clock
+  duration, so the fly's choice of fruit shifted with machine load and the test failed about half the time.
+
 ## 2.8.0 (2026-09-19)
 
 ### Added

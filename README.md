@@ -92,9 +92,9 @@ All from the current build at 1280x760, made by `tools/make_screenshots.py` (see
 
 ![a spider wrapping the fly in silk](docs/spider.png)
 
-**1v1 duel (X).** The fly aims with its LC10 -> DNa02 steering pathway and fires when its DNp35 object neurons do; each hit fires its reward dopamine neurons, so it learns to like hunting you. Here it has just won the round: 12 hits from 12 shots, and its mushroom body now likes you 0.85.
+**1v1 duel (X).** The fly aims with its LC10 -> DNa02 steering pathway and fires when its DNp35 object neurons do. Here it has hit you 6 times out of 7 shots; every hit fires its reward dopamine neurons, so its REWARD meter reads bliss and its mushroom body now likes you 0.49.
 
-![the fly has won the 1v1 duel: YOU DIED](docs/duel.png)
+![the fly shooting at you in the 1v1 duel, its reward meter at bliss](docs/duel.png)
 
 **Training (T).** Ten shock pairings with the swatter's smell weaken its real Kenyon cell -> MBON synapses; the curve is its fear after each trial.
 

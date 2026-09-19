@@ -237,15 +237,23 @@ void main() {
         base = mix(base, base * vec3(1.3, 1.1, 0.8), ring * 0.45);
         base *= 0.85 + 0.15 * noise(v_world.xz * 60.0);
         spec_k = 0.02;
-    } else if (v_pattern == 4) {          // abdomen bands along local x
-        float band = step(0.55, fract(v_local.x * 2.2 + 0.2));
-        base = mix(base, base * 0.42, band);
-        spec_k = 0.5; shin = 40.0;
-    } else if (v_pattern == 5) {          // compound eye facets
-        vec2 q = v_local.yz * 9.0;
+    } else if (v_pattern == 4) {          // abdomen: a dark band at the back of each tergite, on top only
+        float seg = fract(v_local.x * 2.4 + 0.5);            // local +x points at the thorax, so -x is the tip
+        // a wide, soft edge: a hard one follows the sphere's facets and breaks into zigzags up close
+        float band = smoothstep(0.42, 0.04, seg);
+        float dorsal = smoothstep(-0.12, 0.40, v_local.y);   // the underside stays pale, as on a real fly
+        float rear = (0.4 + 0.6 * smoothstep(0.75, -0.05, v_local.x))   // darker toward the tip, and gone at the
+                   * smoothstep(-0.92, -0.45, v_local.x);               // tip itself, where the dark tip takes over
+        base = mix(base, base * 0.30, band * dorsal * rear);
+        base = mix(base, base * vec3(1.10, 1.06, 0.82), (1.0 - dorsal) * 0.45);
+        base *= 0.94 + 0.06 * noise(v_local.xy * 40.0);
+        spec_k = 0.18; shin = 18.0;
+    } else if (v_pattern == 5) {          // compound eye: fine facets, brightest where it catches the light
+        vec2 q = v_local.yz * 15.0;
         float fac = length(fract(q) - 0.5);
-        base *= 0.75 + 0.35 * smoothstep(0.5, 0.2, fac);
-        spec_k = 0.9; shin = 70.0;
+        base *= 0.80 + 0.30 * smoothstep(0.5, 0.15, fac);
+        base *= 1.0 - 0.25 * smoothstep(0.2, 1.0, -v_local.x);
+        spec_k = 1.1; shin = 90.0;
     } else if (v_pattern == 6) {          // glossy flypaper with specks
         base *= 0.9 + 0.1 * noise(v_world.xz * 30.0);
         base *= 1.0 - 0.35 * step(0.93, hash(floor(v_world.xz * 40.0)));

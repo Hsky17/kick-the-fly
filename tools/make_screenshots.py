@@ -1,6 +1,6 @@
 """Regenerate the README screenshots and the demo GIF from the current build, the same way every time.
 
-    python tools/make_screenshots.py                 every scene, into docs/
+    python tools/make_screenshots.py                 every README scene, into docs/ (not demo or portrait)
     python tools/make_screenshots.py duel orchard    only these scenes
     python tools/make_screenshots.py --list          the scenes and what each shows
     python tools/make_screenshots.py demo            the README's animated demo (docs/demo.gif), via the video recorder
@@ -116,7 +116,8 @@ scene("room3d", "The 3D room: first person, with the fly's live brain on the rig
       every=near(1.5, bearing=math.pi / 2 + 0.5, height=1.25), shot_at=5.0)
 
 scene("swat3d", "Swatting in first person: the touch neurons fire and the leg-touch descending neurons kick",
-      steps=[(3.0, lambda g: hold(g, "swatter")), (5.0, lambda g: fire(g)), (6.2, lambda g: fire(g))],
+      steps=[(0.0, lambda g: g.set_setting("brain.immortal", True, save=False)),
+             (3.0, lambda g: hold(g, "swatter")), (5.0, lambda g: fire(g)), (6.2, lambda g: fire(g))],
       every=near(1.05, bearing=math.pi / 2 + 0.35, height=1.0), shot_at=6.45)
 
 scene("flypaper3d", "Stuck on flypaper: it struggles through its own touch and descending neurons",
@@ -284,6 +285,11 @@ scene("escaperoom", "The escape room: fan, flypaper and a hot lamp between the f
       every=lambda g, t: look_at(g, fly_pos(g), 2.2, math.pi / 2 + 0.3, 1.6), shot_at=8.0)
 
 
+scene("portrait", "Close-up of the fly model itself (not used in the README; for checking the model after a change)",
+      steps=[(0.0, lambda g: g.set_setting("brain.immortal", True, save=False))],
+      every=lambda g, t: look_at(g, fly_pos(g), 0.8, math.pi / 2 + 2.6, 0.42), shot_at=6.0)
+
+
 def _demo_every(game, t):
     """~12 s in the open field: walk up, swat it, torch it, and watch it take off, with the brain panel lighting up."""
     fp = fly_pos(game)
@@ -397,7 +403,7 @@ def main() -> int:
         for s in SCENES.values():
             print(f"{s.name:12s} {s.caption}")
         return 0
-    names = args.scenes or [n for n in SCENES if n != "demo"]
+    names = args.scenes or [n for n in SCENES if n not in ("demo", "portrait")]
     bad = [n for n in names if n not in SCENES]
     if bad:
         ap.error(f"unknown scene(s): {', '.join(bad)} (see --list)")
