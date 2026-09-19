@@ -45,6 +45,7 @@ class LIFParams:
     gain_bounds: tuple[float, float] = (1.5, 40.0)
     sparse_path_max_active: float = 0.10  # active fraction below which the column-gather path is used
     dtype: str = "float32"           # state vector precision ("float32" or "float64")
+    backend: str = "auto"            # compute backend: auto | cpu | numba | torch-cuda | torch-rocm
 
 
 class ActivityBuffer:
@@ -123,6 +124,9 @@ class LIFSim:
         self.activity = ActivityBuffer(self.n)
         self.last_step_ms = 0.0
         self.path_counts = {"columns": 0, "full": 0}
+        from kickthefly.sim.connectome import backends
+        self.backend_choice = getattr(self.p, "backend", "auto")
+        self.backend = backends.create_backend(self, self.backend_choice)
 
     def _propagate(self) -> np.ndarray:
         active = np.flatnonzero(self.spikes)
@@ -141,32 +145,7 @@ class LIFSim:
         """Advance one dt. sensory_input: dense float32 current per neuron, or None. Returns bool spike vector."""
         t0 = time.perf_counter()
         p = self.p
-        dt = self.dtype
-        i_syn = self._propagate()
-        drive = self._drive
-        np.multiply(i_syn, dt(self.gain), out=drive)
-        drive += dt(p.bias)
-        off = int(self.rng.integers(0, self._noise.size - self.n))
-        drive += self._noise[off:off + self.n]
-        if sensory_input is not None:
-            if p.ext_gain == 1.0:
-                drive += sensory_input
-            else:
-                drive += dt(p.ext_gain) * sensory_input
-
-        v = self.v
-        v *= dt(1.0 - self.leak)          # v_reset == 0 resting potential
-        if p.v_reset:
-            v += self.leak * dt(p.v_reset)
-        v += drive
-        mask = self._mask
-        np.greater(self.refr, 0, out=mask)
-        np.copyto(v, dt(p.v_reset), where=mask)
-        np.subtract(self.refr, 1, out=self.refr, where=mask)
-        spikes = v >= p.v_thresh
-        np.copyto(v, dt(p.v_reset), where=spikes)
-        np.copyto(self.refr, np.int16(p.refractory_steps), where=spikes)
-        self.spikes = spikes
+        spikes = self.backend.step(sensory_input)
 
         frac = np.count_nonzero(spikes) / self.n
         err = (self.target_p - frac) / max(self.target_p, 1e-9)
@@ -175,6 +154,7 @@ class LIFSim:
         self.activity.push(spikes)
         self.last_step_ms = (time.perf_counter() - t0) * 1000
         return spikes
+
 
 
 def _bench(steps: int) -> None:

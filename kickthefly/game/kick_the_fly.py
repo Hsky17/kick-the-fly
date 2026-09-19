@@ -2070,6 +2070,14 @@ class Game:
                 sim._sfloat = sim._sfloat.astype(dt)
                 sim._zeros = sim._zeros.astype(dt)
                 sim.leak = dt(sim.p.dt_ms / sim.p.tau_ms)
+        elif key == "brain.backend":
+            from kickthefly.sim.connectome import backends
+            b_choice = str(c[key])
+            for slot in getattr(self, "flies", []):
+                sim = slot.brain.sim
+                sim.p.backend = b_choice
+                sim.backend_choice = b_choice
+                sim.backend = backends.create_backend(sim, b_choice)
 
     def toggle_mirror_weights(self) -> None:
         val = not bool(self.cfg["brain.mirror_weights"])
@@ -2512,9 +2520,11 @@ class Game:
     def build_brain(self, seed: int) -> "Brain":
         """A fresh, warmed-up, not-yet-started brain for another fly (its own LIFSim and mushroom body)."""
         from kickthefly.lab import lab
-        from kickthefly.sim.connectome.sim import LIFParams, LIFSim
-
-        sim = LIFSim(None, LIFParams(), W_in=self.weights, seed=seed)
+        lif_params = LIFParams()
+        if hasattr(self, "cfg") and self.cfg:
+            lif_params.backend = str(self.cfg.get("brain.backend", "auto"))
+            lif_params.dtype = str(self.cfg.get("brain.dtype", "float32"))
+        sim = LIFSim(None, lif_params, W_in=self.weights, seed=seed)
         lab.apply_to_sim(sim, self.lab_params)
         new_brain = Brain(self.graph, sim, seed=seed)
         new_brain.set_pain_level(self.pain_level)
@@ -5683,7 +5693,12 @@ def load_brain(out: dict) -> None:
             weights = simcore.symmetrize_weights(g, weights)
         out["stage"] = f"wiring {g.n:,} neurons"
         seed = int(out.get("seed", 0))
-        sim = LIFSim(None, LIFParams(), W_in=weights, seed=seed)
+        p = LIFParams()
+        if "backend" in out:
+            p.backend = out["backend"]
+        if "dtype" in out:
+            p.dtype = out["dtype"]
+        sim = LIFSim(None, p, W_in=weights, seed=seed)
         brain = Brain(g, sim, seed=seed)
         out["stage"] = "placing neurons"
         pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
@@ -5707,7 +5722,9 @@ def parse_args(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(prog="KickTheFly", description="Kick the Fly: a live MaleCNS v1.0 fly connectome.")
     ap.add_argument("--2d", dest="two_d", action="store_true", help="the original 2D game")
     ap.add_argument("--fullscreen", action="store_true")
-    ap.add_argument("--backend", choices=platform_env.BACKENDS, help="Linux display backend (default: auto)")
+    from kickthefly.sim.connectome import backends as sim_backends
+    ap.add_argument("--backend", help="Compute backend (auto, cpu, numba, torch-cuda, torch-rocm) or Linux display backend (wayland, x11)")
+    ap.add_argument("--sim-backend", choices=sim_backends.BACKEND_NAMES, help="Simulation compute backend")
     ap.add_argument("--seed", type=int, help="random seed for the brains and the game")
     ap.add_argument("--smoke", nargs="+", metavar="ARG", help="build check: SECONDS [SCREENSHOT.png]")
     ap.add_argument("--verbose", action="store_true")
@@ -5767,6 +5784,20 @@ def main(argv: list[str] | None = None) -> int:
 
         return headless.main(args)
     cfg = config.Config.load(p.config_file)
+    # Disambiguate --backend: if it matches a sim backend, apply to brain.backend; if display backend, use for video
+    sim_backend_choice = getattr(args, "sim_backend", None)
+    display_backend_choice = None
+    if args.backend:
+        if args.backend in ("wayland", "x11"):
+            display_backend_choice = args.backend
+        elif args.backend in ("cpu", "numba", "torch-cuda", "torch-rocm"):
+            sim_backend_choice = args.backend
+        elif args.backend == "auto":
+            sim_backend_choice = "auto"
+    if sim_backend_choice:
+        cfg.set("brain.backend", sim_backend_choice)
+    args.display_backend = display_backend_choice
+    args.sim_backend = sim_backend_choice
     if args.autopilot:
         cfg.set("brain.autopilot", True)
     if getattr(args, "arena", None):
@@ -5787,7 +5818,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:                           # e.g. moderngl missing in a source checkout
             log.warning("3D unavailable (%s); starting the 2D game", e)
         else:
-            platform_env.init_video(args.backend, cfg["graphics.backend"])
+            platform_env.init_video(args.display_backend, cfg["graphics.backend"])
             pygame.init()
             for attempt in range(2):
                 try:
@@ -5803,7 +5834,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
     crash.info["mode"] = "2d"
     if not pygame.display.get_init():
-        platform_env.init_video(args.backend, cfg["graphics.backend"])
+        platform_env.init_video(args.display_backend, cfg["graphics.backend"])
     os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")   # smooth when scaled, not blocky
     pygame.init()
     pygame.display.set_caption("Kick the Fly")
@@ -5818,6 +5849,8 @@ def main(argv: list[str] | None = None) -> int:
     state: dict = {"stage": "starting"}
     state["seed"] = seed
     state["mirror_weights"] = bool(cfg["brain.mirror_weights"])
+    state["backend"] = getattr(args, "sim_backend", None) or cfg["brain.backend"]
+    state["dtype"] = cfg["brain.dtype"]
     threading.Thread(target=load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
     while "brain" not in state:

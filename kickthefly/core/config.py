@@ -144,6 +144,12 @@ SETTINGS: tuple[Setting, ...] = (
       "Precision for neural membrane voltage and state update. float32 is fast and bit-exact across validation; "
       "float64 uses 64-bit doubles.", options=("float32", "float64"), labels=("float32 (Fast)", "float64 (Double)"),
       tag=CONNECTOME),
+    S("brain.backend", "Brain", "Compute backend", "choice", "auto",
+      "Compute engine for connectome simulation: auto selects fastest available (GPU, Numba, or CPU). "
+      "Falls back cleanly to CPU if hardware or libraries are missing.",
+      options=("auto", "cpu", "numba", "torch-cuda", "torch-rocm"),
+      labels=("Auto", "CPU (NumPy)", "Numba (JIT)", "PyTorch (CUDA)", "PyTorch (ROCm)"),
+      tag=CONNECTOME),
     # --- Controls
     S("controls.mouse_sensitivity", "Controls", "Mouse sensitivity", "float", 1.0,
       "How far the view turns when you move the mouse.", lo=0.1, hi=5.0, step=0.1, only="3d", fmt="{:.1f}"),

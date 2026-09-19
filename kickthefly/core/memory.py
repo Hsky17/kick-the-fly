@@ -166,6 +166,8 @@ class Memory:
     def _write_back(self) -> None:
         self.sim.W_csr.data[self.csr_pos] = self.w
         self.sim.W_csc.data[self.csc_pos] = self.w
+        if hasattr(self.sim, "backend") and hasattr(self.sim.backend, "on_weights_changed"):
+            self.sim.backend.on_weights_changed()
 
     def pattern(self, kc_rates: np.ndarray) -> np.ndarray:
         """KC eligibility in 0..1: firing above calm past the resting noise, sparsified to the most active KCs."""

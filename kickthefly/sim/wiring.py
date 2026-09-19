@@ -261,6 +261,8 @@ def apply(brain, w: Wiring, g=None) -> dict:
     mem = getattr(brain, "memory", None)
     if mem is not None:                                 # keep learning from writing the change back out
         _apply_to_memory(mem, idx, mult)
+    if hasattr(sim, "backend") and hasattr(sim.backend, "on_weights_changed"):
+        sim.backend.on_weights_changed()
     return dict(changed=int(len(idx)), **w.as_dict())
 
 
@@ -274,6 +276,8 @@ def _restore(sim, brain=None) -> None:
         sim.W_csr.data[idx] = sim._wiring_saved
         sim.W_csc = sim.W_csr.tocsc()
         sim._wiring_idx = sim._wiring_saved = None
+        if hasattr(sim, "backend") and hasattr(sim.backend, "on_weights_changed"):
+            sim.backend.on_weights_changed()
     mem = getattr(brain, "memory", None) if brain is not None else None
     if mem is not None and getattr(mem, "_wiring_saved", None) is not None:
         with mem.lock:
@@ -282,6 +286,8 @@ def _restore(sim, brain=None) -> None:
             mem.sim.W_csr.data[mem.csr_pos] = mem.w
             mem.sim.W_csc.data[mem.csc_pos] = mem.w
             mem._wiring_saved = None
+            if hasattr(sim, "backend") and hasattr(sim.backend, "on_weights_changed"):
+                sim.backend.on_weights_changed()
 
 
 def _apply_to_memory(mem, idx: np.ndarray, mult: np.ndarray) -> None:

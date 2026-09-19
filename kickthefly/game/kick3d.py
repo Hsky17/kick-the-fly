@@ -3254,7 +3254,7 @@ def run(smoke: float = 0.0, shot: str | None = None, fullscreen: bool = False, s
     app = App(fullscreen, vsync=cfg["graphics.vsync"])
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,consolas", 22)
-    state: dict = {"stage": "starting", "seed": seed}
+    state: dict = {"stage": "starting", "seed": seed, "backend": cfg["brain.backend"], "dtype": cfg["brain.dtype"]}
     threading.Thread(target=k2.load_brain, args=(state,), daemon=True).start()
     t0 = time.perf_counter()
     splash = pygame.Surface((k2.W, k2.H), pygame.SRCALPHA)
