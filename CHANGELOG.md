@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Pluggable Simulation Backends:** Pluggable compute backend abstraction (`auto`, `cpu`, `numba`, `torch-cuda`, `torch-rocm`) with graceful fallback to standard NumPy CPU. Includes JIT-compiled Numba kernels (`@njit(fastmath=True)`) and PyTorch CUDA/ROCm/CPU tensors while guaranteeing bit-exact determinism for same-seed validation runs.
+- **Dynamic Fly Cap & Multi-Fly Swarm Scaling:** Raised the default fly cap from 16 to dynamically adapt to the active compute backend (16 on baseline CPU, 24 on PyTorch CPU, 32 on Numba, and 64 on GPU). Added **F** cycling key with a 5-second manual focus override before resuming nearest-fly tracking.
+- **Arbitrary-Duration Video Recording:** Fullscreen MP4/WebM video streaming directly to `ffmpeg` via stdin pipe with automatic fallback to Pillow animated GIF when ffmpeg is unavailable. Accessible via hotkey **Shift+R** (or capital **R**) with an on-screen HUD badge `[REC mm:ss]`, saving to `videos/` or a custom path via `--record-video [PATH]`.
+- **Real Neuron Morphology (SWC Skeletons):** Live fetching and caching of authentic EM reconstruction skeletons from Janelia neuPrint (MaleCNS v1.0) for landmark neuron classes (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) with local caching in `data/skeletons/` and synthetic fiber fallback.
+- **Backend & Device Performance Tracking:** Extended `--benchmark`, Lab dashboard, crash reports, save states, and NWB export metadata to record active simulation backend, device name, throughput (neurons/s and syn-evals/s), and execution precision.
+
+### Performance
+- **Sparse Matmul & Precision Optimization:** Configurable simulation precision (`float32` default vs `float64`) via `brain.dtype` setting and `--dtype` CLI flag. Verified bit-exact determinism across CSR/CSC layouts with 2x memory reduction on modern compute hardware.
+- **Simulation Loop Profiler:** Added dedicated sim loop profiler reporting breakdown across sparse matmul, state updates, plasticity, readout, and rendering across 1, 8, and 16 flies.
+
 ## 2.7.2 (2026-09-18)
 
 ### Fixed

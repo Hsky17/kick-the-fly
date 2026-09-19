@@ -184,7 +184,6 @@ ACTIONS: tuple[tuple[str, str, str], ...] = (
     ("photo_mode", "Photo mode / free camera", "f10"),
     ("stethoscope", "Brain stethoscope", "k"),
     ("timelapse", "Time-lapse record", "l"),
-    ("record_video", "Video record", ""),
     ("recall", "Recall a lost fly (outdoors)", "j"),
     ("cycle_fly", "Cycle focused fly", "f"),
 )

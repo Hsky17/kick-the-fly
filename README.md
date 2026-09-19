@@ -50,8 +50,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - **orchard** (3D): a grove of 24 fruit trees. The fly flies to a ripe fruit, lands and feeds, which drives the same real taste and PAM reward neurons sugar does and heals it. Each fruit holds a few feeds and shrinks and browns as it's eaten, then drops; it grows back after about 75 s, staggered, with a cap per tree. Some fruit are fermented and act like the alcohol tool. The fruit, the trees and the flying to them are **game rules**: the fly doesn't forage through its own circuitry. With several flies they end up competing for fruit, but only through the looming and touch neurons they already have; nothing about competing is scripted.
 
   Open field and orchard need the 3D game; the 2D game stays indoors and says so. The arena you pick is saved in `config.toml` (Settings > Brain > Arena, or **E**), in save states and in every export's metadata.
-- **Sound:** every sound is generated in code. The wing buzz follows its flight neurons. **M** mutes.
-- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
+- **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **Shift+R** (or capital **R**) toggles arbitrary-duration video recording (MP4/WebM with ffmpeg or animated GIF fallback) saved to `videos/`. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
 - **Slow motion and save states:** pause time, slow everything to 0.1x, step it 1/60 s at a time, and save or load the whole simulation (see Time controls).
 - **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Key neuron types (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) load real EM reconstruction SWC morphology skeletons from Janelia neuPrint (MaleCNS v1.0), cached locally in `data/skeletons/` with graceful offline fallback to synthetic fibers. Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
 
@@ -197,6 +196,7 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | P / I | pain neurons / immortal mode |
 | K | brain stethoscope (spike sonification clicks in big brain view / body parts) |
 | L | time-lapse record (2x-20x speedup to MP4/GIF; toggle on/off) |
+| Shift+R | video recording (arbitrary duration MP4/WebM/GIF; toggle on/off) |
 | Y | autopilot / spectator mode (hands-off orbit camera) |
 | F10 | photo mode / free camera with depth of field |
 | M | mute |
@@ -204,14 +204,15 @@ Every key below can be rebound in Settings > Controls (a key that's already take
 | V | brain panel: solid, see-through, faint, hidden (hidden gives the room the whole screen) |
 | U | menu size: crisp (sharp whole-pixel scaling, the default) or large |
 | F11 or Alt+Enter | fullscreen; the game fills any screen with no black bars |
-| N | spawn another fly (up to 16), each running its own independent brain |
+| N | spawn another fly (dynamic cap adapting to backend: 16-64), each running its own independent brain |
+| F | cycle focused fly (brain panel / surgery / training) |
 | R | reset to a single fresh fly |
 | Z | pause or resume time |
 | [ / ] | slower / faster: 0.1x, 0.25x, 0.5x, 1x |
 | . | single step while paused (1/60 s of the room and the matching brain steps) |
 | H | controls help |
 
-Command line: `--2d`, `--fullscreen`, `--backend wayland|x11`, `--seed N`, `--arena NAME` (room, fan, flypaper, pool, lamp, escaperoom, field, orchard), `--flies N` (start with N flies), and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--nwb`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`, `--threshold-sweep`, `--signflip-test`, `--critical-path TARGET`, `--benchmark`.
+Command line: `--2d`, `--fullscreen`, `--backend auto|cpu|numba|torch-cuda|torch-rocm|wayland|x11`, `--dtype float32|float64`, `--record-video [PATH]`, `--seed N`, `--arena NAME` (room, fan, flypaper, pool, lamp, escaperoom, field, orchard), `--flies N` (start with N flies), and for headless runs `--headless`, `--validate`, `--protocol FILE`, `--nwb`, `--out PATH`, `--workers N`, `--seeds 1000-1009`, `--strict`, `--threshold-sweep`, `--signflip-test`, `--critical-path TARGET`, `--benchmark`.
 
 ## Settings
 

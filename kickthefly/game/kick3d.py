@@ -690,12 +690,12 @@ class Game3D(k2.Game):
             self.ui_mode = c[key]
         elif key == "access.palette" or key == "brain.seed":
             pass
-        self.key_codes = {a: pygame.key.key_code(k) for a, k in c.keys.items()}
+        self.key_codes = {a: pygame.key.key_code(k) for a, k in c.keys.items() if k}
 
     def set_setting(self, key, value, save: bool = True, force: bool = False) -> None:
         super().set_setting(key, value, save, force)
         if key == "keys":
-            self.key_codes = {a: pygame.key.key_code(k) for a, k in self.cfg.keys.items()}
+            self.key_codes = {a: pygame.key.key_code(k) for a, k in self.cfg.keys.items() if k}
 
     def open_menu(self, screen: str = "pause") -> None:
         self.set_look(False)
