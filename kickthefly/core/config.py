@@ -140,6 +140,10 @@ SETTINGS: tuple[Setting, ...] = (
     S("brain.mirror_weights", "Brain", "Mirror-average weights", "bool", False,
       "Average left and right synaptic weights to enforce bilateral symmetry. Clearly a data modification game rule.",
       tag=GAME_RULE),
+    S("brain.dtype", "Brain", "State precision", "choice", "float32",
+      "Precision for neural membrane voltage and state update. float32 is fast and bit-exact across validation; "
+      "float64 uses 64-bit doubles.", options=("float32", "float64"), labels=("float32 (Fast)", "float64 (Double)"),
+      tag=CONNECTOME),
     # --- Controls
     S("controls.mouse_sensitivity", "Controls", "Mouse sensitivity", "float", 1.0,
       "How far the view turns when you move the mouse.", lo=0.1, hi=5.0, step=0.1, only="3d", fmt="{:.1f}"),

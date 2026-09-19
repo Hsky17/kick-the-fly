@@ -2057,6 +2057,19 @@ class Game:
             for slot in self.flies:
                 slot.brain.sim.W_csr = w_csr
                 slot.brain.sim.W_csc = w_csc
+        elif key == "brain.dtype":
+            dt_str = str(c[key])
+            dt = np.float64 if dt_str == "float64" else np.float32
+            for slot in getattr(self, "flies", []):
+                sim = slot.brain.sim
+                sim.p.dtype = dt_str
+                sim.dtype = dt
+                sim.v = sim.v.astype(dt)
+                sim._drive = sim._drive.astype(dt)
+                sim._noise = sim._noise.astype(dt)
+                sim._sfloat = sim._sfloat.astype(dt)
+                sim._zeros = sim._zeros.astype(dt)
+                sim.leak = dt(sim.p.dt_ms / sim.p.tau_ms)
 
     def toggle_mirror_weights(self) -> None:
         val = not bool(self.cfg["brain.mirror_weights"])

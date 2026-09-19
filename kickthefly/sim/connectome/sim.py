@@ -44,6 +44,7 @@ class LIFParams:
     gain_adapt: float = 0.002        # per-step log-gain learning rate
     gain_bounds: tuple[float, float] = (1.5, 40.0)
     sparse_path_max_active: float = 0.10  # active fraction below which the column-gather path is used
+    dtype: str = "float32"           # state vector precision ("float32" or "float64")
 
 
 class ActivityBuffer:
@@ -105,18 +106,19 @@ class LIFSim:
         self.W_csc = self.W_csr.tocsc()
         self.build_s = time.perf_counter() - t
 
-        self.v = np.zeros(self.n, dtype=np.float32)
+        self.dtype = np.float64 if getattr(self.p, "dtype", "float32") == "float64" else np.float32
+        self.v = np.zeros(self.n, dtype=self.dtype)
         self.refr = np.zeros(self.n, dtype=np.int16)
         self.spikes = np.zeros(self.n, dtype=bool)
-        self._sfloat = np.zeros(self.n, dtype=np.float32)
-        self._drive = np.zeros(self.n, dtype=np.float32)
+        self._sfloat = np.zeros(self.n, dtype=self.dtype)
+        self._drive = np.zeros(self.n, dtype=self.dtype)
         self._mask = np.zeros(self.n, dtype=bool)
-        self._zeros = np.zeros(self.n, dtype=np.float32)
+        self._zeros = np.zeros(self.n, dtype=self.dtype)
         self.gain = float(self.p.syn_gain)
         self.rng = np.random.default_rng(seed)
         # Pre-scaled noise bank read at a random offset each step: ~0.85 ms saved vs drawing 166k normals per step.
-        self._noise = (self.rng.standard_normal(self.n * 16, dtype=np.float32) * np.float32(self.p.noise_std))
-        self.leak = np.float32(self.p.dt_ms / self.p.tau_ms)
+        self._noise = (self.rng.standard_normal(self.n * 16, dtype=self.dtype) * self.dtype(self.p.noise_std))
+        self.leak = self.dtype(self.p.dt_ms / self.p.tau_ms)
         self.target_p = self.p.target_rate_hz * self.p.dt_ms / 1000.0
         self.activity = ActivityBuffer(self.n)
         self.last_step_ms = 0.0
@@ -139,29 +141,30 @@ class LIFSim:
         """Advance one dt. sensory_input: dense float32 current per neuron, or None. Returns bool spike vector."""
         t0 = time.perf_counter()
         p = self.p
+        dt = self.dtype
         i_syn = self._propagate()
         drive = self._drive
-        np.multiply(i_syn, np.float32(self.gain), out=drive)
-        drive += np.float32(p.bias)
+        np.multiply(i_syn, dt(self.gain), out=drive)
+        drive += dt(p.bias)
         off = int(self.rng.integers(0, self._noise.size - self.n))
         drive += self._noise[off:off + self.n]
         if sensory_input is not None:
             if p.ext_gain == 1.0:
                 drive += sensory_input
             else:
-                drive += np.float32(p.ext_gain) * sensory_input
+                drive += dt(p.ext_gain) * sensory_input
 
         v = self.v
-        v *= np.float32(1.0 - self.leak)          # v_reset == 0 resting potential
+        v *= dt(1.0 - self.leak)          # v_reset == 0 resting potential
         if p.v_reset:
-            v += self.leak * np.float32(p.v_reset)
+            v += self.leak * dt(p.v_reset)
         v += drive
         mask = self._mask
         np.greater(self.refr, 0, out=mask)
-        np.copyto(v, np.float32(p.v_reset), where=mask)
+        np.copyto(v, dt(p.v_reset), where=mask)
         np.subtract(self.refr, 1, out=self.refr, where=mask)
         spikes = v >= p.v_thresh
-        np.copyto(v, np.float32(p.v_reset), where=spikes)
+        np.copyto(v, dt(p.v_reset), where=spikes)
         np.copyto(self.refr, np.int16(p.refractory_steps), where=spikes)
         self.spikes = spikes
 
