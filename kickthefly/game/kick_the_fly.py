@@ -25,12 +25,12 @@ when the sim was probed (40 hits per site, 400 ms before vs after). Which move
 each group triggers is a game choice. The giant fiber DNp01 barely reacts to
 touch in this model, so it isn't used. Wing touches mostly raise DNp09.
 
-Brain view: a front view built from the neurons' real cell-body positions. Each
-neuron is drawn as a fiber from its cell body toward the center of its synaptic
-partners, colored by direction and shaded by depth. Neurons firing above their
-calm rate glow: pain-sensing neurons hot orange, the rest cyan, and strongly
-firing ones sparkle. Real neuron shapes aren't bundled, so the fibers are
-estimates. B toggles a big view.
+Brain view: a front view built from the neurons' real cell-body positions. Key
+neuron classes (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) load real
+EM reconstruction morphology skeletons (SWC) from Janelia neuPrint (MaleCNS v1.0),
+cached in data/skeletons/ with offline fallback to synthetic fibers. Other neurons
+are drawn as fibers from cell body toward synaptic partner centroids, colored by
+direction and shaded by depth. Neurons firing above their calm rate glow. B toggles big view.
 
 Pain neurons (P): the connectome can't be given extra neurons, so this setting
 listens to more of the fly's real ones and makes each hit fire more of them.
@@ -745,7 +745,7 @@ class BrainView:
                 "blue-yellow": ((1.0, 0.8, 0.08), (0.18, 0.42, 1.0)),
                 "high-contrast": ((1.0, 0.12, 0.85), (0.92, 0.92, 0.92))}
 
-    def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1, regions: np.ndarray | None = None):
+    def __init__(self, soma: np.ndarray, W, pain_mask: np.ndarray, seed: int = 1, regions: np.ndarray | None = None, graph=None):
         rng = np.random.default_rng(seed)
         n = len(soma)
         has = ~np.isnan(soma[:, 0])
@@ -774,6 +774,19 @@ class BrainView:
         r = np.clip(0.05 * length, 400, 1600)
         arbor = A[:, None] + rng.normal(size=(n, self.ARBOR, 3)).astype(np.float32) * r[:, None, None]
         pts = np.concatenate([fiber, arbor], 1)                      # (n, samples, 3)
+
+        self.skeleton_status = "Skeletons offline - using synthetic fibers"
+        if graph is not None:
+            try:
+                from kickthefly.sim import morphology
+                skels, status = morphology.load_key_skeletons(graph, n_samples=self.FIBER + self.ARBOR)
+                self.skeleton_status = status
+                for idx, coords in skels.items():
+                    if 0 <= idx < n and len(coords) == (self.FIBER + self.ARBOR):
+                        pts[idx] = coords
+            except Exception:
+                self.skeleton_status = "Skeletons offline - using synthetic fibers"
+
         wts = np.concatenate([np.ones(self.FIBER), np.full(self.ARBOR, 2.0)]).astype(np.float32)
         depth = np.clip(1.2 - (pts[..., 2] - 5000.0) / 50000.0, 0.35, 1.0)   # the front of the brain is brighter
         nid = np.broadcast_to(np.arange(n)[:, None], pts.shape[:2])
@@ -2872,6 +2885,10 @@ class Game:
         if self.cfg["brain.autopilot"]:
             cam_info += " [AUTOPILOT ORBIT]" if self.cfg["brain.autopilot_orbit"] else " [AUTOPILOT]"
         self._text(surf, cam_info, (24, 40), (150, 200, 225), self.f_small)
+
+        skel_status = getattr(v, "skeleton_status", "Skeletons offline - using synthetic fibers")
+        skel_col = (130, 220, 180) if "Real" in skel_status else (210, 160, 120)
+        self._text(surf, skel_status, (PLAY_W // 2, 40), skel_col, self.f_small, "center")
 
         # Mode toggle button:
         mode_btn = pygame.Rect(rect.right - 400, 15, 130, 22)
@@ -5743,7 +5760,7 @@ def load_brain(out: dict) -> None:
         out["stage"] = "placing neurons"
         pain_groups = [brain.col[n] for n in (*TOUCH, "heat", "cold", "smell", "taste", "body_extra")]
         pain_mask = np.isin(brain.det_id, pain_groups) | (brain.pop_id == [n for n, _ in POPS].index("ascending"))
-        out["view"] = BrainView(soma, weights, pain_mask, regions=getattr(g, "region", None))
+        out["view"] = BrainView(soma, weights, pain_mask, regions=getattr(g, "region", None), graph=g)
         if getattr(g, "dan_mbon", None) is not None:
             from kickthefly.core import memory
             out["stage"] = "loading the fly's memory"

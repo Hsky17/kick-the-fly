@@ -298,6 +298,12 @@ ASSUMPTIONS = (
      "The sim tests the EPG/PEN/Delta7 compass network directly under raw connectome weights, without weight-tuning.",
      "Biological head-direction tracking in the central complex relies on precisely balanced recurrent excitation and broad Delta7 lateral inhibition to sustain a localized activity bump and track rotational visual/wind cues. Under raw unweighted LIF dynamics, bump contrast and persistence fail; reported as a negative validation result rather than tuned.",
      "kickthefly/lab/compass.py · kickthefly/lab/validation.py:epg_compass"),
+
+    ("Neuron morphology: real neuPrint skeletons for key types vs synthetic fibers",
+     "DATASET",
+     "Key types (MBONs, Kenyon cells, DNa02 steering, DNp01 giant fiber) use real EM reconstruction SWC skeletons cached from Janelia neuPrint (MaleCNS v1.0). Other neurons render as quadratic Bezier fibers from soma to partner centroid.",
+     "Living Drosophila neurons exhibit intricate arborizations, dendritic spines, axonal varicosities, and active dendritic integration. The point-neuron LIF model treats each cell as isopotential regardless of rendered arbor geometry.",
+     "kickthefly/sim/morphology.py · kickthefly/game/kick_the_fly.py:BrainView · data/skeletons/"),
 )
 
 

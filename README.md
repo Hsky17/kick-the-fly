@@ -38,7 +38,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
   - hurting it fires its punishment dopamine neurons, so it learns to fear you, and it runs away and stops shooting.
 
   Silence its tracking neurons in brain surgery and it can't aim.
-- **Multiple flies (N):** press N to spawn another fly, up to 16 at once, each running its own complete, independent connectome — 166,700 neurons apiece. They notice each other for real: a fly closing in fast fires another's actual looming detectors (LPLC2/LC4) and makes it dodge, and bumping into each other fires real touch neurons. The brain panel, training and surgery follow the fly nearest to you; R goes back to one fly. Only the original fly's mushroom-body learning is saved between sessions. Every fly is its own brain thread, so with many flies the brains can fall behind real time (see Performance).
+- **Multiple flies (N):** press N to spawn another fly (dynamic cap adapting to backend: 16 on baseline CPU, 32 on Numba, 64 on GPU), each running its own complete, independent connectome — 166,700 neurons apiece. They notice each other for real: a fly closing in fast fires another's actual looming detectors (LPLC2/LC4) and makes it dodge, and bumping into each other fires real touch neurons. Press **F** to cycle which fly's brain panel, surgery, and training is tracked (or let it auto-follow nearest). Only the original fly's mushroom-body learning is saved between sessions. Every fly is its own brain thread, so with many flies the brains can fall behind real time (see Performance).
 - **Real training (T):** the fly learns with its actual mushroom body. Pair a smell with a shock or with sugar and dopamine weakens the real Kenyon cell to output neuron synapses for that smell, just like in real flies. The Training panel runs lab-style conditioning and graphs the learning curve. Memory is saved between flies and sessions (see File locations). Hurting the fly while it smells a tool trains it too.
 - **Arenas (E):**
   - **fan:** wind that fires its wind-sensing neurons, which excite its antennal grooming command neurons
@@ -53,7 +53,7 @@ all 166,700 neurons simulated live while you throw, swat, bomb, burn, dissolve, 
 - **Sound:** every sound is generated in code. The wing buzz follows its flight neurons. **M** mutes.
 - **Save and share:** **F12** (3D) or **S** (2D) saves a screenshot and **G** saves a GIF of the last 6 seconds. **L** toggles time-lapse frame recording (2x, 5x, 10x, 20x speed-up exported to MP4 via ffmpeg or animated GIF; tagged as GAME RULE: visual recording). The autopsy can save a GIF of the death.
 - **Slow motion and save states:** pause time, slow everything to 0.1x, step it 1/60 s at a time, and save or load the whole simulation (see Time controls).
-- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
+- **Live brain view:** a front view of the brain built from the neurons' real cell-body positions, shaded by depth. Key neuron types (MBONs, Kenyon cells, DNa02 steering, Giant Fiber DNp01) load real EM reconstruction SWC morphology skeletons from Janelia neuPrint (MaleCNS v1.0), cached locally in `data/skeletons/` with graceful offline fallback to synthetic fibers. Pain-sensing neurons glow orange and everything else glows cyan when firing (blue/yellow and high-contrast palettes in Settings > Accessibility). Press **B** for the big view.
 
 ![swatting in first person](docs/swat3d.png)
 
@@ -256,7 +256,7 @@ In Play mode a short **"Real flies do this too"** card appears the first time th
 - **Connectome diff mode:** runs two flies (reference vs perturbed) side-by-side with identical seeds and inputs in lockstep. Tracks region-by-region activity divergence live with an autopsy-style diverging bar chart and a timeline showing when the two brains diverge.
 - **Hemifield & hemisphere lesions:** one-click surgery silencing unilateral visual pathways (LC10, LPLC2, LC4, LPTC, VS, HS) or an entire hemisphere. Demonstrates blind-side dodge failure, asymmetric steering bias, and broken 1v1 duel tracking. Reported strictly as a connectome wiring outcome, not physical injury.
 - **Protocols:** YAML experiment files, from the bundled examples or your protocols folder.
-- **Real vs rule tags** are on by default in Lab: each reaction in the brain panel and its popup is tagged REAL (live descending-neuron firing crossed a threshold; the movement itself is always game physics) or RULE (a game rule).
+- **Real vs rule tags** are on by default in Lab: each reaction in the brain panel and its popup is tagged REAL (live descending-neuron firing crossed a threshold; the movement itself is always game physics) or RULE (a game rule). In morphology, key cell types use REAL EM skeletons from neuPrint with fallback to synthetic fibers.
 
 ## Lab tools: protocols and headless runs
 
