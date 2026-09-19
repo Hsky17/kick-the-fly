@@ -237,9 +237,13 @@ def save_game(game, path: Path) -> Path:
         slot_meta = object_state(slot, now, f"f{i}_slot_", arrays, skip=("fly", "brain", "pending_hits", "loom_prev"))
         flies.append(dict(seed=int(slot.seed), primary=bool(slot.primary), brain=bmeta, fly=fly_meta, slot=slot_meta,
                           fly_class=type(slot.fly).__name__))
+    b_obj = getattr(getattr(getattr(game, "brain", None), "sim", None), "backend", None)
+    backend_name = getattr(b_obj, "name", "unknown")
+    device_name = getattr(b_obj, "device", "unknown")
     meta = dict(
         format=FORMAT, format_version=FORMAT_VERSION, app_version=__version__, created=time.strftime("%Y-%m-%d %H:%M:%S"),
         platform=platform.system(), mode="3d" if game.three_d else "2d", seed=int(game.cfg["brain.seed"]),
+        backend=backend_name, device=device_name,
         signature=pack_signature(game), arena_i=int(game.arena_i), arena=_arena_name(game), tool=int(game.tool),
         focus=int(game.focus),
         kills=int(game.kills), immortal=bool(game.immortal), pain_level=int(game.pain_level),

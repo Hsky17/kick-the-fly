@@ -53,9 +53,11 @@ def get_memory_mb() -> float:
         return 0.0
 
 
-def make_bench_brain(g, W, seed: int):
+def make_bench_brain(g, W, seed: int, backend: str = "auto"):
     from kickthefly.game import kick_the_fly as k
-    sim = LIFSim(None, LIFParams(), W_in=W, seed=seed)
+    p = LIFParams()
+    p.backend = backend
+    sim = LIFSim(None, p, W_in=W, seed=seed)
     br = k.Brain(g, sim, seed=seed)
     if getattr(g, "dan_mbon", None) is not None:
         from kickthefly.core import memory
@@ -81,7 +83,8 @@ def measure_steps(brains, seconds: float, speed: float):
     return [(b.steps - s) / dt for b, s in zip(brains, s0)]
 
 
-def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0, progress_cb=None) -> dict:
+def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0, progress_cb=None,
+                  backend: str = "auto") -> dict:
     g, W, _ = brainpack.load(brainpack.find())
     sys_info = get_system_info()
     n_neurons = int(g.n)
@@ -89,11 +92,19 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
 
     records = []
     total_runs = len(fly_counts)
+    active_backend = "Unknown"
+    active_device = "Unknown"
+
     for idx, n in enumerate(fly_counts):
         if progress_cb:
             progress_cb(idx, total_runs, f"benchmarking {n} flies")
 
-        brains = [make_bench_brain(g, W, seed=s) for s in range(n)]
+        brains = [make_bench_brain(g, W, seed=s, backend=backend) for s in range(n)]
+        if idx == 0 and brains:
+            b_obj = getattr(brains[0].sim, "backend", None)
+            if b_obj is not None:
+                active_backend = getattr(b_obj, "name", "CPU (NumPy)")
+                active_device = getattr(b_obj, "device", "CPU")
 
         # 1. Paced at real-time (speed = 1.0)
         paced_rates = measure_steps(brains, seconds, 1.0)
@@ -138,6 +149,8 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
     res = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "system": sys_info,
+        "backend": active_backend,
+        "device": active_device,
         "connectome": {
             "neurons": n_neurons,
             "synapses": n_synapses,
@@ -151,15 +164,18 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
 def format_benchmark_report(res: dict) -> str:
     sys_info = res["system"]
     con = res["connectome"]
+    backend = res.get("backend", "Unknown")
+    device = res.get("device", "Unknown")
     lines = [
-        "=" * 92,
+        "=" * 106,
         "KICK THE FLY - SIMULATION PERFORMANCE BENCHMARK",
         f"Timestamp: {res['timestamp']}  |  CPU: {sys_info.get('cpu_model')} ({sys_info.get('cpu_count')} threads)",
         f"OS: {sys_info.get('os')}  |  Python: {sys_info.get('python')}",
+        f"Backend: {backend}  |  Device: {device}",
         f"Connectome: MaleCNS v1.0 ({con['neurons']:,} neurons, {con['synapses']:,} synapses)",
-        "=" * 92,
-        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped (steps/s)':<20} {'Speedup':<9} {'Throughput (N/s)':<18} {'Memory':<8}",
-        "-" * 92,
+        "=" * 106,
+        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped':<16} {'Speedup':<9} {'Neurons/s':<16} {'Syn-evals/s':<16} {'Memory':<8}",
+        "-" * 106,
     ]
     for r in res["records"]:
         fl = str(r["flies"])
@@ -168,9 +184,10 @@ def format_benchmark_report(res: dict) -> str:
         uncap = f"{r['uncapped_steps_per_s']:.1f}/fly"
         speedup = f"{r['uncapped_realtime_ratio']:.2f}x"
         n_sec = f"{r['neurons_per_sec'] / 1e6:.1f} M/s"
+        syn_sec = f"{r.get('synapses_per_sec', 0) / 1e6:.1f} M/s"
         mem = f"{r['memory_mb']:.0f} MB"
-        lines.append(f"{fl:<6} {paced:<17} {rt:<10} {uncap:<20} {speedup:<9} {n_sec:<18} {mem:<8}")
-    lines.append("=" * 92)
+        lines.append(f"{fl:<6} {paced:<17} {rt:<10} {uncap:<16} {speedup:<9} {n_sec:<16} {syn_sec:<16} {mem:<8}")
+    lines.append("=" * 106)
     lines.append("Note: Real-time pace requires 200 steps/s (1.00x). Values >= 1.00x run in true real-time.")
     lines.append("Throughput measures aggregate simulated neuron updates per wall-clock second.")
     return "\n".join(lines)

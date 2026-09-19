@@ -136,6 +136,8 @@ def write(rec, path: Path, meta: dict | None = None, game=None) -> Path:
         source_script_file_name="nwbexport.py",
         notes=json.dumps(_clean(meta), indent=1),
         data_collection=(f"Simulated with {meta.get('app', 'Kick the Fly')} {meta.get('app_version', __version__)}; "
+                         f"backend: {meta.get('sim_backend', getattr(getattr(br.sim, 'backend', None), 'name', 'unknown'))} "
+                         f"({meta.get('sim_device', getattr(getattr(br.sim, 'backend', None), 'device', 'unknown'))}); "
                          f"timestep {DT * 1000:.0f} ms; connectome: {rc.CONNECTOME}. Data citation: {CITATION}"),
         stimulus_notes=("Stimuli are currents injected into the sensory neuron groups the connectome annotates; "
                         "their timing and strength come from the game and are listed in the 'stimuli' table."),
@@ -342,6 +344,8 @@ def _provenance(meta: dict, rec, n_stim: int, n_event: int) -> dict:
         "citation": CITATION,
         "license": "Connectome data CC BY 4.0. This file is simulation output, not a recording from an animal.",
         "app_version": meta.get("app_version", __version__),
+        "backend": meta.get("sim_backend", getattr(getattr(br.sim, "backend", None), "name", "unknown")),
+        "device": meta.get("sim_device", getattr(getattr(br.sim, "backend", None), "device", "unknown")),
     }
 
 

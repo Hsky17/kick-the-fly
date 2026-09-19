@@ -108,11 +108,20 @@ def driver_version() -> str:
     return "; ".join(parts) or "unknown"
 
 
+def record_backend(backend: str, device: str = "") -> None:
+    """Remember the compute backend and device name for diagnostics and crash reporting."""
+    info["sim_backend"] = str(backend)
+    if device:
+        info["sim_device"] = str(device)
+
+
 def report_text(exc_text: str) -> str:
     lines = [
         f"Kick the Fly {__version__} crash report, {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"seed: {info.get('seed', 'unknown')}",
         f"mode: {info.get('mode', 'unknown')}",
+        f"sim backend: {info.get('sim_backend', 'unknown')}",
+        f"sim device: {info.get('sim_device', 'unknown')}",
         f"OS: {os_description()}",
         f"python: {sys.version.split()[0]}  frozen: {bool(getattr(sys, 'frozen', False))}",
     ]
@@ -126,7 +135,7 @@ def report_text(exc_text: str) -> str:
         f"driver: {driver_version()}",
     ]
     lines += [f"{k}: {v}" for k, v in info.items()
-              if k not in ("seed", "mode", "video_driver", "gl_renderer", "gl_vendor", "gl_version")]
+              if k not in ("seed", "mode", "sim_backend", "sim_device", "video_driver", "gl_renderer", "gl_vendor", "gl_version")]
     return "\n".join(lines) + "\n\n" + exc_text
 
 

@@ -97,6 +97,10 @@ def page_hub(m: ui.Menu, surf, rect, mouse) -> None:
     m.text(surf, "LAB", (rect.x + 24, rect.y + 16), ui.INK, m.f_head)
     m.text(surf, "Research tools. Everything here runs on the same connectome sim as the game.", (rect.x + 24, rect.y + 50),
            ui.LABEL, m.f_small)
+    b_obj = getattr(getattr(getattr(host, "brain", None), "sim", None), "backend", None)
+    b_name = getattr(b_obj, "name", "CPU (NumPy)")
+    b_dev = getattr(b_obj, "device", "CPU")
+    m.text(surf, f"Engine: {b_name} · {b_dev}", (rect.right - 24, rect.y + 20), (120, 220, 240), m.f_small, "topright")
     items = [(label, page, tip) for label, page, tip in host.lab_pages() if page in m.pages]
     body = pygame.Rect(rect.x + 8, rect.y + 84, rect.w - 16, rect.h - 84 - 96)
     off = int(m.scroll.get("lab", 0))
@@ -474,15 +478,20 @@ def page_benchmark(m: ui.Menu, surf, rect, mouse) -> None:
         host._benchmark_results = res
 
     # System card
-    card_h = 74
+    card_h = 94
     card = pygame.Rect(body.x, y, body.w - 12, card_h)
     pygame.draw.rect(surf, (24, 28, 38), card, border_radius=8)
     pygame.draw.rect(surf, (45, 52, 68), card, 1, border_radius=8)
 
     sys_info = (res or {}).get("system") or benchmark.get_system_info()
+    b_name = (res or {}).get("backend") or getattr(getattr(getattr(host, "brain", None), "sim", None), "backend", None)
+    b_name = getattr(b_name, "name", str(b_name or "CPU (NumPy)"))
+    b_dev = (res or {}).get("device") or getattr(getattr(getattr(host, "brain", None), "sim", None), "backend", None)
+    b_dev = getattr(b_dev, "device", str(b_dev or "CPU"))
     m.text(surf, f"CPU: {sys_info.get('cpu_model')} ({sys_info.get('cpu_count')} threads)", (card.x + 14, card.y + 12), ui.INK, m.f_bold)
     m.text(surf, f"OS: {sys_info.get('os')}  ·  Python: {sys_info.get('python')}", (card.x + 14, card.y + 32), ui.TEXT, m.f_small)
-    m.text(surf, "Connectome: Janelia MaleCNS v1.0 (166,700 neurons, 10,272,125 synapses)", (card.x + 14, card.y + 50), (140, 180, 220), m.f_small)
+    m.text(surf, f"Sim Backend: {b_name}  ·  Device: {b_dev}", (card.x + 14, card.y + 50), (120, 220, 240), m.f_small)
+    m.text(surf, "Connectome: Janelia MaleCNS v1.0 (166,700 neurons, 10,272,125 synapses)", (card.x + 14, card.y + 70), (140, 180, 220), m.f_small)
     y += card_h + 16
 
     # Results Table
@@ -546,7 +555,8 @@ def page_benchmark(m: ui.Menu, surf, rect, mouse) -> None:
             def worker():
                 def progress(done, total, label):
                     job_state["status"] = f"{label} ({done}/{total})"
-                r = benchmark.run_benchmark(fly_counts=(1, 8, 16), seconds=2.5, progress_cb=progress)
+                b_choice = host.cfg.get("brain.backend", "auto") if hasattr(host, "cfg") and host.cfg is not None else "auto"
+                r = benchmark.run_benchmark(fly_counts=(1, 8, 16), seconds=2.5, progress_cb=progress, backend=b_choice)
                 benchmark.save_benchmark_results(r)
                 job_state["result"] = r
             t = threading.Thread(target=worker, name="benchmark-worker", daemon=True)

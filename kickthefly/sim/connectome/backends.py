@@ -324,33 +324,41 @@ def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
                 return b
             except Exception as e:
                 log.warning("Numba backend failed (%s); falling back to CPU", e)
-        return CPUBackend(sim)
+        b = CPUBackend(sim)
 
-    if choice in ("torch-cuda", "torch-rocm"):
+    elif choice in ("torch-cuda", "torch-rocm"):
         if not _torch_available:
             log.warning("PyTorch is not installed; falling back to CPU")
-            return CPUBackend(sim)
-        if not torch.cuda.is_available():
+            b = CPUBackend(sim)
+        elif not torch.cuda.is_available():
             log.warning("GPU acceleration requested (%s) but torch.cuda is unavailable; falling back to CPU", choice)
-            return CPUBackend(sim)
-        try:
-            b = TorchBackend(sim, device="cuda:0")
-            b.setup()
-            return b
-        except Exception as e:
-            log.warning("Failed to start %s backend (%s); falling back to CPU", choice, e)
-            return CPUBackend(sim)
+            b = CPUBackend(sim)
+        else:
+            try:
+                b = TorchBackend(sim, device="cuda:0")
+                b.setup()
+            except Exception as e:
+                log.warning("Failed to start %s backend (%s); falling back to CPU", choice, e)
+                b = CPUBackend(sim)
 
-    if choice == "numba":
+    elif choice == "numba":
         if not _numba_available:
             log.warning("Numba is not installed; falling back to CPU")
-            return CPUBackend(sim)
-        try:
-            b = NumbaBackend(sim)
-            b.setup()
-            return b
-        except Exception as e:
-            log.warning("Failed to start Numba backend (%s); falling back to CPU", e)
-            return CPUBackend(sim)
+            b = CPUBackend(sim)
+        else:
+            try:
+                b = NumbaBackend(sim)
+                b.setup()
+            except Exception as e:
+                log.warning("Failed to start Numba backend (%s); falling back to CPU", e)
+                b = CPUBackend(sim)
 
-    return CPUBackend(sim)
+    else:
+        b = CPUBackend(sim)
+
+    try:
+        from kickthefly.core import crash
+        crash.record_backend(b.name, b.device)
+    except Exception:
+        pass
+    return b

@@ -240,7 +240,8 @@ def run_benchmark(args) -> int:
     from kickthefly.lab import benchmark
     flies = args.flies if getattr(args, "flies", None) else (1, 8, 16)
     seconds = getattr(args, "seconds", None) or 5.0
-    res = benchmark.run_benchmark(fly_counts=tuple(flies), seconds=seconds)
+    backend = getattr(args, "sim_backend", None) or getattr(args, "backend", "auto")
+    res = benchmark.run_benchmark(fly_counts=tuple(flies), seconds=seconds, backend=backend)
     print(benchmark.format_benchmark_report(res))
     out_p = benchmark.save_benchmark_results(res, getattr(args, "out", None))
     print(f"Results written to {out_p}")
