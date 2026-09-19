@@ -1,4 +1,6 @@
-"""Tests for pluggable simulation backends: CPU, Numba JIT, PyTorch."""
+"""Simulation backends: each one really runs when asked for, and the CPU-side ones are bit-exact with the NumPy
+reference. GPU backends (torch-cuda, torch-rocm) are compared statistically, because GPU sparse kernels may add a
+neuron's inputs in a different order and a chaotic network then diverges spike by spike (see README: Performance)."""
 import numpy as np
 import pytest
 
@@ -9,57 +11,118 @@ from kickthefly.sim.connectome.sim import LIFParams, LIFSim
 
 pytestmark = needs_pack
 
+AVAIL = backends.detect_available_backends()
+EXACT = [b for b in ("cpu", "numba", "torch-cpu") if b in AVAIL]
+GPU = [b for b in ("torch-cuda", "torch-rocm") if b in AVAIL]
+EXPECT_CLASS = {"cpu": backends.CPUBackend, "numba": backends.NumbaBackend, "torch-cpu": backends.TorchBackend,
+                "torch-cuda": backends.TorchBackend, "torch-rocm": backends.TorchBackend}
+
+
+def _run(backend: str, steps: int, dtype: str = "float32", seed: int = 42, dense: bool = False):
+    _, W, _ = simcore.pack()
+    lp = LIFParams(backend=backend, dtype=dtype)
+    if dense:
+        lp.sparse_path_max_active = 0.0           # every step takes the dense path (normally only busy ones do)
+    sim = LIFSim(None, lp, W_in=W, seed=seed)
+    assert sim.backend.name == backend, f"asked for {backend}, got {sim.backend.name}"
+    out = np.empty((steps, sim.n), bool)
+    for step in range(steps):
+        sens = None
+        if step % 20 == 10:                                   # a sensory pulse every 100 ms
+            sens = np.zeros(sim.n, np.float32)
+            sens[100:150] = 2.0
+        out[step] = sim.step(sens)
+    return sim, out
+
 
 def test_detect_available_backends():
-    avail = backends.detect_available_backends()
-    assert "cpu" in avail
-    print("Detected backends:", avail)
+    assert "cpu" in AVAIL
 
 
-def test_backend_fallback_on_invalid():
-    g, W, _ = simcore.pack()
+@pytest.mark.parametrize("name", list(AVAIL))
+def test_requested_backend_really_runs(name):
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(backend=name), W_in=W, seed=1)
+    assert isinstance(sim.backend, EXPECT_CLASS[name])
+    assert sim.backend.name == name
+    assert isinstance(sim.backend.device, str) and sim.backend.device
+
+
+def test_unknown_or_missing_backend_falls_back_to_cpu():
+    _, W, _ = simcore.pack()
     sim = LIFSim(None, LIFParams(), W_in=W, seed=123)
-    b = backends.create_backend(sim, "non_existent_gpu_backend")
-    assert b.name == "cpu"
+    assert backends.create_backend(sim, "non_existent_gpu_backend").name == "cpu"
+    if not GPU:
+        assert backends.create_backend(sim, "torch-cuda").name == "cpu"      # recorded as what actually ran
 
 
-def test_backends_spikes_and_rates_seeded_equivalence():
-    """Runs the same seeded workload through every available backend and asserts matching results."""
-    avail = backends.detect_available_backends()
-    g, W, _ = simcore.pack()
-    n_steps = 100
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("name", [b for b in EXACT if b != "cpu"])
+def test_cpu_side_backends_are_bit_exact(name, dtype):
+    """1000 steps (5 s of brain time) is well past where a single rounding difference used to show: an earlier
+    fastmath Numba kernel first differed at step 289 and then decorrelated completely."""
+    ref_sim, ref = _run("cpu", 1000, dtype)
+    sim, got = _run(name, 1000, dtype)
+    assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
+    assert np.array_equal(sim.v, ref_sim.v) and np.array_equal(sim.refr, ref_sim.refr)
+    assert sim.gain == ref_sim.gain
 
-    backend_results = {}
-    for b_name in avail:
-        lp = LIFParams(backend=b_name)
-        sim = LIFSim(None, lp, W_in=W, seed=42)
-        spikes_history = []
-        for step in range(n_steps):
-            # inject occasional sensory drive
-            sens = np.zeros(sim.n, dtype=np.float32) if step % 20 == 10 else None
-            if sens is not None:
-                sens[100:150] = 2.0
-            spk = sim.step(sens)
-            spikes_history.append(spk)
-        total_spikes = sum(s.sum() for s in spikes_history)
-        backend_results[b_name] = (spikes_history, total_spikes, sim.gain, sim.v.copy())
-        print(f"Backend {b_name:10s}: total spikes = {total_spikes}, final gain = {sim.gain:.4f}")
 
-    # CPU and Numba: CPU and Numba JIT execute the exact same arithmetic logic
-    if "numba" in backend_results:
-        cpu_spk, cpu_tot, cpu_gain, cpu_v = backend_results["cpu"]
-        num_spk, num_tot, num_gain, num_v = backend_results["numba"]
-        # Bit-for-bit exact or extremely close float accumulation
-        diff_spikes = sum(np.count_nonzero(a != b) for a, b in zip(cpu_spk, num_spk))
-        print(f"Discrepancies between CPU and Numba: {diff_spikes} spikes across {n_steps} steps")
-        assert diff_spikes == 0 or diff_spikes < 5, f"Numba diverged too much: {diff_spikes} spike differences"
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("name", [b for b in EXACT if b != "cpu"])
+def test_cpu_side_backends_are_bit_exact_on_the_dense_path(name, dtype):
+    """The reference sums busy steps' inputs in the state dtype and sparse ones in float32; both paths must match."""
+    ref_sim, ref = _run("cpu", 300, dtype, dense=True)
+    sim, got = _run(name, 300, dtype, dense=True)
+    assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
+    assert np.array_equal(sim.v, ref_sim.v), "membrane potentials differ (a last-bit rounding difference)"
 
-    # If PyTorch is available
-    for t_name in [k for k in backend_results if k.startswith("torch")]:
-        cpu_spk, cpu_tot, cpu_gain, cpu_v = backend_results["cpu"]
-        torch_spk, torch_tot, torch_gain, torch_v = backend_results[t_name]
-        diff_spikes = sum(np.count_nonzero(a != b) for a, b in zip(cpu_spk, torch_spk))
-        print(f"Discrepancies between CPU and {t_name}: {diff_spikes} spikes across {n_steps} steps")
-        # In sparse matrix multiplication on GPU/torch, float accumulation order can differ slightly;
-        # assert total spike count within 5% and no divergence in stable firing regime
-        assert abs(torch_tot - cpu_tot) / max(cpu_tot, 1) < 0.05
+
+@pytest.mark.parametrize("name", GPU)
+def test_gpu_backends_statistically_match(name):
+    """Tolerance: brain-wide firing within 2% of the CPU's, and per-population rates (1000 neuron blocks) correlate
+    at r > 0.95 over 1000 steps."""
+    _, ref = _run("cpu", 1000)
+    _, got = _run(name, 1000)
+    assert abs(got.sum() - ref.sum()) / ref.sum() < 0.02
+    blocks = lambda s: s[:, : s.shape[1] // 1000 * 1000].reshape(s.shape[0], -1, 1000).sum((0, 2))
+    assert np.corrcoef(blocks(got), blocks(ref))[0, 1] > 0.95
+
+
+@pytest.mark.parametrize("name", list(AVAIL))
+def test_host_state_writes_reach_the_backend(name):
+    """Save states and the neural clamp write sim.v / sim.spikes directly; every backend must see that."""
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(backend=name), W_in=W, seed=5)
+    for _ in range(20):
+        sim.step()
+    quiet = np.flatnonzero(~sim.spikes & (sim.refr == 0))[:50]
+    sim.v[quiet] = sim.p.v_thresh * 10                        # force them over threshold
+    assert sim.step()[quiet].all()
+
+
+@pytest.mark.parametrize("name", list(AVAIL))
+def test_weight_changes_reach_the_backend(name):
+    """Learning, lesions and the synapse threshold edit W_csr.data in place and call on_weights_changed()."""
+    _, W, _ = simcore.pack()
+    a = LIFSim(None, LIFParams(backend="cpu"), W_in=W, seed=9)
+    b = LIFSim(None, LIFParams(backend=name), W_in=W, seed=9)
+    for sim in (a, b):
+        sim.W_csr.data *= 0.0
+        sim.W_csc.data *= 0.0
+        sim.backend.on_weights_changed()
+        for _ in range(50):
+            sim.step()
+    if name in EXACT:
+        assert np.array_equal(a.spikes, b.spikes)
+
+
+def test_headless_backend_and_dtype_reach_worker_processes(monkeypatch):
+    """headless --backend/--dtype set the process-wide defaults that validation's spawned workers inherit."""
+    monkeypatch.setenv("KICK_THE_FLY_SIM_BACKEND", "cpu")
+    monkeypatch.setenv("KICK_THE_FLY_SIM_DTYPE", "float64")
+    p = LIFParams()
+    assert (p.backend, p.dtype) == ("cpu", "float64")
+    from kickthefly.game import kick_the_fly as k
+    args = k.parse_args(["--dtype", "float64", "--backend", "numba"])
+    assert (args.dtype, args.backend) == ("float64", "numba")

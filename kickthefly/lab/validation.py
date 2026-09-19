@@ -143,6 +143,7 @@ def _pathway_seed(seed: int, wiring=None) -> dict:
             r = assays.pathway_response(br, rows, {"readout": g[t["readout"]]}, pre=PRE, stim=STIM)["readout"]
             res[label] = dict(base_hz=r[0], driven_hz=r[1], ratio=_ratio(*r))
         out[t["id"]] = res
+    out["_backend"] = (br.sim.backend.name, br.sim.backend.device)     # what really ran, after any fallback
     return out
 
 
@@ -279,7 +280,9 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
         results.append(r)
 
     g, W, _ = simcore.pack()
-    return dict(app_version=__version__, created=time.strftime("%Y-%m-%d %H:%M:%S"), seconds=round(time.time() - t0, 1),
+    ran = sorted({r["_backend"] for r in path_res.values() if "_backend" in r})
+    return dict(app_version=__version__, backend=", ".join(n for n, _ in ran) or "not recorded",
+                device=", ".join(d for _, d in ran) or "not recorded", created=time.strftime("%Y-%m-%d %H:%M:%S"), seconds=round(time.time() - t0, 1),
                 seeds=list(seeds), workers=workers, n_neurons=int(g.n), synapses=int(W.nnz),
                 wiring=(wiring.as_dict() if wiring is not None else None),
                 lab_params=dict(lab.DEFAULTS), thresholds=dict(k.THRESH), loom=[k.LOOM_MIN, k.LOOM_FULL],
@@ -288,7 +291,7 @@ def run(seeds=SEEDS, workers: int | None = None, progress=None, include=None, wi
 
 def summary(res: dict) -> str:
     lines = [f"Kick the Fly {res['app_version']} validation, seeds {res['seeds'][0]}-{res['seeds'][-1]} "
-             f"(n={len(res['seeds'])}), {res['seconds']}s"]
+             f"(n={len(res['seeds'])}), {res['seconds']}s, backend {res.get('backend', 'not recorded')}"]
     for t in res["tests"]:
         m = t["measured"]
         if "drive_ratio_mean" in m:

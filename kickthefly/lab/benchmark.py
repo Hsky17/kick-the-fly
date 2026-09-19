@@ -42,6 +42,12 @@ def get_system_info() -> dict:
 
 
 def get_memory_mb() -> float:
+    """The process's current resident memory (Linux), else its peak (other systems)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / (1024.0 * 1024.0)
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         import resource
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -69,9 +75,11 @@ def make_bench_brain(g, W, seed: int, backend: str = "auto"):
 
 
 def measure_steps(brains, seconds: float, speed: float):
+    """Steps/s per brain, and the spikes they fired, over `seconds` of wall-clock time."""
     for b in brains:
         b.speed = speed
     s0 = [b.steps for b in brains]
+    k0 = [b.sim.spike_total for b in brains]
     t0 = time.perf_counter()
     for b in brains:
         b.start()
@@ -80,7 +88,10 @@ def measure_steps(brains, seconds: float, speed: float):
     for b in brains:
         b.stop()
     time.sleep(0.15)
-    return [(b.steps - s) / dt for b, s in zip(brains, s0)]
+    rates = [(b.steps - s) / dt for b, s in zip(brains, s0)]
+    spikes = sum(b.sim.spike_total - k for b, k in zip(brains, k0))
+    steps = sum(b.steps - s for b, s in zip(brains, s0))
+    return rates, spikes / max(1, steps)
 
 
 def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0, progress_cb=None,
@@ -103,11 +114,11 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
         if idx == 0 and brains:
             b_obj = getattr(brains[0].sim, "backend", None)
             if b_obj is not None:
-                active_backend = getattr(b_obj, "name", "CPU (NumPy)")
-                active_device = getattr(b_obj, "device", "CPU")
+                active_backend = b_obj.name                      # what actually ran, after any fallback
+                active_device = b_obj.device
 
         # 1. Paced at real-time (speed = 1.0)
-        paced_rates = measure_steps(brains, seconds, 1.0)
+        paced_rates, _ = measure_steps(brains, seconds, 1.0)
         mean_paced = float(np.mean(paced_rates))
         min_paced = float(np.min(paced_rates))
         rt_target = 1000.0 / brains[0].sim.p.dt_ms  # 200.0 steps/s
@@ -116,16 +127,16 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
         # 2. Uncapped (speed = 1000.0)
         for b in brains:
             b._stop = False
-        uncapped_rates = measure_steps(brains, seconds, 1000.0)
+        uncapped_rates, spikes_per_step = measure_steps(brains, seconds, 1000.0)
         mean_uncapped = float(np.mean(uncapped_rates))
         agg_uncapped_steps = float(np.sum(uncapped_rates))
         uncapped_ratio = mean_uncapped / rt_target
 
-        # Neurons/sec and Synapse updates/sec (average calm active fraction ~0.025 => 4167 active neurons * 61.4 synapses)
+        # Neuron updates: every neuron is integrated every step. Synaptic events: each spike is delivered to all of its
+        # outgoing synapses; the spikes are counted during the run, the out-degree is the connectome's mean (so this
+        # is spikes/s x 61.6, not a count of multiply-adds, which depends on the path the step took).
         neurons_per_sec = agg_uncapped_steps * n_neurons
-        # Estimated synapses traversed per active spike:
-        avg_syn_per_neuron = n_synapses / max(1, n_neurons)
-        synapses_per_sec = agg_uncapped_steps * (n_neurons * 0.025 * avg_syn_per_neuron)
+        synapses_per_sec = agg_uncapped_steps * spikes_per_step * (n_synapses / max(1, n_neurons))
 
         mem_mb = get_memory_mb()
 
@@ -138,6 +149,7 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
             "uncapped_realtime_ratio": round(uncapped_ratio, 2),
             "agg_uncapped_steps_per_s": round(agg_uncapped_steps, 1),
             "neurons_per_sec": round(neurons_per_sec, 0),
+            "active_fraction": round(spikes_per_step / n_neurons, 4),
             "synapses_per_sec": round(synapses_per_sec, 0),
             "memory_mb": round(mem_mb, 1),
         })
@@ -174,7 +186,7 @@ def format_benchmark_report(res: dict) -> str:
         f"Backend: {backend}  |  Device: {device}",
         f"Connectome: MaleCNS v1.0 ({con['neurons']:,} neurons, {con['synapses']:,} synapses)",
         "=" * 106,
-        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped':<16} {'Speedup':<9} {'Neurons/s':<16} {'Syn-evals/s':<16} {'Memory':<8}",
+        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped':<16} {'Speedup':<9} {'Neurons/s':<16} {'Syn-events/s':<16} {'Memory':<8}",
         "-" * 106,
     ]
     for r in res["records"]:
@@ -189,7 +201,8 @@ def format_benchmark_report(res: dict) -> str:
         lines.append(f"{fl:<6} {paced:<17} {rt:<10} {uncap:<16} {speedup:<9} {n_sec:<16} {syn_sec:<16} {mem:<8}")
     lines.append("=" * 106)
     lines.append("Note: Real-time pace requires 200 steps/s (1.00x). Values >= 1.00x run in true real-time.")
-    lines.append("Throughput measures aggregate simulated neuron updates per wall-clock second.")
+    lines.append("Neurons/s: neuron updates per wall-clock second, all flies together. Syn-events/s: measured spikes")
+    lines.append("per second x the connectome's mean out-degree. Memory: the process's resident memory after the run.")
     return "\n".join(lines)
 
 

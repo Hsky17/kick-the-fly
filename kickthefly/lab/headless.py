@@ -240,7 +240,7 @@ def run_benchmark(args) -> int:
     from kickthefly.lab import benchmark
     flies = args.flies if getattr(args, "flies", None) else (1, 8, 16)
     seconds = getattr(args, "seconds", None) or 5.0
-    backend = getattr(args, "sim_backend", None) or getattr(args, "backend", "auto")
+    backend = os.environ.get("KICK_THE_FLY_SIM_BACKEND", "auto")
     res = benchmark.run_benchmark(fly_counts=tuple(flies), seconds=seconds, backend=backend)
     print(benchmark.format_benchmark_report(res))
     out_p = benchmark.save_benchmark_results(res, getattr(args, "out", None))
@@ -250,7 +250,13 @@ def run_benchmark(args) -> int:
 
 def main(args) -> int:
     prepare()
-    log.info("headless run")
+    from kickthefly.sim.connectome import backends
+    choice = getattr(args, "sim_backend", None) or getattr(args, "backend", None)
+    if choice in backends.BACKEND_NAMES:                # inherited by the validation/assay worker processes
+        os.environ["KICK_THE_FLY_SIM_BACKEND"] = choice
+    if getattr(args, "dtype", None):
+        os.environ["KICK_THE_FLY_SIM_DTYPE"] = args.dtype
+    log.info("headless run (simulation backend: %s)", os.environ.get("KICK_THE_FLY_SIM_BACKEND", "auto"))
     try:
         if getattr(args, "benchmark", False):
             return run_benchmark(args)

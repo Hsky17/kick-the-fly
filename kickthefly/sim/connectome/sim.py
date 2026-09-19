@@ -15,11 +15,12 @@ matvec.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -44,8 +45,12 @@ class LIFParams:
     gain_adapt: float = 0.002        # per-step log-gain learning rate
     gain_bounds: tuple[float, float] = (1.5, 40.0)
     sparse_path_max_active: float = 0.10  # active fraction below which the column-gather path is used
-    dtype: str = "float32"           # state vector precision ("float32" or "float64")
-    backend: str = "auto"            # compute backend: auto | cpu | numba | torch-cuda | torch-rocm
+    # state precision, "float32" or "float64"; KICK_THE_FLY_SIM_DTYPE sets the default (headless --dtype)
+    dtype: str = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_SIM_DTYPE", "float32"))
+    # compute backend: auto | cpu | numba | torch-cpu | torch-cuda | torch-rocm. KICK_THE_FLY_SIM_BACKEND sets the
+    # default for the whole process and its worker processes (headless --backend does that), so validation, assays and
+    # protocols run on the backend you asked for.
+    backend: str = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_SIM_BACKEND", "auto"))
 
 
 class ActivityBuffer:
@@ -124,6 +129,7 @@ class LIFSim:
         self.activity = ActivityBuffer(self.n)
         self.last_step_ms = 0.0
         self.path_counts = {"columns": 0, "full": 0}
+        self.spike_total = 0
         from kickthefly.sim.connectome import backends
         self.backend_choice = getattr(self.p, "backend", "auto")
         self.backend = backends.create_backend(self, self.backend_choice)
@@ -147,14 +153,15 @@ class LIFSim:
         p = self.p
         spikes = self.backend.step(sensory_input)
 
-        frac = np.count_nonzero(spikes) / self.n
+        fired = int(np.count_nonzero(spikes))
+        self.spike_total += fired                    # for the benchmark's synaptic events/s
+        frac = fired / self.n
         err = (self.target_p - frac) / max(self.target_p, 1e-9)
         self.gain = float(np.clip(self.gain * np.exp(p.gain_adapt * np.clip(err, -1, 1)), *p.gain_bounds))
 
         self.activity.push(spikes)
         self.last_step_ms = (time.perf_counter() - t0) * 1000
         return spikes
-
 
 
 def _bench(steps: int) -> None:
