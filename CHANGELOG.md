@@ -1,6 +1,14 @@
 # Changelog
 
-## 2.8.2 (2026-09-19)
+## 2.8.3 (2026-09-20)
+
+### Added
+- **ModernGL compute shader backend (`gl`)**: Vendor-neutral GPU acceleration using OpenGL 4.3+ compute shaders (`cs_spmv`, `cs_lif`) and SSBOs, reaching 0.43 ms/step without requiring PyTorch.
+- **Zero-copy device-resident state**: Membrane potentials, refractory counters, spike buffers, and pre-scaled noise buffers remain resident in VRAM across simulation steps in `TorchBackend` and `GLBackend`, dropping single-fly latency by ~1.9x.
+- **Batched multi-fly SpMM (`torch-rocm`, `torch-cuda`)**: Streams the connectome sparse matrix once per step across N flies, achieving ~0.32 ms/fly step latency with 32 concurrent flies.
+- **Fused LIF kernel execution**: Added optional `fuse_lif` torch.compile elementwise kernel fusion.
+- **Simulation telemetry & latency metrics**: Added per-fly uncapped step latency (ms) across `--benchmark` reports, JSON exports, and the Lab simulation benchmark dashboard.
+- **Dynamic Fly Cap**: GPU backends scale to 32–64 concurrent flies, with robust thread-local context isolation for parallel brain workers.
 
 ### Fixed
 - **The game crashed when a second sugar pile, alcohol drop or bomb was used up** ("The truth value of an array with
