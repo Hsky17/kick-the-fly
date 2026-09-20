@@ -572,12 +572,30 @@ class _GLContextBinder:
 _context_binder = _GLContextBinder()
 
 
+def _create_gl_context():
+    """A standalone compute context, EGL for preference.
+
+    The game's window already holds a GLX context on the main thread, and a brain steps on a thread of its own.
+    A second GLX context goes through the same Xlib display connection, and Mesa answers the worker thread's
+    glXMakeCurrent with BadAccess, which takes the process down. An EGL context carries its own connection and
+    is not affected. Where EGL is missing (older Mesa, and Windows, which uses WGL) the plain context is fine:
+    there the second context does not share a display connection to begin with.
+    """
+    last: Exception | None = None
+    for kwargs in ({"standalone": True, "backend": "egl"}, {"standalone": True}):
+        try:
+            return moderngl.create_context(**kwargs)
+        except Exception as e:
+            last = e
+    raise RuntimeError(f"Failed to create ModernGL context: {last}")
+
+
 def _gl_compute_available() -> tuple[bool, str]:
     """Check if OpenGL 4.3+ compute shaders are supported on this system."""
     if not _moderngl_available:
         return False, "ModernGL is not installed"
     try:
-        ctx = moderngl.create_context(standalone=True)
+        ctx = _create_gl_context()
         ver = ctx.version_code / 100.0
         if ctx.version_code < 430:
             ctx.release()
@@ -688,6 +706,7 @@ class GLBackend(SimBackend):
         self.num_groups = (self.n + 63) // 64
         self._noise_id = None
         self._thread_id = None
+        self._fallback: SimBackend | None = None
 
     def setup(self) -> None:
         if not _moderngl_available:
@@ -696,23 +715,24 @@ class GLBackend(SimBackend):
         if not ok:
             raise RuntimeError(dev)
         self.device_name = dev
-        # Initialize resources on the calling thread
-        self._init_device()
+        # The device is built on first use, on whichever thread steps this brain. A GL context belongs to the
+        # thread it was made current on, and a brain is constructed on the main thread but stepped on its own.
 
     def _init_device(self) -> None:
         import threading
-        self._thread_id = threading.get_ident()
+        me = threading.get_ident()
         if self.ctx is not None:
-            try:
-                self.ctx.release()
-            except Exception:
-                pass
+            if self._thread_id == me:
+                try:
+                    self.ctx.release()
+                except Exception:
+                    pass
+            # Otherwise the context belongs to another thread: releasing it from here is itself a
+            # glXMakeCurrent, and the BadAccess that follows is fatal. Drop it and let it go with its thread.
             self.ctx = None
+        self._thread_id = me
 
-        try:
-            self.ctx = moderngl.create_context(standalone=True)
-        except Exception as e:
-            raise RuntimeError(f"Failed to create ModernGL context: {e}")
+        self.ctx = _create_gl_context()
 
         if self.ctx.version_code < 430:
             ver = self.ctx.version_code / 100.0
@@ -756,6 +776,21 @@ class GLBackend(SimBackend):
         if self.ctx is None or self._thread_id != threading.get_ident():
             self._init_device()
 
+    def _degrade(self, exc: Exception) -> SimBackend:
+        """Hand this brain to the CPU backend after a GL failure, rather than killing the thread it steps on.
+
+        setup() cannot catch these: the context comes up on the main thread, and the failures land later on the
+        brain's own thread, where create_backend's fallback is long gone. v/refr/spikes keep whatever the last
+        sync left on the host, so the fly carries on from there.
+        """
+        log.warning("the OpenGL compute backend failed (%s); this brain falls back to the CPU backend", exc)
+        self._fallback = CPUBackend(self.sim)
+        self._fallback.setup()
+        self.ctx = None
+        self.name = CPUBackend.name
+        self.device_name = CPUBackend.device_name
+        return self._fallback
+
     def _init_uniforms(self) -> None:
         p = self.sim.p
         sim = self.sim
@@ -773,6 +808,8 @@ class GLBackend(SimBackend):
             self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
 
     def sync_to_host(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.sync_to_host()
         self._ensure_thread()
         if self.buf_v is not None:
             self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
@@ -780,6 +817,8 @@ class GLBackend(SimBackend):
             self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
 
     def sync_from_host(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.sync_from_host()
         self._ensure_thread()
         if self.buf_v is not None:
             self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
@@ -790,6 +829,14 @@ class GLBackend(SimBackend):
                 self._noise_id = id(self.sim._noise)
 
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
+        if self._fallback is not None:
+            return self._fallback.step(sensory_input)
+        try:
+            return self._step_gl(sensory_input)
+        except Exception as e:
+            return self._degrade(e).step(sensory_input)
+
+    def _step_gl(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
         self._ensure_thread()
         sim = self.sim
         if self._noise_id != id(sim._noise):
