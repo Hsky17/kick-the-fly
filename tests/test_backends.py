@@ -57,6 +57,80 @@ def test_unknown_or_missing_backend_falls_back_to_cpu():
         assert backends.create_backend(sim, "torch-cuda").name == "cpu"      # recorded as what actually ran
 
 
+def test_gl_version_below_430_fallback(monkeypatch):
+    class MockCtx:
+        version_code = 330
+        info = {"GL_RENDERER": "Mesa OpenGL 3.3"}
+        def release(self): pass
+
+    monkeypatch.setattr(backends, "_moderngl_available", True)
+    monkeypatch.setattr(backends.moderngl, "create_context", lambda **kwargs: MockCtx())
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "3.3 < 4.3" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_gl_context_creation_failure_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_moderngl_available", True)
+    def _fail(**kwargs):
+        raise RuntimeError("No headless OpenGL display / EGL device found")
+    monkeypatch.setattr(backends.moderngl, "create_context", _fail)
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "failed" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_missing_moderngl_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_moderngl_available", False)
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "not installed" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_missing_torch_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_torch_available", False)
+    monkeypatch.setattr(backends, "_torch_gpu_kind", lambda: None)
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    assert backends.create_backend(sim, "torch-cuda").name == "cpu"
+    assert backends.create_backend(sim, "torch-rocm").name == "cpu"
+    assert backends.create_backend(sim, "torch-cpu").name == "cpu"
+
+
+def test_auto_backend_hierarchy(monkeypatch):
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+
+    # When Torch GPU is unavailable and ModernGL is unavailable, fallback to Numba if available, else CPU
+    monkeypatch.setattr(backends, "_torch_gpu_kind", lambda: None)
+    monkeypatch.setattr(backends, "_moderngl_available", False)
+    b = backends.create_backend(sim, "auto")
+    if backends._numba_available:
+        assert b.name == "numba"
+    else:
+        assert b.name == "cpu"
+
+    # When all accelerators are disabled, auto falls back to CPU
+    monkeypatch.setattr(backends, "_numba_available", False)
+    b_cpu = backends.create_backend(sim, "auto")
+    assert b_cpu.name == "cpu"
+
+
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 @pytest.mark.parametrize("name", [b for b in EXACT if b != "cpu"])
 def test_cpu_side_backends_are_bit_exact(name, dtype):

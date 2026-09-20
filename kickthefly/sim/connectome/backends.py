@@ -496,10 +496,13 @@ def _gl_compute_available() -> tuple[bool, str]:
         return False, "ModernGL is not installed"
     try:
         ctx = moderngl.create_context(standalone=True)
+        ver = ctx.version_code / 100.0
         if ctx.version_code < 430:
-            return False, f"OpenGL {ctx.version_code / 100:.1f} < 4.3 (Compute shaders not supported)"
+            ctx.release()
+            return False, f"OpenGL {ver:.1f} < 4.3 (Compute shaders not supported)"
         renderer = ctx.info.get("GL_RENDERER", "OpenGL GPU")
-        return True, f"OpenGL {ctx.version_code / 100:.1f}: {renderer}"
+        ctx.release()
+        return True, f"OpenGL {ver:.1f}: {renderer}"
     except Exception as e:
         return False, f"OpenGL context creation failed: {e}"
 
@@ -612,7 +615,10 @@ class GLBackend(SimBackend):
             raise RuntimeError(f"Failed to create ModernGL context: {e}")
 
         if self.ctx.version_code < 430:
-            raise RuntimeError(f"OpenGL {self.ctx.version_code / 100:.1f} does not support compute shaders (OpenGL 4.3+ required)")
+            ver = self.ctx.version_code / 100.0
+            self.ctx.release()
+            self.ctx = None
+            raise RuntimeError(f"OpenGL {ver:.1f} does not support compute shaders (OpenGL 4.3+ required)")
 
         renderer = self.ctx.info.get("GL_RENDERER", "GPU")
         self.device_name = f"OpenGL {self.ctx.version_code / 100:.1f}: {renderer}"
