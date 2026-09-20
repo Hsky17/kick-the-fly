@@ -43,6 +43,14 @@ class SimBackend:
         """Notify backend that W_csr/W_csc matrix weights have been modified."""
         pass
 
+    def sync_to_host(self) -> None:
+        """Sync device-resident state (v, refr, spikes) back to host numpy arrays."""
+        pass
+
+    def sync_from_host(self) -> None:
+        """Sync host numpy arrays (v, refr, spikes) up to device tensors."""
+        pass
+
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
         """Advance one LIF step. Returns boolean spike vector of length n."""
         raise NotImplementedError
@@ -196,10 +204,9 @@ def _torch_gpu_kind() -> str | None:
 
 
 class TorchBackend(SimBackend):
-    """PyTorch backend: the weight matrix lives on the device (CUDA, ROCm or CPU) and the sparse product and state
-    update run there. The host arrays (sim.v, sim.refr, sim.spikes) stay the source of truth: they are uploaded at the
-    start of each step and written back at the end, so save states, the neural clamp and the inspector, which read and
-    write them directly, work unchanged. That costs ~1 MB of transfers per step."""
+    """PyTorch backend: state tensors (v, refr, spikes, noise bank) and weight matrix live on device
+    (CUDA, ROCm, or CPU) across steps for zero-copy simulation. Host arrays (sim.v, sim.refr, sim.spikes)
+    are synchronized on demand via sync_to_host() / sync_from_host()."""
 
     name = "torch"
 
@@ -207,7 +214,23 @@ class TorchBackend(SimBackend):
         super().__init__(sim)
         self.device_str = device
         self.tdev = None
+        self.tdt = None
         self.W_torch = None
+        self._W64 = None
+        self.v_dev = None
+        self.refr_dev = None
+        self.spikes_dev = None
+        self.s_float_dev = None
+        self.noise_dev = None
+        self._noise_id = None
+        # Hoisted parameter tensors
+        self._bias_tensor = None
+        self._leak_decay_tensor = None
+        self._leak_reset_tensor = None
+        self._v_reset_tensor = None
+        self._v_thresh_tensor = None
+        self._refr_steps_tensor = None
+        self._ext_gain_tensor = None
 
     def setup(self) -> None:
         if not _torch_available:
@@ -222,7 +245,25 @@ class TorchBackend(SimBackend):
         else:
             self.name = f"torch-{self.tdev.type}"
             self.device_name = f"PyTorch ({self.tdev.type})"
+        dt = self.sim.dtype
+        self.tdt = torch.float64 if dt is np.float64 else torch.float32
         self._upload_weights()
+        self._init_params()
+        self.sync_from_host()
+
+    def _init_params(self) -> None:
+        sim = self.sim
+        p = sim.p
+        dt = sim.dtype
+        dev = self.tdev
+        tdt = self.tdt
+        self._bias_tensor = torch.tensor(dt(p.bias), dtype=tdt, device=dev)
+        self._leak_decay_tensor = torch.tensor(dt(1.0 - sim.leak), dtype=tdt, device=dev)
+        self._leak_reset_tensor = torch.tensor(sim.leak * dt(p.v_reset), dtype=tdt, device=dev)
+        self._v_reset_tensor = torch.tensor(dt(p.v_reset), dtype=tdt, device=dev)
+        self._v_thresh_tensor = torch.tensor(dt(p.v_thresh), dtype=tdt, device=dev)
+        self._refr_steps_tensor = torch.tensor(int(p.refractory_steps), dtype=torch.int16, device=dev)
+        self._ext_gain_tensor = torch.tensor(dt(p.ext_gain), dtype=tdt, device=dev)
 
     def _upload_weights(self) -> None:
         csr = self.sim.W_csr
@@ -241,53 +282,75 @@ class TorchBackend(SimBackend):
         if self.W_torch is not None:
             self._upload_weights()
 
+    def sync_to_host(self) -> None:
+        if self.v_dev is not None:
+            self.sim.v[:] = self.v_dev.cpu().numpy()
+            self.sim.refr[:] = self.refr_dev.cpu().numpy()
+            self.sim.spikes[:] = self.spikes_dev.cpu().numpy()
+
+    def sync_from_host(self) -> None:
+        if self.tdev is not None:
+            sim = self.sim
+            dev = self.tdev
+            tdt = self.tdt or (torch.float64 if sim.dtype is np.float64 else torch.float32)
+            self.v_dev = torch.from_numpy(sim.v).to(dev, dtype=tdt)
+            self.refr_dev = torch.from_numpy(sim.refr).to(dev, dtype=torch.int16)
+            self.spikes_dev = torch.from_numpy(sim.spikes).to(dev, dtype=torch.bool)
+            self.s_float_dev = self.spikes_dev.to(self.W_torch.dtype if self.W_torch is not None else torch.float32).unsqueeze(1)
+            self.noise_dev = torch.from_numpy(sim._noise).to(dev, dtype=tdt)
+            self._noise_id = id(sim._noise)
+
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
         sim = self.sim
         p = sim.p
         dt = sim.dtype
-        tdt = torch.float64 if dt is np.float64 else torch.float32
+        tdt = self.tdt
         dev = self.tdev
         if self.W_torch is None or self.W_torch.values().numel() != sim.W_csr.nnz:
-            self._upload_weights()                   # the matrix object was replaced (mirror weights, a new wiring)
+            self._upload_weights()
+        if self.v_dev is None:
+            self.sync_from_host()
+        if self._noise_id != id(sim._noise):
+            self.noise_dev = torch.from_numpy(sim._noise).to(dev, dtype=tdt)
+            self._noise_id = id(sim._noise)
 
-        # The same operations in the same order and precision as CPUBackend. A CSR row product adds a row's inputs in
-        # column order, which is the order the CPU's column gather adds them in, so on the CPU device the result is
-        # bit-exact. GPU sparse kernels may sum in a different order: see docs on determinism across backends.
-        # The reference sums a sparse step's inputs in float32 (its column path) but a busy step's (more than
-        # sparse_path_max_active firing) in the state dtype (its dense path); follow it, or float64 runs drift.
-        dense64 = tdt == torch.float64 and np.count_nonzero(sim.spikes) > p.sparse_path_max_active * self.n
+        dense64 = (tdt == torch.float64) and (self.spikes_dev.sum().item() > p.sparse_path_max_active * self.n)
         if dense64 and getattr(self, "_W64", None) is None:
             self._W64 = self.W_torch.to(torch.float64)
         W = self._W64 if dense64 else self.W_torch
-        s_float = torch.from_numpy(sim.spikes).to(dev).to(W.dtype).unsqueeze(1)
+
+        s_float = self.spikes_dev.to(W.dtype).unsqueeze(1)
         i_syn = torch.sparse.mm(W, s_float).squeeze(1)
-        drive = i_syn.to(tdt) * torch.tensor(dt(sim.gain), device=dev)
-        drive += torch.tensor(dt(p.bias), device=dev)
+
+        drive = i_syn.to(tdt) * sim.gain
+        drive += self._bias_tensor
         off = int(sim.rng.integers(0, sim._noise.size - self.n))
-        drive += torch.from_numpy(sim._noise[off:off + self.n]).to(dev)
+        drive += self.noise_dev[off:off + self.n]
+
         if sensory_input is not None:
-            sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev)
+            sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
             if p.ext_gain == 1.0:
-                drive += sens.to(tdt)
+                drive += sens
             else:
-                drive += (torch.tensor(dt(p.ext_gain), device=dev) * sens).to(tdt)
+                drive += self._ext_gain_tensor * sens
 
-        v = torch.from_numpy(sim.v).to(dev)
-        refr = torch.from_numpy(sim.refr).to(dev)
-        v = v * torch.tensor(dt(1.0 - sim.leak), device=dev)
+        v = self.v_dev * self._leak_decay_tensor
         if p.v_reset:
-            v += torch.tensor(sim.leak * dt(p.v_reset), device=dev)
+            v += self._leak_reset_tensor
         v += drive
-        v_reset = torch.tensor(dt(p.v_reset), device=dev)
-        refr_mask = refr > 0
-        v = torch.where(refr_mask, v_reset, v)
-        refr = torch.where(refr_mask, refr - 1, refr)
-        spikes = v >= torch.tensor(dt(p.v_thresh), device=dev)
-        v = torch.where(spikes, v_reset, v)
-        refr = torch.where(spikes, torch.tensor(int(p.refractory_steps), dtype=refr.dtype, device=dev), refr)
 
-        sim.v[:] = v.cpu().numpy()
-        sim.refr[:] = refr.cpu().numpy()
+        refr_mask = self.refr_dev > 0
+        v = torch.where(refr_mask, self._v_reset_tensor, v)
+        refr = torch.where(refr_mask, self.refr_dev - 1, self.refr_dev)
+
+        spikes = v >= self._v_thresh_tensor
+        v = torch.where(spikes, self._v_reset_tensor, v)
+        refr = torch.where(spikes, self._refr_steps_tensor, refr)
+
+        self.v_dev = v
+        self.refr_dev = refr
+        self.spikes_dev = spikes
+
         spikes_np = spikes.cpu().numpy()
         sim.spikes = spikes_np
         return spikes_np

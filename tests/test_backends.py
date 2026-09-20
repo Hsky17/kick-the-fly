@@ -63,6 +63,7 @@ def test_cpu_side_backends_are_bit_exact(name, dtype):
     fastmath Numba kernel first differed at step 289 and then decorrelated completely."""
     ref_sim, ref = _run("cpu", 1000, dtype)
     sim, got = _run(name, 1000, dtype)
+    sim.backend.sync_to_host()
     assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
     assert np.array_equal(sim.v, ref_sim.v) and np.array_equal(sim.refr, ref_sim.refr)
     assert sim.gain == ref_sim.gain
@@ -74,6 +75,7 @@ def test_cpu_side_backends_are_bit_exact_on_the_dense_path(name, dtype):
     """The reference sums busy steps' inputs in the state dtype and sparse ones in float32; both paths must match."""
     ref_sim, ref = _run("cpu", 300, dtype, dense=True)
     sim, got = _run(name, 300, dtype, dense=True)
+    sim.backend.sync_to_host()
     assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
     assert np.array_equal(sim.v, ref_sim.v), "membrane potentials differ (a last-bit rounding difference)"
 
@@ -98,6 +100,7 @@ def test_host_state_writes_reach_the_backend(name):
         sim.step()
     quiet = np.flatnonzero(~sim.spikes & (sim.refr == 0))[:50]
     sim.v[quiet] = sim.p.v_thresh * 10                        # force them over threshold
+    sim.backend.sync_from_host()
     assert sim.step()[quiet].all()
 
 
