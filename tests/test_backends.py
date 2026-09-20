@@ -13,9 +13,10 @@ pytestmark = needs_pack
 
 AVAIL = backends.detect_available_backends()
 EXACT = [b for b in ("cpu", "numba", "torch-cpu") if b in AVAIL]
-GPU = [b for b in ("torch-cuda", "torch-rocm") if b in AVAIL]
+GPU = [b for b in ("torch-cuda", "torch-rocm", "gl") if b in AVAIL]
+TORCH_GPU = [b for b in ("torch-cuda", "torch-rocm") if b in AVAIL]
 EXPECT_CLASS = {"cpu": backends.CPUBackend, "numba": backends.NumbaBackend, "torch-cpu": backends.TorchBackend,
-                "torch-cuda": backends.TorchBackend, "torch-rocm": backends.TorchBackend}
+                "torch-cuda": backends.TorchBackend, "torch-rocm": backends.TorchBackend, "gl": backends.GLBackend}
 
 
 def _run(backend: str, steps: int, dtype: str = "float32", seed: int = 42, dense: bool = False):
@@ -131,7 +132,7 @@ def test_headless_backend_and_dtype_reach_worker_processes(monkeypatch):
     assert (args.dtype, args.backend) == ("float64", "numba")
 
 
-@pytest.mark.parametrize("name", GPU)
+@pytest.mark.parametrize("name", TORCH_GPU)
 def test_batched_multi_fly_plasticity_identical(name):
     """Assert that a trained fly's KC->MBON plastic weights after N conditioning pairings
     are 100% identical between unbatched and batched multi-fly GPU execution."""
@@ -172,7 +173,7 @@ def test_batched_multi_fly_plasticity_identical(name):
     assert np.array_equal(sp_unbatched, sp_batched), "Spikes differ between batched and unbatched!"
 
 
-@pytest.mark.parametrize("name", GPU)
+@pytest.mark.parametrize("name", TORCH_GPU)
 def test_fused_lif_kernel_toggle(name):
     """Test that the fused LIF kernel toggle runs correctly and matches statistical tolerance."""
     _, W, _ = simcore.pack()

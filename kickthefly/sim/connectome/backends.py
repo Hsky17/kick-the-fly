@@ -17,7 +17,7 @@ import scipy.sparse as sp
 
 log = logging.getLogger("kickthefly")
 
-BACKEND_NAMES = ("auto", "cpu", "numba", "torch-cpu", "torch-cuda", "torch-rocm")
+BACKEND_NAMES = ("auto", "cpu", "numba", "torch-cpu", "torch-cuda", "torch-rocm", "gl")
 
 
 class SimBackend:
@@ -481,11 +481,242 @@ class TorchBackend(SimBackend):
         return results
 
 
+# --- ModernGL Compute Shader Backend (Vendor-Neutral GPU) --------------------
+_moderngl_available = False
+try:
+    import moderngl
+    _moderngl_available = True
+except ImportError:
+    moderngl = None
+
+
+def _gl_compute_available() -> tuple[bool, str]:
+    """Check if OpenGL 4.3+ compute shaders are supported on this system."""
+    if not _moderngl_available:
+        return False, "ModernGL is not installed"
+    try:
+        ctx = moderngl.create_context(standalone=True)
+        if ctx.version_code < 430:
+            return False, f"OpenGL {ctx.version_code / 100:.1f} < 4.3 (Compute shaders not supported)"
+        renderer = ctx.info.get("GL_RENDERER", "OpenGL GPU")
+        return True, f"OpenGL {ctx.version_code / 100:.1f}: {renderer}"
+    except Exception as e:
+        return False, f"OpenGL context creation failed: {e}"
+
+
+_SPMV_COMPUTE_SHADER = """
+#version 430
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer BRowPtr { uint row_ptr[]; };
+layout(std430, binding = 1) readonly buffer BColInd { uint col_ind[]; };
+layout(std430, binding = 2) readonly buffer BValues { float values[]; };
+layout(std430, binding = 5) readonly buffer BSpikes { uint spikes[]; };
+layout(std430, binding = 8) writeonly buffer BISyn   { float i_syn[]; };
+uniform uint num_neurons;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= num_neurons) return;
+    uint start = row_ptr[i];
+    uint end = row_ptr[i + 1];
+    float sum = 0.0;
+    for (uint idx = start; idx < end; ++idx) {
+        if (spikes[col_ind[idx]] != 0u) {
+            sum += values[idx];
+        }
+    }
+    i_syn[i] = sum;
+}
+"""
+
+_LIF_COMPUTE_SHADER = """
+#version 430
+layout(local_size_x = 64) in;
+layout(std430, binding = 3) buffer BV       { float v[]; };
+layout(std430, binding = 4) buffer BRefr    { int refr[]; };
+layout(std430, binding = 5) buffer BSpikes  { uint spikes[]; };
+layout(std430, binding = 6) readonly buffer BNoise   { float noise[]; };
+layout(std430, binding = 7) readonly buffer BSens    { float sensory[]; };
+layout(std430, binding = 8) readonly buffer BISyn    { float i_syn[]; };
+
+uniform uint num_neurons;
+uniform uint noise_offset;
+uniform float gain;
+uniform float bias;
+uniform float ext_gain;
+uniform float leak_decay;
+uniform float leak_reset;
+uniform float v_reset;
+uniform float v_thresh;
+uniform int refr_steps;
+uniform int has_sensory;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= num_neurons) return;
+
+    float drive = i_syn[i] * gain + bias + noise[noise_offset + i];
+    if (has_sensory != 0) {
+        drive += sensory[i] * ext_gain;
+    }
+
+    float v_val = v[i] * leak_decay + leak_reset + drive;
+    int r = refr[i];
+    if (r > 0) {
+        v_val = v_reset;
+        r -= 1;
+    }
+
+    if (v_val >= v_thresh) {
+        spikes[i] = 1u;
+        v[i] = v_reset;
+        refr[i] = refr_steps;
+    } else {
+        spikes[i] = 0u;
+        v[i] = v_val;
+        refr[i] = r;
+    }
+}
+"""
+
+
+class GLBackend(SimBackend):
+    """ModernGL compute shader backend: vendor-neutral GPU acceleration using OpenGL 4.3+ compute shaders and SSBOs.
+    Runs on AMD, NVIDIA, and Intel GPUs across Linux and Windows without requiring PyTorch."""
+
+    name = "gl"
+
+    def __init__(self, sim: Any) -> None:
+        super().__init__(sim)
+        self.ctx = None
+        self.cs_spmv = None
+        self.cs_lif = None
+        self.buf_rowptr = None
+        self.buf_colind = None
+        self.buf_values = None
+        self.buf_v = None
+        self.buf_refr = None
+        self.buf_spikes = None
+        self.buf_noise = None
+        self.buf_sens = None
+        self.buf_isyn = None
+        self.num_groups = (self.n + 63) // 64
+        self._noise_id = None
+
+    def setup(self) -> None:
+        if not _moderngl_available:
+            raise RuntimeError("ModernGL is not installed")
+        try:
+            self.ctx = moderngl.create_context(standalone=True)
+        except Exception as e:
+            raise RuntimeError(f"Failed to create ModernGL context: {e}")
+
+        if self.ctx.version_code < 430:
+            raise RuntimeError(f"OpenGL {self.ctx.version_code / 100:.1f} does not support compute shaders (OpenGL 4.3+ required)")
+
+        renderer = self.ctx.info.get("GL_RENDERER", "GPU")
+        self.device_name = f"OpenGL {self.ctx.version_code / 100:.1f}: {renderer}"
+
+        csr = self.sim.W_csr
+        self.buf_rowptr = self.ctx.buffer(csr.indptr.astype(np.uint32).tobytes())
+        self.buf_colind = self.ctx.buffer(csr.indices.astype(np.uint32).tobytes())
+        self.buf_values = self.ctx.buffer(csr.data.astype(np.float32).tobytes())
+
+        self.buf_v = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_refr = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_spikes = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_noise = self.ctx.buffer(self.sim._noise.astype(np.float32).tobytes())
+        self._noise_id = id(self.sim._noise)
+        self.buf_sens = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_isyn = self.ctx.buffer(reserve=self.n * 4)
+
+        self.cs_spmv = self.ctx.compute_shader(_SPMV_COMPUTE_SHADER)
+        self.cs_lif = self.ctx.compute_shader(_LIF_COMPUTE_SHADER)
+
+        self.buf_rowptr.bind_to_storage_buffer(0)
+        self.buf_colind.bind_to_storage_buffer(1)
+        self.buf_values.bind_to_storage_buffer(2)
+        self.buf_v.bind_to_storage_buffer(3)
+        self.buf_refr.bind_to_storage_buffer(4)
+        self.buf_spikes.bind_to_storage_buffer(5)
+        self.buf_noise.bind_to_storage_buffer(6)
+        self.buf_sens.bind_to_storage_buffer(7)
+        self.buf_isyn.bind_to_storage_buffer(8)
+
+        self.cs_spmv["num_neurons"] = self.n
+        self.cs_lif["num_neurons"] = self.n
+        self._init_uniforms()
+        self.sync_from_host()
+
+    def _init_uniforms(self) -> None:
+        p = self.sim.p
+        sim = self.sim
+        self.cs_lif["bias"] = float(p.bias)
+        self.cs_lif["ext_gain"] = float(p.ext_gain)
+        self.cs_lif["leak_decay"] = float(1.0 - sim.leak)
+        self.cs_lif["leak_reset"] = float(sim.leak * p.v_reset) if p.v_reset else 0.0
+        self.cs_lif["v_reset"] = float(p.v_reset)
+        self.cs_lif["v_thresh"] = float(p.v_thresh)
+        self.cs_lif["refr_steps"] = int(p.refractory_steps)
+
+    def on_weights_changed(self) -> None:
+        if self.buf_values is not None:
+            self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
+
+    def sync_to_host(self) -> None:
+        if self.buf_v is not None:
+            self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
+            self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
+            self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
+
+    def sync_from_host(self) -> None:
+        if self.buf_v is not None:
+            self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
+            self.buf_refr.write(self.sim.refr.astype(np.int32).tobytes())
+            self.buf_spikes.write(self.sim.spikes.astype(np.uint32).tobytes())
+            if self._noise_id != id(self.sim._noise):
+                self.buf_noise.write(self.sim._noise.astype(np.float32).tobytes())
+                self._noise_id = id(self.sim._noise)
+
+    def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
+        sim = self.sim
+        if self._noise_id != id(sim._noise):
+            self.buf_noise.write(sim._noise.astype(np.float32).tobytes())
+            self._noise_id = id(sim._noise)
+
+        # 1. Sparse SpMV propagation
+        self.cs_spmv.run(self.num_groups)
+        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+
+        # 2. Sensory input upload if active
+        if sensory_input is not None:
+            self.buf_sens.write(np.ascontiguousarray(sensory_input, dtype=np.float32).tobytes())
+            self.cs_lif["has_sensory"] = 1
+        else:
+            self.cs_lif["has_sensory"] = 0
+
+        # 3. LIF elementwise update
+        off = int(sim.rng.integers(0, sim._noise.size - self.n))
+        self.cs_lif["noise_offset"] = off
+        self.cs_lif["gain"] = float(sim.gain)
+        self.cs_lif.run(self.num_groups)
+        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+
+        # 4. Read spikes
+        spikes_raw = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32)
+        spikes = spikes_raw.astype(bool)
+        sim.spikes = spikes
+        return spikes
+
+
 def detect_available_backends() -> dict[str, str]:
     """The backends that can run here, mapped to human-readable device names."""
     avail = {"cpu": CPUBackend.device_name}
     if _numba_available:
         avail["numba"] = NumbaBackend.device_name
+    ok, gl_dev = _gl_compute_available()
+    if ok:
+        avail["gl"] = gl_dev
     if _torch_available:
         avail["torch-cpu"] = "PyTorch (cpu)"
         kind = _torch_gpu_kind()
@@ -511,12 +742,14 @@ def _try(make, label: str) -> SimBackend | None:
 def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
     """The requested backend, or the best one available for 'auto', falling back to the NumPy CPU backend.
     The returned backend's .name is what actually runs (e.g. 'torch-rocm' when 'torch-cuda' was asked for on a ROCm
-    build of PyTorch, or 'cpu' after a fallback), and that is what gets recorded everywhere."""
+    build of PyTorch, 'gl' for OpenGL Compute, or 'cpu' after a fallback), and that is what gets recorded everywhere."""
     choice = (backend_choice or "auto").lower()
     b: SimBackend | None = None
     if choice == "auto":
         if _torch_gpu_kind():
             b = _try(lambda: TorchBackend(sim, "cuda:0"), "PyTorch GPU")
+        if b is None and _moderngl_available:
+            b = _try(lambda: GLBackend(sim), "OpenGL Compute")
         if b is None and _numba_available:
             b = _try(lambda: NumbaBackend(sim), "Numba")
     elif choice in ("torch-cuda", "torch-rocm"):
@@ -535,6 +768,11 @@ def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
             log.warning("torch-cpu requested but PyTorch is not installed; using the CPU backend")
         else:
             b = _try(lambda: TorchBackend(sim, "cpu"), "PyTorch CPU")
+    elif choice == "gl":
+        if not _moderngl_available:
+            log.warning("gl requested but ModernGL is not installed; using the CPU backend")
+        else:
+            b = _try(lambda: GLBackend(sim), "OpenGL Compute")
     elif choice == "numba":
         if not _numba_available:
             log.warning("numba requested but Numba is not installed; using the CPU backend")
