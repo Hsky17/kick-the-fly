@@ -19,5 +19,11 @@ big = pygame.Surface((300, 300), pygame.SRCALPHA)
 fly = k.Fly(0)
 fly.p = fly.p - fly.p[k.THX] + (158, 150)      # center the standing fly
 k.draw_fly(big, fly, 0.0)
-pygame.image.save(pygame.transform.smoothscale(big, (256, 256)), str(out))
+surf = pygame.transform.smoothscale(big, (256, 256))
+try:
+    pygame.image.save(surf, str(out))
+except (NotImplementedError, pygame.error):
+    # pygame wheels built without SDL_image (the cp314 one) cannot write PNG; Pillow can.
+    from PIL import Image
+    Image.frombytes("RGBA", surf.get_size(), pygame.image.tostring(surf, "RGBA")).save(out)
 print(f"wrote {out}")
