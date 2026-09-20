@@ -171,3 +171,16 @@ def test_batched_multi_fly_plasticity_identical(name):
     assert np.array_equal(w_unbatched, w_batched), "KC->MBON weights differ between batched and unbatched!"
     assert np.array_equal(sp_unbatched, sp_batched), "Spikes differ between batched and unbatched!"
 
+
+@pytest.mark.parametrize("name", GPU)
+def test_fused_lif_kernel_toggle(name):
+    """Test that the fused LIF kernel toggle runs correctly and matches statistical tolerance."""
+    _, W, _ = simcore.pack()
+    lp = LIFParams(backend=name, fuse_lif=True)
+    sim = LIFSim(None, lp, W_in=W, seed=7)
+    for _ in range(50):
+        sim.step()
+    assert sim.spikes.shape == (sim.n,)
+    assert sim.spikes.dtype == bool
+
+

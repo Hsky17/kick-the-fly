@@ -53,6 +53,8 @@ class LIFParams:
     backend: str = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_SIM_BACKEND", "auto"))
     # batched multi-fly SpMM on GPU backend
     batched_spmm: bool = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_BATCHED_SPMM", "0").lower() in ("1", "true", "yes"))
+    # fused LIF kernel execution on GPU backend (torch.compile / fused kernels)
+    fuse_lif: bool = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_FUSE_LIF", "0").lower() in ("1", "true", "yes"))
 
 
 class ActivityBuffer:

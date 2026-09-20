@@ -203,6 +203,34 @@ def _torch_gpu_kind() -> str | None:
     return "torch-rocm" if getattr(torch.version, "hip", None) else "torch-cuda"
 
 
+_compiled_lif_step = None
+
+
+def _get_compiled_lif_step():
+    global _compiled_lif_step
+    if _compiled_lif_step is None and _torch_available and torch is not None:
+        def _core(v, refr, i_syn, gain, bias, noise_slice, sens, ext_gain, leak_decay, leak_reset, v_reset, v_thresh, refr_steps):
+            drive = i_syn * gain + bias + noise_slice
+            if sens is not None:
+                drive = drive + (sens if ext_gain == 1.0 else sens * ext_gain)
+            v_new = v * leak_decay + leak_reset + drive
+            refr_mask = refr > 0
+            v_new = torch.where(refr_mask, v_reset, v_new)
+            refr_new = torch.where(refr_mask, refr - 1, refr)
+            spikes = v_new >= v_thresh
+            v_out = torch.where(spikes, v_reset, v_new)
+            refr_out = torch.where(spikes, refr_steps, refr_new)
+            return v_out, refr_out, spikes
+
+        try:
+            _compiled_lif_step = torch.compile(_core)
+        except Exception as e:
+            log.warning("torch.compile unavailable for fused LIF: %s", e)
+            _compiled_lif_step = _core
+    return _compiled_lif_step
+
+
+
 class TorchBackend(SimBackend):
     """PyTorch backend: state tensors (v, refr, spikes, noise bank) and weight matrix live on device
     (CUDA, ROCm, or CPU) across steps for zero-copy simulation. Host arrays (sim.v, sim.refr, sim.spikes)
@@ -321,31 +349,43 @@ class TorchBackend(SimBackend):
 
         s_float = self.spikes_dev.to(W.dtype).unsqueeze(1)
         i_syn = torch.sparse.mm(W, s_float).squeeze(1)
-
-        drive = i_syn.to(tdt) * sim.gain
-        drive += self._bias_tensor
         off = int(sim.rng.integers(0, sim._noise.size - self.n))
-        drive += self.noise_dev[off:off + self.n]
 
-        if sensory_input is not None:
-            sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
-            if p.ext_gain == 1.0:
-                drive += sens
-            else:
-                drive += self._ext_gain_tensor * sens
+        if getattr(p, "fuse_lif", False):
+            fused_fn = _get_compiled_lif_step()
+            sens = None
+            if sensory_input is not None:
+                sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
+            v, refr, spikes = fused_fn(
+                self.v_dev, self.refr_dev, i_syn.to(tdt), sim.gain, self._bias_tensor,
+                self.noise_dev[off:off + self.n], sens, p.ext_gain, self._leak_decay_tensor,
+                self._leak_reset_tensor if p.v_reset else torch.zeros(1, dtype=tdt, device=dev),
+                self._v_reset_tensor, self._v_thresh_tensor, self._refr_steps_tensor
+            )
+        else:
+            drive = i_syn.to(tdt) * sim.gain
+            drive += self._bias_tensor
+            drive += self.noise_dev[off:off + self.n]
 
-        v = self.v_dev * self._leak_decay_tensor
-        if p.v_reset:
-            v += self._leak_reset_tensor
-        v += drive
+            if sensory_input is not None:
+                sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
+                if p.ext_gain == 1.0:
+                    drive += sens
+                else:
+                    drive += self._ext_gain_tensor * sens
 
-        refr_mask = self.refr_dev > 0
-        v = torch.where(refr_mask, self._v_reset_tensor, v)
-        refr = torch.where(refr_mask, self.refr_dev - 1, self.refr_dev)
+            v = self.v_dev * self._leak_decay_tensor
+            if p.v_reset:
+                v += self._leak_reset_tensor
+            v += drive
 
-        spikes = v >= self._v_thresh_tensor
-        v = torch.where(spikes, self._v_reset_tensor, v)
-        refr = torch.where(spikes, self._refr_steps_tensor, refr)
+            refr_mask = self.refr_dev > 0
+            v = torch.where(refr_mask, self._v_reset_tensor, v)
+            refr = torch.where(refr_mask, self.refr_dev - 1, self.refr_dev)
+
+            spikes = v >= self._v_thresh_tensor
+            v = torch.where(spikes, self._v_reset_tensor, v)
+            refr = torch.where(spikes, self._refr_steps_tensor, refr)
 
         self.v_dev = v
         self.refr_dev = refr
