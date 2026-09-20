@@ -355,6 +355,91 @@ class TorchBackend(SimBackend):
         sim.spikes = spikes_np
         return spikes_np
 
+    @classmethod
+    def step_batch(cls, sims: list[Any], sensory_inputs: list[np.ndarray | None] | None = None) -> list[np.ndarray]:
+        """Advance a batch of LIF simulations on GPU with a single batched SpMM multiplication."""
+        if not sims:
+            return []
+        if len(sims) == 1:
+            sens = sensory_inputs[0] if sensory_inputs else None
+            return [sims[0].step(sens)]
+
+        backends = [s.backend for s in sims]
+        for b in backends:
+            if b.v_dev is None:
+                b.sync_from_host()
+            if b._noise_id != id(b.sim._noise):
+                b.noise_dev = torch.from_numpy(b.sim._noise).to(b.tdev, dtype=b.tdt)
+                b._noise_id = id(b.sim._noise)
+
+        # Group simulations by weight tensor for batched SpMM
+        groups: dict[Any, list[int]] = {}
+        for idx, b in enumerate(backends):
+            w = b.W_torch
+            groups.setdefault(w, []).append(idx)
+
+        i_syn_list = [None] * len(sims)
+        for w, indices in groups.items():
+            if len(indices) == 1:
+                idx = indices[0]
+                b = backends[idx]
+                s_float = b.spikes_dev.to(w.dtype).unsqueeze(1)
+                i_syn_list[idx] = torch.sparse.mm(w, s_float).squeeze(1)
+            else:
+                stacked_spikes = torch.stack([backends[idx].spikes_dev.to(w.dtype) for idx in indices], dim=1)
+                batched_out = torch.sparse.mm(w, stacked_spikes)
+                for col, idx in enumerate(indices):
+                    i_syn_list[idx] = batched_out[:, col]
+
+        results = []
+        for idx, (sim, b) in enumerate(zip(sims, backends)):
+            p = sim.p
+            tdt = b.tdt
+            dev = b.tdev
+            i_syn = i_syn_list[idx]
+            drive = i_syn.to(tdt) * sim.gain
+            drive += b._bias_tensor
+            off = int(sim.rng.integers(0, sim._noise.size - sim.n))
+            drive += b.noise_dev[off:off + sim.n]
+
+            sens = sensory_inputs[idx] if sensory_inputs else None
+            if sens is not None:
+                sens_t = torch.from_numpy(np.ascontiguousarray(sens)).to(dev, dtype=tdt)
+                if p.ext_gain == 1.0:
+                    drive += sens_t
+                else:
+                    drive += b._ext_gain_tensor * sens_t
+
+            v = b.v_dev * b._leak_decay_tensor
+            if p.v_reset:
+                v += b._leak_reset_tensor
+            v += drive
+
+            refr_mask = b.refr_dev > 0
+            v = torch.where(refr_mask, b._v_reset_tensor, v)
+            refr = torch.where(refr_mask, b.refr_dev - 1, b.refr_dev)
+
+            spikes = v >= b._v_thresh_tensor
+            v = torch.where(spikes, b._v_reset_tensor, v)
+            refr = torch.where(spikes, b._refr_steps_tensor, refr)
+
+            b.v_dev = v
+            b.refr_dev = refr
+            b.spikes_dev = spikes
+
+            spikes_np = spikes.cpu().numpy()
+            sim.spikes = spikes_np
+
+            fired = int(np.count_nonzero(spikes_np))
+            sim.spike_total += fired
+            frac = fired / sim.n
+            err = (sim.target_p - frac) / max(sim.target_p, 1e-9)
+            sim.gain = float(np.clip(sim.gain * np.exp(p.gain_adapt * np.clip(err, -1, 1)), *p.gain_bounds))
+            sim.activity.push(spikes_np)
+            results.append(spikes_np)
+
+        return results
+
 
 def detect_available_backends() -> dict[str, str]:
     """The backends that can run here, mapped to human-readable device names."""

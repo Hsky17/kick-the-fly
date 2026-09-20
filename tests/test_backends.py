@@ -129,3 +129,45 @@ def test_headless_backend_and_dtype_reach_worker_processes(monkeypatch):
     from kickthefly.game import kick_the_fly as k
     args = k.parse_args(["--dtype", "float64", "--backend", "numba"])
     assert (args.dtype, args.backend) == ("float64", "numba")
+
+
+@pytest.mark.parametrize("name", GPU)
+def test_batched_multi_fly_plasticity_identical(name):
+    """Assert that a trained fly's KC->MBON plastic weights after N conditioning pairings
+    are 100% identical between unbatched and batched multi-fly GPU execution."""
+    from kickthefly.core import memory
+    g, W, _ = simcore.pack()
+
+    def run_conditioning(batched: bool):
+        sim1 = LIFSim(None, LIFParams(backend=name), W_in=W.copy(), seed=42)
+        sim2 = LIFSim(None, LIFParams(backend=name), W_in=W.copy(), seed=99)
+        mem1 = memory.Memory(g, sim1, load=False)
+        odor_pattern = np.zeros(g.n, np.float32)
+        odor_pattern[mem1.kc[:50]] = 5.0
+        shock_drive = np.zeros(g.n, np.float32)
+        shock_drive[mem1.dan[:20]] = 8.0
+
+        for trial in range(6):
+            # Odor presentation (5 steps)
+            for _ in range(5):
+                if batched:
+                    backends.TorchBackend.step_batch([sim1, sim2], [odor_pattern, None])
+                else:
+                    sim1.step(odor_pattern)
+                    sim2.step(None)
+            # Shock (dopamine activation, 5 steps)
+            for _ in range(5):
+                if batched:
+                    backends.TorchBackend.step_batch([sim1, sim2], [shock_drive, None])
+                else:
+                    sim1.step(shock_drive)
+                    sim2.step(None)
+            mem1.step(sim1.activity.rates(), calm=False, steps=(trial + 1) * 10)
+        return mem1.w.copy(), sim1.spikes.copy()
+
+    w_unbatched, sp_unbatched = run_conditioning(False)
+    w_batched, sp_batched = run_conditioning(True)
+
+    assert np.array_equal(w_unbatched, w_batched), "KC->MBON weights differ between batched and unbatched!"
+    assert np.array_equal(sp_unbatched, sp_batched), "Spikes differ between batched and unbatched!"
+

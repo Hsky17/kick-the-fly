@@ -51,6 +51,8 @@ class LIFParams:
     # default for the whole process and its worker processes (headless --backend does that), so validation, assays and
     # protocols run on the backend you asked for.
     backend: str = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_SIM_BACKEND", "auto"))
+    # batched multi-fly SpMM on GPU backend
+    batched_spmm: bool = field(default_factory=lambda: os.environ.get("KICK_THE_FLY_BATCHED_SPMM", "0").lower() in ("1", "true", "yes"))
 
 
 class ActivityBuffer:
