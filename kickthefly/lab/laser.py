@@ -96,17 +96,33 @@ class LaserState:
         self.firing = False
 
     def resolve_target_rows(self, brain) -> np.ndarray:
-        """Find neuron indices in brain matching target_type."""
+        """Find neuron indices in brain matching target_type.
+
+        The answer depends only on ``brain.types`` (the cell-type labels),
+        which never change for the life of a brain. The lookup itself is a
+        full ~166k string scan, so we cache it on the brain and skip it on
+        every later call -- laser.apply() runs once per fly, once per frame,
+        and a 26 ms scan per call was the cause of the laser-lag report.
+        """
         tt = self.target_type.lower()
         if not hasattr(brain, "types"):
             return np.array([], dtype=int)
+        cache = getattr(brain, "_laser_row_cache", None)
+        if cache is None:
+            cache = {}
+            brain._laser_row_cache = cache
+        rows = cache.get(tt)
+        if rows is None:
+            rows = self._scan_rows(brain, tt)
+            cache[tt] = rows
+        return rows
+
+    def _scan_rows(self, brain, tt: str) -> np.ndarray:
+        """One-off full-table scan for matching rows (exact > prefix > contains)."""
         types = np.char.lower(brain.types.astype(str))
-        
-        # Direct exact match or prefix
         exact = np.flatnonzero(types == tt)
         if len(exact):
             return exact
-        # Substring / prefix match for groups like 'lc10', 'dnp01', 'ppl1'
         prefix = np.flatnonzero(np.char.startswith(types, tt))
         if len(prefix):
             return prefix
