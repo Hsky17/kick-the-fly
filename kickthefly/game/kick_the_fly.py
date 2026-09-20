@@ -338,19 +338,19 @@ CALM_STEPS = 400             # 2 s without a touch before the baseline learns ag
 
 
 def get_max_flies(backend: str | None = None) -> int:
-    """How many flies N may spawn, for the backend that actually runs (measured in README: Performance).
+    """How many flies N may spawn, dynamically adapted to the active backend (measured in README: Performance).
 
-    NumPy (cpu) and torch-cpu: 16, as before; brains share Python's interpreter lock, and torch on a CPU is slower
-    than NumPy. Numba releases the lock, so each brain can have a core: one per core, between 16 and 32 (24 on a
-    24-core machine, where 16 brains still keep real time headless). GPU backends: 32, not yet measured on a GPU.
+    NumPy (cpu) and torch-cpu: 16; brains share Python's GIL.
+    Numba: one per core, between 16 and 32 (releases GIL).
+    GPU backends (torch-cuda, torch-rocm, gl): 32 (or up to 64 with batched SpMM in VRAM).
     Every spawn also needs free memory (BRAIN_MB each), checked when you press N."""
     if backend is None or backend == "auto":
         from kickthefly.sim.connectome.backends import detect_available_backends
         avail = detect_available_backends()
-        backend = next((b for b in ("torch-cuda", "torch-rocm", "numba") if b in avail), "cpu")
+        backend = next((b for b in ("torch-cuda", "torch-rocm", "gl", "numba") if b in avail), "cpu")
     backend = str(backend).lower()
-    if backend in ("torch-cuda", "torch-rocm"):
-        return 32
+    if backend in ("torch-cuda", "torch-rocm", "gl"):
+        return 64 if os.environ.get("KICK_THE_FLY_EXPANDED_SWARM") else 32
     if backend == "numba":
         return int(min(32, max(16, os.cpu_count() or 16)))
     return 16
@@ -5877,7 +5877,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--2d", dest="two_d", action="store_true", help="the original 2D game")
     ap.add_argument("--fullscreen", action="store_true")
     from kickthefly.sim.connectome import backends as sim_backends
-    ap.add_argument("--backend", help="Compute backend (auto, cpu, numba, torch-cuda, torch-rocm) or Linux display backend (wayland, x11)")
+    ap.add_argument("--backend", help="Compute backend (auto, cpu, numba, torch-cuda, torch-rocm, torch-cpu, gl) or Linux display backend (wayland, x11)")
     ap.add_argument("--sim-backend", choices=sim_backends.BACKEND_NAMES, help="Simulation compute backend")
     ap.add_argument("--dtype", choices=("float32", "float64"), help="simulation state precision (default float32)")
     ap.add_argument("--seed", type=int, help="random seed for the brains and the game")
@@ -5947,7 +5947,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.backend:
         if args.backend in ("wayland", "x11"):
             display_backend_choice = args.backend
-        elif args.backend in ("cpu", "numba", "torch-cuda", "torch-rocm"):
+        elif args.backend in ("cpu", "numba", "torch-cuda", "torch-rocm", "torch-cpu", "gl"):
             sim_backend_choice = args.backend
         elif args.backend == "auto":
             sim_backend_choice = "auto"

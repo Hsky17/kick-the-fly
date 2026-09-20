@@ -490,6 +490,88 @@ except ImportError:
     moderngl = None
 
 
+class _GLContextBinder:
+    """Helper to bind ModernGL standalone contexts across worker threads (EGL, GLX, WGL)."""
+
+    def __init__(self) -> None:
+        self._libegl = None
+        self._libgl = None
+        self._libwgl = None
+        import ctypes
+        import sys
+
+        try:
+            libegl = ctypes.CDLL("libEGL.so.1")
+            libegl.eglGetCurrentContext.restype = ctypes.c_void_p
+            libegl.eglGetCurrentDisplay.restype = ctypes.c_void_p
+            libegl.eglMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            libegl.eglMakeCurrent.restype = ctypes.c_bool
+            self._libegl = libegl
+        except Exception:
+            pass
+
+        try:
+            libgl = ctypes.CDLL("libGL.so.1")
+            libgl.glXGetCurrentContext.restype = ctypes.c_void_p
+            libgl.glXGetCurrentDisplay.restype = ctypes.c_void_p
+            libgl.glXMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            libgl.glXMakeCurrent.restype = ctypes.c_bool
+            self._libgl = libgl
+        except Exception:
+            pass
+
+        if sys.platform == "win32":
+            try:
+                opengl32 = ctypes.windll.opengl32
+                opengl32.wglGetCurrentContext.restype = ctypes.c_void_p
+                opengl32.wglGetCurrentDC.restype = ctypes.c_void_p
+                opengl32.wglMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                opengl32.wglMakeCurrent.restype = ctypes.c_bool
+                self._libwgl = opengl32
+            except Exception:
+                pass
+
+    def capture_current(self):
+        if self._libegl:
+            ctx = self._libegl.eglGetCurrentContext()
+            if ctx:
+                return ("egl", self._libegl.eglGetCurrentDisplay(), ctx)
+        if self._libgl:
+            ctx = self._libgl.glXGetCurrentContext()
+            if ctx:
+                return ("glx", self._libgl.glXGetCurrentDisplay(), ctx)
+        if self._libwgl:
+            ctx = self._libwgl.wglGetCurrentContext()
+            if ctx:
+                return ("wgl", self._libwgl.wglGetCurrentDC(), ctx)
+        return None
+
+    def make_current(self, handle) -> None:
+        if not handle:
+            return
+        kind = handle[0]
+        if kind == "egl":
+            self._libegl.eglMakeCurrent(handle[1], None, None, handle[2])
+        elif kind == "glx":
+            self._libgl.glXMakeCurrent(handle[1], 0, handle[2])
+        elif kind == "wgl":
+            self._libwgl.wglMakeCurrent(handle[1], handle[2])
+
+    def release_current(self, handle) -> None:
+        if not handle:
+            return
+        kind = handle[0]
+        if kind == "egl":
+            self._libegl.eglMakeCurrent(handle[1], None, None, None)
+        elif kind == "glx":
+            self._libgl.glXMakeCurrent(handle[1], 0, None)
+        elif kind == "wgl":
+            self._libwgl.wglMakeCurrent(handle[1], None)
+
+
+_context_binder = _GLContextBinder()
+
+
 def _gl_compute_available() -> tuple[bool, str]:
     """Check if OpenGL 4.3+ compute shaders are supported on this system."""
     if not _moderngl_available:
@@ -605,10 +687,28 @@ class GLBackend(SimBackend):
         self.buf_isyn = None
         self.num_groups = (self.n + 63) // 64
         self._noise_id = None
+        self._thread_id = None
 
     def setup(self) -> None:
         if not _moderngl_available:
             raise RuntimeError("ModernGL is not installed")
+        ok, dev = _gl_compute_available()
+        if not ok:
+            raise RuntimeError(dev)
+        self.device_name = dev
+        # Initialize resources on the calling thread
+        self._init_device()
+
+    def _init_device(self) -> None:
+        import threading
+        self._thread_id = threading.get_ident()
+        if self.ctx is not None:
+            try:
+                self.ctx.release()
+            except Exception:
+                pass
+            self.ctx = None
+
         try:
             self.ctx = moderngl.create_context(standalone=True)
         except Exception as e:
@@ -619,9 +719,6 @@ class GLBackend(SimBackend):
             self.ctx.release()
             self.ctx = None
             raise RuntimeError(f"OpenGL {ver:.1f} does not support compute shaders (OpenGL 4.3+ required)")
-
-        renderer = self.ctx.info.get("GL_RENDERER", "GPU")
-        self.device_name = f"OpenGL {self.ctx.version_code / 100:.1f}: {renderer}"
 
         csr = self.sim.W_csr
         self.buf_rowptr = self.ctx.buffer(csr.indptr.astype(np.uint32).tobytes())
@@ -654,6 +751,11 @@ class GLBackend(SimBackend):
         self._init_uniforms()
         self.sync_from_host()
 
+    def _ensure_thread(self) -> None:
+        import threading
+        if self.ctx is None or self._thread_id != threading.get_ident():
+            self._init_device()
+
     def _init_uniforms(self) -> None:
         p = self.sim.p
         sim = self.sim
@@ -666,16 +768,19 @@ class GLBackend(SimBackend):
         self.cs_lif["refr_steps"] = int(p.refractory_steps)
 
     def on_weights_changed(self) -> None:
+        self._ensure_thread()
         if self.buf_values is not None:
             self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
 
     def sync_to_host(self) -> None:
+        self._ensure_thread()
         if self.buf_v is not None:
             self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
             self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
             self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
 
     def sync_from_host(self) -> None:
+        self._ensure_thread()
         if self.buf_v is not None:
             self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
             self.buf_refr.write(self.sim.refr.astype(np.int32).tobytes())
@@ -685,6 +790,7 @@ class GLBackend(SimBackend):
                 self._noise_id = id(self.sim._noise)
 
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
+        self._ensure_thread()
         sim = self.sim
         if self._noise_id != id(sim._noise):
             self.buf_noise.write(sim._noise.astype(np.float32).tobytes())

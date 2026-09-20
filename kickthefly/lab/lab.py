@@ -539,7 +539,8 @@ def page_benchmark(m: ui.Menu, surf, rect, mouse) -> None:
             rt_ratio = r["paced_realtime_ratio"]
             rt_col = ui.GOOD if rt_ratio >= 0.99 else (240, 160, 60) if rt_ratio >= 0.8 else ui.BAD
             m.text(surf, f"{rt_ratio:.2f}x", (rbox.x + 230, rbox.centery), rt_col, m.f_bold, "midleft")
-            uncap_s = f"{r['uncapped_steps_per_s']:.1f} steps/s"
+            lat_ms = r.get('uncapped_latency_ms', round(1000.0 / max(r['uncapped_steps_per_s'], 1e-6), 2))
+            uncap_s = f"{r['uncapped_steps_per_s']:.1f} st/s ({lat_ms:.2f}ms)"
             m.text(surf, uncap_s, (rbox.x + 340, rbox.centery), ui.TEXT, m.f_small, "midleft")
             m.text(surf, f"{r['uncapped_realtime_ratio']:.2f}x", (rbox.x + 490, rbox.centery), (140, 200, 240), m.f_small, "midleft")
             tp_s = f"{r['neurons_per_sec'] / 1e6:.1f} M neurons/s"
