@@ -366,6 +366,16 @@ def save_image(surf: "pygame.Surface", path) -> None:
         Image.frombytes("RGB", surf.get_size(), pygame.image.tobytes(surf, "RGB")).save(str(path))
 
 
+def drop_item(items: list, item) -> None:
+    """Remove `item` from `items` by identity. These lists hold dicts of numpy arrays, and
+    list.remove() compares with ==, which raises "truth value of an array is ambiguous" as
+    soon as it has to compare against an earlier element."""
+    for i, other in enumerate(items):
+        if other is item:
+            del items[i]
+            return
+
+
 MAX_FLIES = get_max_flies()
 BRAIN_MB = 350                # resident memory per extra brain (310-390 MB measured; its own weight matrices)
 FLY_TOUCH_RADIUS = 40.0       # how close two flies' thoraxes get before they bump (game rule, not a measurement)
@@ -4494,7 +4504,7 @@ class Game:
             slot.brain.poke("reward", None, 0.4)
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
-                self.sugars.remove(s)
+                drop_item(self.sugars, s)
                 break
 
     def _alcohol(self, now: float) -> None:
@@ -4532,7 +4542,7 @@ class Game:
             slot.brain.poke("reward", None, 0.6)
             fly.inebriation = min(1.0, getattr(fly, "inebriation", 0.0) + 0.008)
             if a["left"] <= 0:
-                self.alcohols.remove(a)
+                drop_item(self.alcohols, a)
                 break
 
     def _torch(self, mouse, now: float) -> None:
@@ -4689,7 +4699,7 @@ class Game:
             if b["p"][1] > FLOOR - 16:
                 b["p"][1], b["v"][:] = FLOOR - 16, 0
             if now - b["t"] > 1.5:
-                self.bombs.remove(b)
+                drop_item(self.bombs, b)
                 self._explode(b, now)
         for d in self.dust:
             d[0] += d[2]
@@ -5012,13 +5022,13 @@ class Game:
         for fl in list(self.flashes):
             e = (now - fl[1]) / 0.35
             if e >= 1 or self.calm_fx:
-                self.flashes.remove(fl)
+                drop_item(self.flashes, fl)
                 continue
             aacircle(arena, fl[0], 40 + 260 * e, (255, 200, 90, int(170 * (1 - e))))
         for pu in list(self.popups):
             e = (now - pu[3]) / 0.9
             if e >= 1:
-                self.popups.remove(pu)
+                drop_item(self.popups, pu)
                 continue
             txt = self.f_big.render(pu[2], True, pu[4])
             shd = self.f_big.render(pu[2], True, (120, 16, 22))

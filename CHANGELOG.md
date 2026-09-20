@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.8.2 (2026-09-19)
+
+### Fixed
+- **The game crashed when a second sugar pile, alcohol drop or bomb was used up** ("The truth value of an array with
+  more than one element is ambiguous"), in both the 3D and the 2D game. These are removed from a list of dicts holding
+  numpy arrays, and `list.remove()` compares with `==`: for anything but the first item in the list, that compares
+  numpy arrays and raises. They are now removed by identity (`drop_item`). The same bug was waiting in the screen
+  flashes and popups. Present since the tools were added.
+
 ## 2.8.1 (2026-09-19)
 
 ### Changed

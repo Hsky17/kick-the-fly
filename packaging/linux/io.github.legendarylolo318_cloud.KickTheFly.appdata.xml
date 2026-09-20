@@ -36,6 +36,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.8.2" date="2026-09-19">
+      <description>
+        <p>Fixes a crash when a second sugar pile, alcohol drop or bomb was used up.</p>
+      </description>
+    </release>
     <release version="2.8.1" date="2026-09-19">
       <description>
         <p>The fly now looks like a fruit fly instead of a bee: big red eyes, a pale tan body and dark-tipped abdomen with bands only on top.</p>

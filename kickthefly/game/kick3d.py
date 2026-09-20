@@ -31,7 +31,7 @@ from kickthefly.core import crash
 from kickthefly.game import kick_the_fly as k2
 from kickthefly.game import outdoors
 from kickthefly.game.kick_the_fly import (ABD, FOOT, HEAD, KNEE, LINKS, MAX_HEALTH, N_P, PULL, RADIUS, REST, THRESH, THX, TOOLS,
-                          TORCH_KEYS, TRIPOD, WING)
+                          TORCH_KEYS, TRIPOD, WING, drop_item)
 from kickthefly.game.render3d import (P_BOOKS, P_CEIL, P_EYE, P_GRASS, P_ICE, P_NONE, P_PAPER, P_RUG, P_SKYDOME, P_STRIPES,
                       P_WALLPAPER, P_WATER, P_WOOD, Renderer, frame_from_x, look_at, perspective, rot_x, rot_y, rot_z, segment, trs)
 
@@ -1762,7 +1762,7 @@ class Game3D(k2.Game):
             slot.brain.poke("reward", None, 0.4)
             fly.health = min(MAX_HEALTH, fly.health + 0.15)
             if s["left"] <= 0:
-                self.sugars3.remove(s)
+                drop_item(self.sugars3, s)
                 break
 
     def _alcohol3d(self, now: float) -> None:
@@ -1806,7 +1806,7 @@ class Game3D(k2.Game):
             slot.brain.poke("reward", None, 0.6)                      # PAM dopaminergic reward (real neurons)
             fly.inebriation = min(1.0, getattr(fly, "inebriation", 0.0) + 0.008)   # GAME RULE
             if a["left"] <= 0:
-                self.alcohols3.remove(a)
+                drop_item(self.alcohols3, a)
                 break
 
     def _die(self, slot: "k2.FlySlot", now: float) -> None:
@@ -1933,7 +1933,7 @@ class Game3D(k2.Game):
                     b["v"][ax] *= -0.5
             push_out_boxes(b["p"][None, :], 0.08)
             if now - b["t"] > 1.8:
-                self.bombs3.remove(b)
+                drop_item(self.bombs3, b)
                 self._explode3d(b, now)
         if self.torching and self.report is None and TOOLS[self.tool][0] in ("torch", "cleaner", "freeze"):
             self._jet(now, TOOLS[self.tool][0])
