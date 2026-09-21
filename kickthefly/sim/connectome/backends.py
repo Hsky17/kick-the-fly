@@ -932,8 +932,10 @@ def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
     if choice == "auto":
         if _torch_gpu_kind():
             b = _try(lambda: TorchBackend(sim, "cuda:0"), "PyTorch GPU")
-        if b is None and _moderngl_available:
-            b = _try(lambda: GLBackend(sim), "OpenGL Compute")
+        # 'gl' is deliberately not in the auto chain. on_weights_changed re-uploads the whole 41 MB weight
+        # buffer, and the mushroom body's plasticity fires every 10 steps, so a GL brain moves ~740 MB/s across
+        # the bus and the game never finishes waking the fly up. It is measurably slower than NumPy even without
+        # that (2.35 vs 1.41 ms/step on a 9070 XT). Ask for it with --backend gl if you want to work on it.
         if b is None and _numba_available:
             b = _try(lambda: NumbaBackend(sim), "Numba")
     elif choice in ("torch-cuda", "torch-rocm"):

@@ -347,7 +347,8 @@ def get_max_flies(backend: str | None = None) -> int:
     if backend is None or backend == "auto":
         from kickthefly.sim.connectome.backends import detect_available_backends
         avail = detect_available_backends()
-        backend = next((b for b in ("torch-cuda", "torch-rocm", "gl", "numba") if b in avail), "cpu")
+        # the same chain create_backend's 'auto' walks: gl is not in it, so the cap must not assume it either
+        backend = next((b for b in ("torch-cuda", "torch-rocm", "numba") if b in avail), "cpu")
     backend = str(backend).lower()
     if backend in ("torch-cuda", "torch-rocm", "gl"):
         return 64 if os.environ.get("KICK_THE_FLY_EXPANDED_SWARM") else 32
