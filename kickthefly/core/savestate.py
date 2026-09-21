@@ -71,6 +71,8 @@ class _Copying(dict):
 
 def brain_state(brain, prefix: str, arrays: dict) -> dict:
     sim = brain.sim
+    if getattr(sim, "backend", None) is not None:
+        sim.backend.sync_to_host()
     a = _Copying()
     a[prefix + "v"], a[prefix + "refr"], a[prefix + "spikes"] = sim.v, sim.refr, sim.spikes
     act = sim.activity
@@ -138,6 +140,8 @@ def restore_brain(brain, meta: dict, z, prefix: str) -> None:
             act._raster.clear()
         brain.fast[:] = z[prefix + "fast"]
         brain.base[:] = z[prefix + "base"]
+        if getattr(sim, "backend", None) is not None:
+            sim.backend.sync_from_host()
         brain.hist[:] = z[prefix + "hist"]
         brain.override[:] = z[prefix + "override"]
         brain.surgery = bool(meta["surgery"])

@@ -140,12 +140,15 @@ def run_benchmark(fly_counts: tuple[int, ...] = (1, 8, 16), seconds: float = 3.0
 
         mem_mb = get_memory_mb()
 
+        uncapped_latency_ms = round(1000.0 / mean_uncapped, 3) if mean_uncapped > 0 else 0.0
+
         records.append({
             "flies": n,
             "paced_steps_per_s": round(mean_paced, 1),
             "paced_min_steps_per_s": round(min_paced, 1),
             "paced_realtime_ratio": round(paced_ratio, 3),
             "uncapped_steps_per_s": round(mean_uncapped, 1),
+            "uncapped_latency_ms": uncapped_latency_ms,
             "uncapped_realtime_ratio": round(uncapped_ratio, 2),
             "agg_uncapped_steps_per_s": round(agg_uncapped_steps, 1),
             "neurons_per_sec": round(neurons_per_sec, 0),
@@ -179,27 +182,28 @@ def format_benchmark_report(res: dict) -> str:
     backend = res.get("backend", "Unknown")
     device = res.get("device", "Unknown")
     lines = [
-        "=" * 106,
+        "=" * 116,
         "KICK THE FLY - SIMULATION PERFORMANCE BENCHMARK",
         f"Timestamp: {res['timestamp']}  |  CPU: {sys_info.get('cpu_model')} ({sys_info.get('cpu_count')} threads)",
         f"OS: {sys_info.get('os')}  |  Python: {sys_info.get('python')}",
         f"Backend: {backend}  |  Device: {device}",
         f"Connectome: MaleCNS v1.0 ({con['neurons']:,} neurons, {con['synapses']:,} synapses)",
-        "=" * 106,
-        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped':<16} {'Speedup':<9} {'Neurons/s':<16} {'Syn-events/s':<16} {'Memory':<8}",
-        "-" * 106,
+        "=" * 116,
+        f"{'Flies':<6} {'Paced (steps/s)':<17} {'Sim/Real':<10} {'Uncapped':<14} {'Latency':<11} {'Speedup':<9} {'Neurons/s':<16} {'Syn-events/s':<16} {'Memory':<8}",
+        "-" * 116,
     ]
     for r in res["records"]:
         fl = str(r["flies"])
         paced = f"{r['paced_steps_per_s']:.1f} (min {r['paced_min_steps_per_s']:.1f})"
         rt = f"{r['paced_realtime_ratio']:.2f}x"
         uncap = f"{r['uncapped_steps_per_s']:.1f}/fly"
+        lat = f"{r.get('uncapped_latency_ms', 1000.0 / max(r['uncapped_steps_per_s'], 1e-6)):.2f} ms"
         speedup = f"{r['uncapped_realtime_ratio']:.2f}x"
         n_sec = f"{r['neurons_per_sec'] / 1e6:.1f} M/s"
         syn_sec = f"{r.get('synapses_per_sec', 0) / 1e6:.1f} M/s"
         mem = f"{r['memory_mb']:.0f} MB"
-        lines.append(f"{fl:<6} {paced:<17} {rt:<10} {uncap:<16} {speedup:<9} {n_sec:<16} {syn_sec:<16} {mem:<8}")
-    lines.append("=" * 106)
+        lines.append(f"{fl:<6} {paced:<17} {rt:<10} {uncap:<14} {lat:<11} {speedup:<9} {n_sec:<16} {syn_sec:<16} {mem:<8}")
+    lines.append("=" * 116)
     lines.append("Note: Real-time pace requires 200 steps/s (1.00x). Values >= 1.00x run in true real-time.")
     lines.append("Neurons/s: neuron updates per wall-clock second, all flies together. Syn-events/s: measured spikes")
     lines.append("per second x the connectome's mean out-degree. Memory: the process's resident memory after the run.")

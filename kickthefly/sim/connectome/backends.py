@@ -17,7 +17,7 @@ import scipy.sparse as sp
 
 log = logging.getLogger("kickthefly")
 
-BACKEND_NAMES = ("auto", "cpu", "numba", "torch-cpu", "torch-cuda", "torch-rocm")
+BACKEND_NAMES = ("auto", "cpu", "numba", "torch-cpu", "torch-cuda", "torch-rocm", "gl")
 
 
 class SimBackend:
@@ -41,6 +41,14 @@ class SimBackend:
 
     def on_weights_changed(self) -> None:
         """Notify backend that W_csr/W_csc matrix weights have been modified."""
+        pass
+
+    def sync_to_host(self) -> None:
+        """Sync device-resident state (v, refr, spikes) back to host numpy arrays."""
+        pass
+
+    def sync_from_host(self) -> None:
+        """Sync host numpy arrays (v, refr, spikes) up to device tensors."""
         pass
 
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
@@ -195,11 +203,38 @@ def _torch_gpu_kind() -> str | None:
     return "torch-rocm" if getattr(torch.version, "hip", None) else "torch-cuda"
 
 
+_compiled_lif_step = None
+
+
+def _get_compiled_lif_step():
+    global _compiled_lif_step
+    if _compiled_lif_step is None and _torch_available and torch is not None:
+        def _core(v, refr, i_syn, gain, bias, noise_slice, sens, ext_gain, leak_decay, leak_reset, v_reset, v_thresh, refr_steps):
+            drive = i_syn * gain + bias + noise_slice
+            if sens is not None:
+                drive = drive + (sens if ext_gain == 1.0 else sens * ext_gain)
+            v_new = v * leak_decay + leak_reset + drive
+            refr_mask = refr > 0
+            v_new = torch.where(refr_mask, v_reset, v_new)
+            refr_new = torch.where(refr_mask, refr - 1, refr)
+            spikes = v_new >= v_thresh
+            v_out = torch.where(spikes, v_reset, v_new)
+            refr_out = torch.where(spikes, refr_steps, refr_new)
+            return v_out, refr_out, spikes
+
+        try:
+            _compiled_lif_step = torch.compile(_core)
+        except Exception as e:
+            log.warning("torch.compile unavailable for fused LIF: %s", e)
+            _compiled_lif_step = _core
+    return _compiled_lif_step
+
+
+
 class TorchBackend(SimBackend):
-    """PyTorch backend: the weight matrix lives on the device (CUDA, ROCm or CPU) and the sparse product and state
-    update run there. The host arrays (sim.v, sim.refr, sim.spikes) stay the source of truth: they are uploaded at the
-    start of each step and written back at the end, so save states, the neural clamp and the inspector, which read and
-    write them directly, work unchanged. That costs ~1 MB of transfers per step."""
+    """PyTorch backend: state tensors (v, refr, spikes, noise bank) and weight matrix live on device
+    (CUDA, ROCm, or CPU) across steps for zero-copy simulation. Host arrays (sim.v, sim.refr, sim.spikes)
+    are synchronized on demand via sync_to_host() / sync_from_host()."""
 
     name = "torch"
 
@@ -207,7 +242,23 @@ class TorchBackend(SimBackend):
         super().__init__(sim)
         self.device_str = device
         self.tdev = None
+        self.tdt = None
         self.W_torch = None
+        self._W64 = None
+        self.v_dev = None
+        self.refr_dev = None
+        self.spikes_dev = None
+        self.s_float_dev = None
+        self.noise_dev = None
+        self._noise_id = None
+        # Hoisted parameter tensors
+        self._bias_tensor = None
+        self._leak_decay_tensor = None
+        self._leak_reset_tensor = None
+        self._v_reset_tensor = None
+        self._v_thresh_tensor = None
+        self._refr_steps_tensor = None
+        self._ext_gain_tensor = None
 
     def setup(self) -> None:
         if not _torch_available:
@@ -222,7 +273,25 @@ class TorchBackend(SimBackend):
         else:
             self.name = f"torch-{self.tdev.type}"
             self.device_name = f"PyTorch ({self.tdev.type})"
+        dt = self.sim.dtype
+        self.tdt = torch.float64 if dt is np.float64 else torch.float32
         self._upload_weights()
+        self._init_params()
+        self.sync_from_host()
+
+    def _init_params(self) -> None:
+        sim = self.sim
+        p = sim.p
+        dt = sim.dtype
+        dev = self.tdev
+        tdt = self.tdt
+        self._bias_tensor = torch.tensor(dt(p.bias), dtype=tdt, device=dev)
+        self._leak_decay_tensor = torch.tensor(dt(1.0 - sim.leak), dtype=tdt, device=dev)
+        self._leak_reset_tensor = torch.tensor(sim.leak * dt(p.v_reset), dtype=tdt, device=dev)
+        self._v_reset_tensor = torch.tensor(dt(p.v_reset), dtype=tdt, device=dev)
+        self._v_thresh_tensor = torch.tensor(dt(p.v_thresh), dtype=tdt, device=dev)
+        self._refr_steps_tensor = torch.tensor(int(p.refractory_steps), dtype=torch.int16, device=dev)
+        self._ext_gain_tensor = torch.tensor(dt(p.ext_gain), dtype=tdt, device=dev)
 
     def _upload_weights(self) -> None:
         csr = self.sim.W_csr
@@ -241,56 +310,587 @@ class TorchBackend(SimBackend):
         if self.W_torch is not None:
             self._upload_weights()
 
+    def sync_to_host(self) -> None:
+        if self.v_dev is not None:
+            self.sim.v[:] = self.v_dev.cpu().numpy()
+            self.sim.refr[:] = self.refr_dev.cpu().numpy()
+            self.sim.spikes[:] = self.spikes_dev.cpu().numpy()
+
+    def sync_from_host(self) -> None:
+        if self.tdev is not None:
+            sim = self.sim
+            dev = self.tdev
+            tdt = self.tdt or (torch.float64 if sim.dtype is np.float64 else torch.float32)
+            self.v_dev = torch.from_numpy(sim.v).to(dev, dtype=tdt)
+            self.refr_dev = torch.from_numpy(sim.refr).to(dev, dtype=torch.int16)
+            self.spikes_dev = torch.from_numpy(sim.spikes).to(dev, dtype=torch.bool)
+            self.s_float_dev = self.spikes_dev.to(self.W_torch.dtype if self.W_torch is not None else torch.float32).unsqueeze(1)
+            self.noise_dev = torch.from_numpy(sim._noise).to(dev, dtype=tdt)
+            self._noise_id = id(sim._noise)
+
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
         sim = self.sim
         p = sim.p
         dt = sim.dtype
-        tdt = torch.float64 if dt is np.float64 else torch.float32
+        tdt = self.tdt
         dev = self.tdev
         if self.W_torch is None or self.W_torch.values().numel() != sim.W_csr.nnz:
-            self._upload_weights()                   # the matrix object was replaced (mirror weights, a new wiring)
+            self._upload_weights()
+        if self.v_dev is None:
+            self.sync_from_host()
+        if self._noise_id != id(sim._noise):
+            self.noise_dev = torch.from_numpy(sim._noise).to(dev, dtype=tdt)
+            self._noise_id = id(sim._noise)
 
-        # The same operations in the same order and precision as CPUBackend. A CSR row product adds a row's inputs in
-        # column order, which is the order the CPU's column gather adds them in, so on the CPU device the result is
-        # bit-exact. GPU sparse kernels may sum in a different order: see docs on determinism across backends.
-        # The reference sums a sparse step's inputs in float32 (its column path) but a busy step's (more than
-        # sparse_path_max_active firing) in the state dtype (its dense path); follow it, or float64 runs drift.
-        dense64 = tdt == torch.float64 and np.count_nonzero(sim.spikes) > p.sparse_path_max_active * self.n
+        dense64 = (tdt == torch.float64) and (self.spikes_dev.sum().item() > p.sparse_path_max_active * self.n)
         if dense64 and getattr(self, "_W64", None) is None:
             self._W64 = self.W_torch.to(torch.float64)
         W = self._W64 if dense64 else self.W_torch
-        s_float = torch.from_numpy(sim.spikes).to(dev).to(W.dtype).unsqueeze(1)
+
+        s_float = self.spikes_dev.to(W.dtype).unsqueeze(1)
         i_syn = torch.sparse.mm(W, s_float).squeeze(1)
-        drive = i_syn.to(tdt) * torch.tensor(dt(sim.gain), device=dev)
-        drive += torch.tensor(dt(p.bias), device=dev)
         off = int(sim.rng.integers(0, sim._noise.size - self.n))
-        drive += torch.from_numpy(sim._noise[off:off + self.n]).to(dev)
-        if sensory_input is not None:
-            sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev)
-            if p.ext_gain == 1.0:
-                drive += sens.to(tdt)
-            else:
-                drive += (torch.tensor(dt(p.ext_gain), device=dev) * sens).to(tdt)
 
-        v = torch.from_numpy(sim.v).to(dev)
-        refr = torch.from_numpy(sim.refr).to(dev)
-        v = v * torch.tensor(dt(1.0 - sim.leak), device=dev)
-        if p.v_reset:
-            v += torch.tensor(sim.leak * dt(p.v_reset), device=dev)
-        v += drive
-        v_reset = torch.tensor(dt(p.v_reset), device=dev)
-        refr_mask = refr > 0
-        v = torch.where(refr_mask, v_reset, v)
-        refr = torch.where(refr_mask, refr - 1, refr)
-        spikes = v >= torch.tensor(dt(p.v_thresh), device=dev)
-        v = torch.where(spikes, v_reset, v)
-        refr = torch.where(spikes, torch.tensor(int(p.refractory_steps), dtype=refr.dtype, device=dev), refr)
+        if getattr(p, "fuse_lif", False):
+            fused_fn = _get_compiled_lif_step()
+            sens = None
+            if sensory_input is not None:
+                sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
+            v, refr, spikes = fused_fn(
+                self.v_dev, self.refr_dev, i_syn.to(tdt), sim.gain, self._bias_tensor,
+                self.noise_dev[off:off + self.n], sens, p.ext_gain, self._leak_decay_tensor,
+                self._leak_reset_tensor if p.v_reset else torch.zeros(1, dtype=tdt, device=dev),
+                self._v_reset_tensor, self._v_thresh_tensor, self._refr_steps_tensor
+            )
+        else:
+            drive = i_syn.to(tdt) * sim.gain
+            drive += self._bias_tensor
+            drive += self.noise_dev[off:off + self.n]
 
-        sim.v[:] = v.cpu().numpy()
-        sim.refr[:] = refr.cpu().numpy()
+            if sensory_input is not None:
+                sens = torch.from_numpy(np.ascontiguousarray(sensory_input)).to(dev, dtype=tdt)
+                if p.ext_gain == 1.0:
+                    drive += sens
+                else:
+                    drive += self._ext_gain_tensor * sens
+
+            v = self.v_dev * self._leak_decay_tensor
+            if p.v_reset:
+                v += self._leak_reset_tensor
+            v += drive
+
+            refr_mask = self.refr_dev > 0
+            v = torch.where(refr_mask, self._v_reset_tensor, v)
+            refr = torch.where(refr_mask, self.refr_dev - 1, self.refr_dev)
+
+            spikes = v >= self._v_thresh_tensor
+            v = torch.where(spikes, self._v_reset_tensor, v)
+            refr = torch.where(spikes, self._refr_steps_tensor, refr)
+
+        self.v_dev = v
+        self.refr_dev = refr
+        self.spikes_dev = spikes
+
         spikes_np = spikes.cpu().numpy()
         sim.spikes = spikes_np
         return spikes_np
+
+    @classmethod
+    def step_batch(cls, sims: list[Any], sensory_inputs: list[np.ndarray | None] | None = None) -> list[np.ndarray]:
+        """Advance a batch of LIF simulations on GPU with a single batched SpMM multiplication."""
+        if not sims:
+            return []
+        if len(sims) == 1:
+            sens = sensory_inputs[0] if sensory_inputs else None
+            return [sims[0].step(sens)]
+
+        backends = [s.backend for s in sims]
+        for b in backends:
+            if b.v_dev is None:
+                b.sync_from_host()
+            if b._noise_id != id(b.sim._noise):
+                b.noise_dev = torch.from_numpy(b.sim._noise).to(b.tdev, dtype=b.tdt)
+                b._noise_id = id(b.sim._noise)
+
+        # Group simulations by weight tensor for batched SpMM
+        groups: dict[Any, list[int]] = {}
+        for idx, b in enumerate(backends):
+            w = b.W_torch
+            groups.setdefault(w, []).append(idx)
+
+        i_syn_list = [None] * len(sims)
+        for w, indices in groups.items():
+            if len(indices) == 1:
+                idx = indices[0]
+                b = backends[idx]
+                s_float = b.spikes_dev.to(w.dtype).unsqueeze(1)
+                i_syn_list[idx] = torch.sparse.mm(w, s_float).squeeze(1)
+            else:
+                stacked_spikes = torch.stack([backends[idx].spikes_dev.to(w.dtype) for idx in indices], dim=1)
+                batched_out = torch.sparse.mm(w, stacked_spikes)
+                for col, idx in enumerate(indices):
+                    i_syn_list[idx] = batched_out[:, col]
+
+        results = []
+        for idx, (sim, b) in enumerate(zip(sims, backends)):
+            p = sim.p
+            tdt = b.tdt
+            dev = b.tdev
+            i_syn = i_syn_list[idx]
+            drive = i_syn.to(tdt) * sim.gain
+            drive += b._bias_tensor
+            off = int(sim.rng.integers(0, sim._noise.size - sim.n))
+            drive += b.noise_dev[off:off + sim.n]
+
+            sens = sensory_inputs[idx] if sensory_inputs else None
+            if sens is not None:
+                sens_t = torch.from_numpy(np.ascontiguousarray(sens)).to(dev, dtype=tdt)
+                if p.ext_gain == 1.0:
+                    drive += sens_t
+                else:
+                    drive += b._ext_gain_tensor * sens_t
+
+            v = b.v_dev * b._leak_decay_tensor
+            if p.v_reset:
+                v += b._leak_reset_tensor
+            v += drive
+
+            refr_mask = b.refr_dev > 0
+            v = torch.where(refr_mask, b._v_reset_tensor, v)
+            refr = torch.where(refr_mask, b.refr_dev - 1, b.refr_dev)
+
+            spikes = v >= b._v_thresh_tensor
+            v = torch.where(spikes, b._v_reset_tensor, v)
+            refr = torch.where(spikes, b._refr_steps_tensor, refr)
+
+            b.v_dev = v
+            b.refr_dev = refr
+            b.spikes_dev = spikes
+
+            spikes_np = spikes.cpu().numpy()
+            sim.spikes = spikes_np
+
+            fired = int(np.count_nonzero(spikes_np))
+            sim.spike_total += fired
+            frac = fired / sim.n
+            err = (sim.target_p - frac) / max(sim.target_p, 1e-9)
+            sim.gain = float(np.clip(sim.gain * np.exp(p.gain_adapt * np.clip(err, -1, 1)), *p.gain_bounds))
+            sim.activity.push(spikes_np)
+            results.append(spikes_np)
+
+        return results
+
+
+# --- ModernGL Compute Shader Backend (Vendor-Neutral GPU) --------------------
+_moderngl_available = False
+try:
+    import moderngl
+    _moderngl_available = True
+except ImportError:
+    moderngl = None
+
+
+class _GLContextBinder:
+    """Helper to bind ModernGL standalone contexts across worker threads (EGL, GLX, WGL)."""
+
+    def __init__(self) -> None:
+        self._libegl = None
+        self._libgl = None
+        self._libwgl = None
+        import ctypes
+        import sys
+
+        try:
+            libegl = ctypes.CDLL("libEGL.so.1")
+            libegl.eglGetCurrentContext.restype = ctypes.c_void_p
+            libegl.eglGetCurrentDisplay.restype = ctypes.c_void_p
+            libegl.eglMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            libegl.eglMakeCurrent.restype = ctypes.c_bool
+            self._libegl = libegl
+        except Exception:
+            pass
+
+        try:
+            libgl = ctypes.CDLL("libGL.so.1")
+            libgl.glXGetCurrentContext.restype = ctypes.c_void_p
+            libgl.glXGetCurrentDisplay.restype = ctypes.c_void_p
+            libgl.glXMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            libgl.glXMakeCurrent.restype = ctypes.c_bool
+            self._libgl = libgl
+        except Exception:
+            pass
+
+        if sys.platform == "win32":
+            try:
+                opengl32 = ctypes.windll.opengl32
+                opengl32.wglGetCurrentContext.restype = ctypes.c_void_p
+                opengl32.wglGetCurrentDC.restype = ctypes.c_void_p
+                opengl32.wglMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                opengl32.wglMakeCurrent.restype = ctypes.c_bool
+                self._libwgl = opengl32
+            except Exception:
+                pass
+
+    def capture_current(self):
+        if self._libegl:
+            ctx = self._libegl.eglGetCurrentContext()
+            if ctx:
+                return ("egl", self._libegl.eglGetCurrentDisplay(), ctx)
+        if self._libgl:
+            ctx = self._libgl.glXGetCurrentContext()
+            if ctx:
+                return ("glx", self._libgl.glXGetCurrentDisplay(), ctx)
+        if self._libwgl:
+            ctx = self._libwgl.wglGetCurrentContext()
+            if ctx:
+                return ("wgl", self._libwgl.wglGetCurrentDC(), ctx)
+        return None
+
+    def make_current(self, handle) -> None:
+        if not handle:
+            return
+        kind = handle[0]
+        if kind == "egl":
+            self._libegl.eglMakeCurrent(handle[1], None, None, handle[2])
+        elif kind == "glx":
+            self._libgl.glXMakeCurrent(handle[1], 0, handle[2])
+        elif kind == "wgl":
+            self._libwgl.wglMakeCurrent(handle[1], handle[2])
+
+    def release_current(self, handle) -> None:
+        if not handle:
+            return
+        kind = handle[0]
+        if kind == "egl":
+            self._libegl.eglMakeCurrent(handle[1], None, None, None)
+        elif kind == "glx":
+            self._libgl.glXMakeCurrent(handle[1], 0, None)
+        elif kind == "wgl":
+            self._libwgl.wglMakeCurrent(handle[1], None)
+
+
+_context_binder = _GLContextBinder()
+
+
+def _create_gl_context():
+    """A standalone compute context, EGL for preference.
+
+    The game's window already holds a GLX context on the main thread, and a brain steps on a thread of its own.
+    A second GLX context goes through the same Xlib display connection, and Mesa answers the worker thread's
+    glXMakeCurrent with BadAccess, which takes the process down. An EGL context carries its own connection and
+    is not affected. Where EGL is missing (older Mesa, and Windows, which uses WGL) the plain context is fine:
+    there the second context does not share a display connection to begin with.
+    """
+    last: Exception | None = None
+    for kwargs in ({"standalone": True, "backend": "egl"}, {"standalone": True}):
+        try:
+            return moderngl.create_context(**kwargs)
+        except Exception as e:
+            last = e
+    raise RuntimeError(f"Failed to create ModernGL context: {last}")
+
+
+def _gl_compute_available() -> tuple[bool, str]:
+    """Whether OpenGL 4.3+ compute shaders are supported here.
+
+    Creating a context makes it current, and releasing it leaves the calling thread with none, so the caller's
+    own context is captured and put back around the probe. get_max_flies() asks this from the main thread,
+    where the 3D renderer's context is the one that must survive.
+    """
+    if not _moderngl_available:
+        return False, "ModernGL is not installed"
+    binder = _GLContextBinder()
+    saved = binder.capture_current()
+    try:
+        ctx = _create_gl_context()
+        ver = ctx.version_code / 100.0
+        if ctx.version_code < 430:
+            ctx.release()
+            return False, f"OpenGL {ver:.1f} < 4.3 (Compute shaders not supported)"
+        renderer = ctx.info.get("GL_RENDERER", "OpenGL GPU")
+        ctx.release()
+        return True, f"OpenGL {ver:.1f}: {renderer}"
+    except Exception as e:
+        return False, f"OpenGL context creation failed: {e}"
+    finally:
+        binder.make_current(saved)
+
+
+_SPMV_COMPUTE_SHADER = """
+#version 430
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer BRowPtr { uint row_ptr[]; };
+layout(std430, binding = 1) readonly buffer BColInd { uint col_ind[]; };
+layout(std430, binding = 2) readonly buffer BValues { float values[]; };
+layout(std430, binding = 5) readonly buffer BSpikes { uint spikes[]; };
+layout(std430, binding = 8) writeonly buffer BISyn   { float i_syn[]; };
+uniform uint num_neurons;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= num_neurons) return;
+    uint start = row_ptr[i];
+    uint end = row_ptr[i + 1];
+    float sum = 0.0;
+    for (uint idx = start; idx < end; ++idx) {
+        if (spikes[col_ind[idx]] != 0u) {
+            sum += values[idx];
+        }
+    }
+    i_syn[i] = sum;
+}
+"""
+
+_LIF_COMPUTE_SHADER = """
+#version 430
+layout(local_size_x = 64) in;
+layout(std430, binding = 3) buffer BV       { float v[]; };
+layout(std430, binding = 4) buffer BRefr    { int refr[]; };
+layout(std430, binding = 5) buffer BSpikes  { uint spikes[]; };
+layout(std430, binding = 6) readonly buffer BNoise   { float noise[]; };
+layout(std430, binding = 7) readonly buffer BSens    { float sensory[]; };
+layout(std430, binding = 8) readonly buffer BISyn    { float i_syn[]; };
+
+uniform uint num_neurons;
+uniform uint noise_offset;
+uniform float gain;
+uniform float bias;
+uniform float ext_gain;
+uniform float leak_decay;
+uniform float leak_reset;
+uniform float v_reset;
+uniform float v_thresh;
+uniform int refr_steps;
+uniform int has_sensory;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= num_neurons) return;
+
+    float drive = i_syn[i] * gain + bias + noise[noise_offset + i];
+    if (has_sensory != 0) {
+        drive += sensory[i] * ext_gain;
+    }
+
+    float v_val = v[i] * leak_decay + leak_reset + drive;
+    int r = refr[i];
+    if (r > 0) {
+        v_val = v_reset;
+        r -= 1;
+    }
+
+    if (v_val >= v_thresh) {
+        spikes[i] = 1u;
+        v[i] = v_reset;
+        refr[i] = refr_steps;
+    } else {
+        spikes[i] = 0u;
+        v[i] = v_val;
+        refr[i] = r;
+    }
+}
+"""
+
+
+class GLBackend(SimBackend):
+    """ModernGL compute shader backend: vendor-neutral GPU acceleration using OpenGL 4.3+ compute shaders and SSBOs.
+    Runs on AMD, NVIDIA, and Intel GPUs across Linux and Windows without requiring PyTorch."""
+
+    name = "gl"
+
+    def __init__(self, sim: Any) -> None:
+        super().__init__(sim)
+        self.ctx = None
+        self.cs_spmv = None
+        self.cs_lif = None
+        self.buf_rowptr = None
+        self.buf_colind = None
+        self.buf_values = None
+        self.buf_v = None
+        self.buf_refr = None
+        self.buf_spikes = None
+        self.buf_noise = None
+        self.buf_sens = None
+        self.buf_isyn = None
+        self.num_groups = (self.n + 63) // 64
+        self._noise_id = None
+        self._thread_id = None
+        self._fallback: SimBackend | None = None
+
+    def setup(self) -> None:
+        if not _moderngl_available:
+            raise RuntimeError("ModernGL is not installed")
+        ok, dev = _gl_compute_available()
+        if not ok:
+            raise RuntimeError(dev)
+        self.device_name = dev
+        # The device is built on first use, on whichever thread steps this brain. A GL context belongs to the
+        # thread it was made current on, and a brain is constructed on the main thread but stepped on its own.
+
+    def _init_device(self) -> None:
+        import threading
+        me = threading.get_ident()
+        if self.ctx is not None:
+            if self._thread_id == me:
+                try:
+                    self.ctx.release()
+                except Exception:
+                    pass
+            # Otherwise the context belongs to another thread: releasing it from here is itself a
+            # glXMakeCurrent, and the BadAccess that follows is fatal. Drop it and let it go with its thread.
+            self.ctx = None
+        self._thread_id = me
+
+        self.ctx = _create_gl_context()
+
+        if self.ctx.version_code < 430:
+            ver = self.ctx.version_code / 100.0
+            self.ctx.release()
+            self.ctx = None
+            raise RuntimeError(f"OpenGL {ver:.1f} does not support compute shaders (OpenGL 4.3+ required)")
+
+        csr = self.sim.W_csr
+        self.buf_rowptr = self.ctx.buffer(csr.indptr.astype(np.uint32).tobytes())
+        self.buf_colind = self.ctx.buffer(csr.indices.astype(np.uint32).tobytes())
+        self.buf_values = self.ctx.buffer(csr.data.astype(np.float32).tobytes())
+
+        self.buf_v = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_refr = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_spikes = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_noise = self.ctx.buffer(self.sim._noise.astype(np.float32).tobytes())
+        self._noise_id = id(self.sim._noise)
+        self.buf_sens = self.ctx.buffer(reserve=self.n * 4)
+        self.buf_isyn = self.ctx.buffer(reserve=self.n * 4)
+
+        self.cs_spmv = self.ctx.compute_shader(_SPMV_COMPUTE_SHADER)
+        self.cs_lif = self.ctx.compute_shader(_LIF_COMPUTE_SHADER)
+
+        self.buf_rowptr.bind_to_storage_buffer(0)
+        self.buf_colind.bind_to_storage_buffer(1)
+        self.buf_values.bind_to_storage_buffer(2)
+        self.buf_v.bind_to_storage_buffer(3)
+        self.buf_refr.bind_to_storage_buffer(4)
+        self.buf_spikes.bind_to_storage_buffer(5)
+        self.buf_noise.bind_to_storage_buffer(6)
+        self.buf_sens.bind_to_storage_buffer(7)
+        self.buf_isyn.bind_to_storage_buffer(8)
+
+        self.cs_spmv["num_neurons"] = self.n
+        self.cs_lif["num_neurons"] = self.n
+        self._init_uniforms()
+        self.sync_from_host()
+
+    def _ensure_thread(self) -> None:
+        import threading
+        if self.ctx is None or self._thread_id != threading.get_ident():
+            self._init_device()
+
+    def _degrade(self, exc: Exception) -> SimBackend:
+        """Hand this brain to the CPU backend after a GL failure, rather than killing the thread it steps on.
+
+        setup() cannot catch these: the context comes up on the main thread, and the failures land later on the
+        brain's own thread, where create_backend's fallback is long gone. v/refr/spikes keep whatever the last
+        sync left on the host, so the fly carries on from there.
+        """
+        log.warning("the OpenGL compute backend failed (%s: %s); this brain falls back to the CPU backend",
+                    type(exc).__name__, exc)
+        self._fallback = CPUBackend(self.sim)
+        self._fallback.setup()
+        self.ctx = None
+        self.name = CPUBackend.name
+        self.device_name = CPUBackend.device_name
+        return self._fallback
+
+    def _init_uniforms(self) -> None:
+        p = self.sim.p
+        sim = self.sim
+        self.cs_lif["bias"] = float(p.bias)
+        self.cs_lif["ext_gain"] = float(p.ext_gain)
+        self.cs_lif["leak_decay"] = float(1.0 - sim.leak)
+        self.cs_lif["leak_reset"] = float(sim.leak * p.v_reset) if p.v_reset else 0.0
+        self.cs_lif["v_reset"] = float(p.v_reset)
+        self.cs_lif["v_thresh"] = float(p.v_thresh)
+        self.cs_lif["refr_steps"] = int(p.refractory_steps)
+
+    def on_weights_changed(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.on_weights_changed()
+        self._ensure_thread()
+        with self.ctx:
+            if self.buf_values is not None:
+                self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
+
+    def sync_to_host(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.sync_to_host()
+        self._ensure_thread()
+        with self.ctx:
+            if self.buf_v is not None:
+                self.ctx.memory_barrier(moderngl.BUFFER_UPDATE_BARRIER_BIT)
+                self.ctx.finish()
+                self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
+                self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
+                self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
+
+    def sync_from_host(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.sync_from_host()
+        self._ensure_thread()
+        with self.ctx:
+            if self.buf_v is not None:
+                self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
+                self.buf_refr.write(self.sim.refr.astype(np.int32).tobytes())
+                self.buf_spikes.write(self.sim.spikes.astype(np.uint32).tobytes())
+                if self._noise_id != id(self.sim._noise):
+                    self.buf_noise.write(self.sim._noise.astype(np.float32).tobytes())
+                    self._noise_id = id(self.sim._noise)
+
+    def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
+        if self._fallback is not None:
+            return self._fallback.step(sensory_input)
+        try:
+            self._ensure_thread()
+            # The 3D renderer holds a ModernGL context of its own, so this one is not necessarily the current
+            # context when the brain thread gets here. Left unmade-current the GL calls go to the renderer's
+            # context instead and the readback fails with "cannot map the buffer".
+            with self.ctx:
+                return self._step_gl(sensory_input)
+        except Exception as e:
+            return self._degrade(e).step(sensory_input)
+
+    def _step_gl(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
+        sim = self.sim
+        if self._noise_id != id(sim._noise):
+            self.buf_noise.write(sim._noise.astype(np.float32).tobytes())
+            self._noise_id = id(sim._noise)
+
+        # 1. Sparse SpMV propagation
+        self.cs_spmv.run(self.num_groups)
+        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+
+        # 2. Sensory input upload if active
+        if sensory_input is not None:
+            self.buf_sens.write(np.ascontiguousarray(sensory_input, dtype=np.float32).tobytes())
+            self.cs_lif["has_sensory"] = 1
+        else:
+            self.cs_lif["has_sensory"] = 0
+
+        # 3. LIF elementwise update
+        off = int(sim.rng.integers(0, sim._noise.size - self.n))
+        self.cs_lif["noise_offset"] = off
+        self.cs_lif["gain"] = float(sim.gain)
+        self.cs_lif.run(self.num_groups)
+        # SHADER_STORAGE orders the next shader's view of these buffers. Reading one back on the host is a
+        # different hazard and needs BUFFER_UPDATE too; without it the map is undefined and Mesa refuses it
+        # outright ("cannot map the buffer"). finish() then waits for the write actually to land.
+        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT | moderngl.BUFFER_UPDATE_BARRIER_BIT)
+        self.ctx.finish()
+
+        # 4. Read spikes
+        spikes_raw = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32)
+        spikes = spikes_raw.astype(bool)
+        sim.spikes = spikes
+        return spikes
 
 
 def detect_available_backends() -> dict[str, str]:
@@ -298,6 +898,9 @@ def detect_available_backends() -> dict[str, str]:
     avail = {"cpu": CPUBackend.device_name}
     if _numba_available:
         avail["numba"] = NumbaBackend.device_name
+    ok, gl_dev = _gl_compute_available()
+    if ok:
+        avail["gl"] = gl_dev
     if _torch_available:
         avail["torch-cpu"] = "PyTorch (cpu)"
         kind = _torch_gpu_kind()
@@ -323,12 +926,16 @@ def _try(make, label: str) -> SimBackend | None:
 def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
     """The requested backend, or the best one available for 'auto', falling back to the NumPy CPU backend.
     The returned backend's .name is what actually runs (e.g. 'torch-rocm' when 'torch-cuda' was asked for on a ROCm
-    build of PyTorch, or 'cpu' after a fallback), and that is what gets recorded everywhere."""
+    build of PyTorch, 'gl' for OpenGL Compute, or 'cpu' after a fallback), and that is what gets recorded everywhere."""
     choice = (backend_choice or "auto").lower()
     b: SimBackend | None = None
     if choice == "auto":
         if _torch_gpu_kind():
             b = _try(lambda: TorchBackend(sim, "cuda:0"), "PyTorch GPU")
+        # 'gl' is deliberately not in the auto chain. on_weights_changed re-uploads the whole 41 MB weight
+        # buffer, and the mushroom body's plasticity fires every 10 steps, so a GL brain moves ~740 MB/s across
+        # the bus and the game never finishes waking the fly up. It is measurably slower than NumPy even without
+        # that (2.35 vs 1.41 ms/step on a 9070 XT). Ask for it with --backend gl if you want to work on it.
         if b is None and _numba_available:
             b = _try(lambda: NumbaBackend(sim), "Numba")
     elif choice in ("torch-cuda", "torch-rocm"):
@@ -347,6 +954,11 @@ def create_backend(sim: Any, backend_choice: str = "auto") -> SimBackend:
             log.warning("torch-cpu requested but PyTorch is not installed; using the CPU backend")
         else:
             b = _try(lambda: TorchBackend(sim, "cpu"), "PyTorch CPU")
+    elif choice == "gl":
+        if not _moderngl_available:
+            log.warning("gl requested but ModernGL is not installed; using the CPU backend")
+        else:
+            b = _try(lambda: GLBackend(sim), "OpenGL Compute")
     elif choice == "numba":
         if not _numba_available:
             log.warning("numba requested but Numba is not installed; using the CPU backend")

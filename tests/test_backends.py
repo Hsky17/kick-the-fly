@@ -13,9 +13,10 @@ pytestmark = needs_pack
 
 AVAIL = backends.detect_available_backends()
 EXACT = [b for b in ("cpu", "numba", "torch-cpu") if b in AVAIL]
-GPU = [b for b in ("torch-cuda", "torch-rocm") if b in AVAIL]
+GPU = [b for b in ("torch-cuda", "torch-rocm", "gl") if b in AVAIL]
+TORCH_GPU = [b for b in ("torch-cuda", "torch-rocm") if b in AVAIL]
 EXPECT_CLASS = {"cpu": backends.CPUBackend, "numba": backends.NumbaBackend, "torch-cpu": backends.TorchBackend,
-                "torch-cuda": backends.TorchBackend, "torch-rocm": backends.TorchBackend}
+                "torch-cuda": backends.TorchBackend, "torch-rocm": backends.TorchBackend, "gl": backends.GLBackend}
 
 
 def _run(backend: str, steps: int, dtype: str = "float32", seed: int = 42, dense: bool = False):
@@ -56,6 +57,80 @@ def test_unknown_or_missing_backend_falls_back_to_cpu():
         assert backends.create_backend(sim, "torch-cuda").name == "cpu"      # recorded as what actually ran
 
 
+def test_gl_version_below_430_fallback(monkeypatch):
+    class MockCtx:
+        version_code = 330
+        info = {"GL_RENDERER": "Mesa OpenGL 3.3"}
+        def release(self): pass
+
+    monkeypatch.setattr(backends, "_moderngl_available", True)
+    monkeypatch.setattr(backends.moderngl, "create_context", lambda **kwargs: MockCtx())
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "3.3 < 4.3" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_gl_context_creation_failure_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_moderngl_available", True)
+    def _fail(**kwargs):
+        raise RuntimeError("No headless OpenGL display / EGL device found")
+    monkeypatch.setattr(backends.moderngl, "create_context", _fail)
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "failed" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_missing_moderngl_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_moderngl_available", False)
+    ok, msg = backends._gl_compute_available()
+    assert not ok
+    assert "not installed" in msg
+
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    b = backends.create_backend(sim, "gl")
+    assert b.name == "cpu"
+
+
+def test_missing_torch_fallback(monkeypatch):
+    monkeypatch.setattr(backends, "_torch_available", False)
+    monkeypatch.setattr(backends, "_torch_gpu_kind", lambda: None)
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+    assert backends.create_backend(sim, "torch-cuda").name == "cpu"
+    assert backends.create_backend(sim, "torch-rocm").name == "cpu"
+    assert backends.create_backend(sim, "torch-cpu").name == "cpu"
+
+
+def test_auto_backend_hierarchy(monkeypatch):
+    _, W, _ = simcore.pack()
+    sim = LIFSim(None, LIFParams(), W_in=W, seed=42)
+
+    # When Torch GPU is unavailable and ModernGL is unavailable, fallback to Numba if available, else CPU
+    monkeypatch.setattr(backends, "_torch_gpu_kind", lambda: None)
+    monkeypatch.setattr(backends, "_moderngl_available", False)
+    b = backends.create_backend(sim, "auto")
+    if backends._numba_available:
+        assert b.name == "numba"
+    else:
+        assert b.name == "cpu"
+
+    # When all accelerators are disabled, auto falls back to CPU
+    monkeypatch.setattr(backends, "_numba_available", False)
+    b_cpu = backends.create_backend(sim, "auto")
+    assert b_cpu.name == "cpu"
+
+
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 @pytest.mark.parametrize("name", [b for b in EXACT if b != "cpu"])
 def test_cpu_side_backends_are_bit_exact(name, dtype):
@@ -63,6 +138,7 @@ def test_cpu_side_backends_are_bit_exact(name, dtype):
     fastmath Numba kernel first differed at step 289 and then decorrelated completely."""
     ref_sim, ref = _run("cpu", 1000, dtype)
     sim, got = _run(name, 1000, dtype)
+    sim.backend.sync_to_host()
     assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
     assert np.array_equal(sim.v, ref_sim.v) and np.array_equal(sim.refr, ref_sim.refr)
     assert sim.gain == ref_sim.gain
@@ -74,6 +150,7 @@ def test_cpu_side_backends_are_bit_exact_on_the_dense_path(name, dtype):
     """The reference sums busy steps' inputs in the state dtype and sparse ones in float32; both paths must match."""
     ref_sim, ref = _run("cpu", 300, dtype, dense=True)
     sim, got = _run(name, 300, dtype, dense=True)
+    sim.backend.sync_to_host()
     assert np.array_equal(got, ref), f"{name} differs from cpu in {int((got != ref).sum())} spikes"
     assert np.array_equal(sim.v, ref_sim.v), "membrane potentials differ (a last-bit rounding difference)"
 
@@ -98,6 +175,7 @@ def test_host_state_writes_reach_the_backend(name):
         sim.step()
     quiet = np.flatnonzero(~sim.spikes & (sim.refr == 0))[:50]
     sim.v[quiet] = sim.p.v_thresh * 10                        # force them over threshold
+    sim.backend.sync_from_host()
     assert sim.step()[quiet].all()
 
 
@@ -126,3 +204,58 @@ def test_headless_backend_and_dtype_reach_worker_processes(monkeypatch):
     from kickthefly.game import kick_the_fly as k
     args = k.parse_args(["--dtype", "float64", "--backend", "numba"])
     assert (args.dtype, args.backend) == ("float64", "numba")
+
+
+@pytest.mark.parametrize("name", TORCH_GPU)
+def test_batched_multi_fly_plasticity_identical(name):
+    """Assert that a trained fly's KC->MBON plastic weights after N conditioning pairings
+    are 100% identical between unbatched and batched multi-fly GPU execution."""
+    from kickthefly.core import memory
+    g, W, _ = simcore.pack()
+
+    def run_conditioning(batched: bool):
+        sim1 = LIFSim(None, LIFParams(backend=name), W_in=W.copy(), seed=42)
+        sim2 = LIFSim(None, LIFParams(backend=name), W_in=W.copy(), seed=99)
+        mem1 = memory.Memory(g, sim1, load=False)
+        odor_pattern = np.zeros(g.n, np.float32)
+        odor_pattern[mem1.kc[:50]] = 5.0
+        shock_drive = np.zeros(g.n, np.float32)
+        shock_drive[mem1.dan[:20]] = 8.0
+
+        for trial in range(6):
+            # Odor presentation (5 steps)
+            for _ in range(5):
+                if batched:
+                    backends.TorchBackend.step_batch([sim1, sim2], [odor_pattern, None])
+                else:
+                    sim1.step(odor_pattern)
+                    sim2.step(None)
+            # Shock (dopamine activation, 5 steps)
+            for _ in range(5):
+                if batched:
+                    backends.TorchBackend.step_batch([sim1, sim2], [shock_drive, None])
+                else:
+                    sim1.step(shock_drive)
+                    sim2.step(None)
+            mem1.step(sim1.activity.rates(), calm=False, steps=(trial + 1) * 10)
+        return mem1.w.copy(), sim1.spikes.copy()
+
+    w_unbatched, sp_unbatched = run_conditioning(False)
+    w_batched, sp_batched = run_conditioning(True)
+
+    assert np.array_equal(w_unbatched, w_batched), "KC->MBON weights differ between batched and unbatched!"
+    assert np.array_equal(sp_unbatched, sp_batched), "Spikes differ between batched and unbatched!"
+
+
+@pytest.mark.parametrize("name", TORCH_GPU)
+def test_fused_lif_kernel_toggle(name):
+    """Test that the fused LIF kernel toggle runs correctly and matches statistical tolerance."""
+    _, W, _ = simcore.pack()
+    lp = LIFParams(backend=name, fuse_lif=True)
+    sim = LIFSim(None, lp, W_in=W, seed=7)
+    for _ in range(50):
+        sim.step()
+    assert sim.spikes.shape == (sim.n,)
+    assert sim.spikes.dtype == bool
+
+

@@ -132,6 +132,8 @@ def run_neural_clamp(
         br_mod.sim.spikes[forced] = True
         br_mod.sim.v[forced] = br_mod.sim.p.v_reset
         br_mod.sim.refr[forced] = br_mod.sim.p.refractory_steps
+        if getattr(br_mod.sim, "backend", None) is not None:
+            br_mod.sim.backend.sync_from_host()
         
         # Advance simulation step (override drive applied if surgery active)
         drv = br_mod.override if br_mod.surgery else None

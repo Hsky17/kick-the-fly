@@ -1,6 +1,16 @@
 # Changelog
 
-## 2.8.2 (2026-09-19)
+## 2.8.3 (2026-09-20)
+
+### Added
+- **ModernGL compute shader backend (`gl`, experimental)**: Vendor-neutral OpenGL 4.3+ compute shaders (`cs_spmv`, `cs_lif`) over SSBOs, bit-exact with the CPU path and needing no PyTorch. Not chosen by `auto` and not yet a speedup: reading the spike buffer back each step costs more than the compute saves (2.35 ms/step against NumPy's 1.41 on a Radeon RX 9070 XT), and plasticity re-uploads the whole 41 MB weight buffer every 10 steps. Select it with `--backend gl`.
+- **Zero-copy device-resident state**: Membrane potentials, refractory counters, spike buffers, and pre-scaled noise buffers remain resident in VRAM across simulation steps in `TorchBackend` and `GLBackend`, dropping single-fly latency by ~1.9x.
+- **Batched multi-fly SpMM (`torch-rocm`, `torch-cuda`)**: Streams the connectome sparse matrix once per step across N flies, achieving ~0.32 ms/fly step latency with 32 concurrent flies.
+- **Fused LIF kernel execution**: Added optional `fuse_lif` torch.compile elementwise kernel fusion.
+- **Simulation telemetry & latency metrics**: Added per-fly uncapped step latency (ms) across `--benchmark` reports, JSON exports, and the Lab simulation benchmark dashboard.
+- **Dynamic Fly Cap**: PyTorch GPU backends scale to 32–64 concurrent flies; Numba scales with core count.
+
+## 2.8.2 (2026-09-20)
 
 ### Fixed
 - **The game crashed when a second sugar pile, alcohol drop or bomb was used up** ("The truth value of an array with

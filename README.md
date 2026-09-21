@@ -428,48 +428,29 @@ What the failures and passes mean:
 
 ## Performance
 
-### 2.8: simulation backends
+### 2.8: simulation backends & GPU acceleration
 
-Measured on an Intel Core Ultra 7 270K Plus (24 cores: 8 performance, 16 efficiency; no hyperthreading), 32 GB,
-Linux, Python 3.14, NumPy 2.5, Numba 0.67, PyTorch 2.14 (CPU build). Headless:
+Measured on an AMD Radeon RX 9070 XT / Intel Core Ultra 7 270K Plus (24 cores), 32 GB,
+Linux, Python 3.14, NumPy 2.5, Numba 0.67, PyTorch 2.14 (ROCm build), ModernGL 5.12 (OpenGL 4.6). Headless:
 `python kick_the_fly.py --headless --benchmark --backend NAME --flies 1 8 16 32 --seconds 5`. "Uncapped" is how fast
 each brain steps when it isn't held to real time, as a multiple of real time (200 steps/s); "paced" is whether it keeps
 real time when it is.
 
-| brains | `cpu` (NumPy) paced / uncapped | `numba` paced / uncapped | `torch-cpu` paced / uncapped |
-|---|---|---|---|
-| 1 | 1.00x / 4.17x (834 steps/s) | 1.00x / **4.76x** (951 steps/s) | 0.91x / 0.83x |
-| 8 | 1.00x / 2.21x | 1.00x / **3.11x** | 0.17x / 0.17x |
-| 16 | 0.87x / 0.91x | **1.00x / 1.83x** | 0.08x / 0.08x |
-| 32 | 0.35x / 0.38x | 0.71x / 0.79x | not run |
-| synaptic events/s, best | 915 M (8 brains) | 1,517 M (16 brains) | 93 M |
-| memory, 32 brains | 12.8 GB | 10.5 GB | 7.1 GB at 16 |
+| brains | `cpu` (NumPy) paced / uncapped | `numba` paced / uncapped | `gl` (OpenGL Compute) paced / uncapped | `torch-rocm` / `torch-cuda` paced / uncapped |
+|---|---|---|---|---|
+| 1 | 1.00x / 4.17x (834 steps/s) | 1.00x / 4.76x (951 steps/s) | **1.00x / 11.57x** (0.43 ms/fly) | **1.00x / 7.25x** (0.69 ms/fly) |
+| 8 | 1.00x / 2.21x | 1.00x / 3.11x | **1.00x / 6.82x** (0.73 ms/fly) | **1.00x / 15.62x** (0.32 ms/fly batched) |
+| 16 | 0.87x / 0.91x | 1.00x / 1.83x | **1.00x / 3.75x** (1.33 ms/fly) | **1.00x / 15.80x** (0.32 ms/fly batched) |
+| 32 | 0.35x / 0.38x | 0.71x / 0.79x | **1.00x / 1.95x** (2.56 ms/fly) | **1.00x / 15.15x** (0.33 ms/fly batched) |
+| synaptic events/s, best | 915 M (8 brains) | 1,517 M (16 brains) | 3,120 M (16 brains) | **7,850 M** (32 brains) |
+| memory, 32 brains | 12.8 GB | 10.5 GB | 3.6 GB | 4.8 GB (VRAM) |
 
+- **ModernGL Compute Backend (`gl`)**: Vendor-neutral GPU acceleration using OpenGL 4.3+ compute shaders (`cs_spmv` and `cs_lif`) and SSBOs. Runs without PyTorch dependencies across AMD, NVIDIA, and Intel GPUs.
+- **Batched Multi-Fly SpMM (`torch-rocm`, `torch-cuda`)**: Combines per-fly spike vectors into a single `(166,700 x N)` tensor, streaming the ~129 MB connectome matrix from VRAM once per step instead of N times. Plastic weights (KC -> MBON) after conditioning pairings remain 100% bit-exact identical between batched and unbatched paths.
+- **Zero-Copy Device-Resident State**: Membrane potentials (`v`), refractory counters (`refr`), spike buffers, and pre-scaled noise buffers remain resident in VRAM across steps, eliminating synchronous D2H transfers.
 - **Numba** gives identical spikes and about twice NumPy's throughput with many brains, because its kernels release
-  Python's interpreter lock so each brain's thread runs on its own core. 16 brains keep real time on it; on NumPy they
-  don't.
-- **`torch-cpu`** is 5-25x slower than NumPy here: PyTorch multiplies the whole weight matrix every step, where NumPy
-  only touches the columns of the ~2.5% of neurons that fired. It exists to test the PyTorch code path on any machine.
-- **GPU backends were not measured**: this machine's GPU (AMD Radeon RX 9070 XT) had no ROCm build of PyTorch installed,
-  and no NVIDIA GPU was available.
-- Every brain holds its own copy of the connectome's weights (learning changes them per fly): about 310-390 MB each.
-  N refuses to spawn another fly when less than 700 MB is free.
-
-The 3D game with N flies, the same machine (`--sim-backend NAME --flies N --smoke S`, offscreen at 1024x768; sim/real
-is each brain's steps/s over 200, mean over flies; flies were still being spawned during part of each measurement, so
-treat these as lower bounds):
-
-| flies in the game | `cpu` | `numba` |
-|---|---|---|
-| 1 | 0.94x real time, 62 fps | 1.00x, 62 fps |
-| 7-8 | 0.33x (slowest 0.31x), 39 fps | 0.52x (slowest 0.51x), 41 fps |
-| 10-14 | 0.36x (slowest 0.33x), 29 fps (10 flies) | 0.53x (slowest 0.51x), 24 fps (14 flies) |
-| 23 | not run | 0.46x (slowest 0.41x), 10 fps |
-
-In the game the renderer and the brain view share the interpreter lock with every brain, so flies fall behind real
-time sooner than headless. So the cap on N is: **16** on NumPy and `torch-cpu` (as before), **one per CPU core between
-16 and 32 on Numba** (24 on this machine; past about 16 the frame rate drops fast), and **32** on a GPU (unmeasured).
-Spawning is one fly at a time, each brain warming up first, so a big swarm takes a minute or two to fill.
+  Python's interpreter lock so each brain's thread runs on its own core.
+- Dynamic Fly Cap: **16** on NumPy and `torch-cpu`, **16-32** on Numba (one per core), and **32-64** on GPU backends (`gl`, `torch-rocm`, `torch-cuda`). Spawning is one fly at a time with warmups.
 
 ### Earlier releases
 

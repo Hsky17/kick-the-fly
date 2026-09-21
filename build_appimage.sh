@@ -24,6 +24,23 @@ fi
 
 .venv-build/bin/python tools/make_icon.py build/icon.png
 
+# pygame 2.6.1's cp314 wheel ships a font.py whose `from pygame.sysfont import ...` sits above the Font class it
+# defines, so sysfont's `from pygame.font import Font` hits a half-built module and every font call dies with a
+# misleading "circular import". Harmless where the wheel is already correct (the 3.11 CI build): the patch is a
+# no-op unless that exact bad ordering is present. Without it the frozen app crashes the moment it draws text.
+.venv-build/bin/python - .venv-build/lib/python*/site-packages/pygame/font.py <<'FONTFIX'
+import glob, sys
+for path in glob.glob(sys.argv[1]):
+    src = open(path).read()
+    imp = "from pygame.sysfont import match_font, get_fonts, SysFont as _SysFont\n"
+    head, sep, tail = src.partition(imp)
+    if not sep or "class Font(" not in tail:
+        continue                      # correct wheel, or already patched
+    open(path, "w").write(head + tail.rstrip("\n") + "\n\n" + imp)
+    print(f"patched {path}: moved sysfont import below Font")
+FONTFIX
+
+
 EXTRA_DATA=(--add-data "data/kick_brain.npz:." --add-data "protocols:protocols")
 if [ -f data/validation_results.json ]; then
     EXTRA_DATA+=(--add-data "data/validation_results.json:.")
