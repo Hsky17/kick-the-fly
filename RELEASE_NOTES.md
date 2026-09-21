@@ -6,8 +6,9 @@ Your saves, settings and your fly's training memory carry over. Everything in
 
 ## For players
 
-**More flies at once.** On a machine with a GPU the swarm cap now scales up to 32-64 flies instead of the old fixed
-limit. Every one of them is running the same full connectome simulation as before; there are just more of them.
+**More flies at once.** On a machine with a PyTorch GPU build the swarm cap now scales up to 32-64 flies instead
+of the old fixed limit. Every one of them is running the same full connectome simulation as before; there are just
+more of them.
 
 **The targeted laser responds immediately.** Holding the laser on a fly used to cost a noticeable hitch every frame.
 That hitch is gone. The laser does exactly what it did before, only without the stall.
@@ -19,8 +20,11 @@ about how fast the simulation runs, not what it does.
 
 The simulation gained three GPU execution paths, selectable with `--backend`:
 
-- **`gl`**: a vendor-neutral OpenGL 4.3+ compute shader backend (`cs_spmv`, `cs_lif`) using SSBOs, with explicit
-  memory barriers between the sparse accumulation and membrane-update passes. It needs no PyTorch at all.
+- **`gl` (experimental)**: a vendor-neutral OpenGL 4.3+ compute shader backend (`cs_spmv`, `cs_lif`) over
+  SSBOs, needing no PyTorch. It is bit-exact with the CPU path, but it is not yet faster than one: the spike
+  readback each step costs more than the compute saves (2.35 ms/step against NumPy's 1.41 on a Radeon RX
+  9070 XT), and plasticity re-uploads the whole 41 MB weight buffer every 10 steps. `auto` does not choose it;
+  ask for it with `--backend gl`.
 - **`torch-rocm` / `torch-cuda`**: membrane potentials, refractory counters, spike buffers and pre-scaled noise stay
   resident in VRAM across steps, and the connectome sparse matrix is streamed once per step across N flies rather
   than once per fly.
