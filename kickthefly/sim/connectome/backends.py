@@ -591,9 +591,16 @@ def _create_gl_context():
 
 
 def _gl_compute_available() -> tuple[bool, str]:
-    """Check if OpenGL 4.3+ compute shaders are supported on this system."""
+    """Whether OpenGL 4.3+ compute shaders are supported here.
+
+    Creating a context makes it current, and releasing it leaves the calling thread with none, so the caller's
+    own context is captured and put back around the probe. get_max_flies() asks this from the main thread,
+    where the 3D renderer's context is the one that must survive.
+    """
     if not _moderngl_available:
         return False, "ModernGL is not installed"
+    binder = _GLContextBinder()
+    saved = binder.capture_current()
     try:
         ctx = _create_gl_context()
         ver = ctx.version_code / 100.0
@@ -605,6 +612,8 @@ def _gl_compute_available() -> tuple[bool, str]:
         return True, f"OpenGL {ver:.1f}: {renderer}"
     except Exception as e:
         return False, f"OpenGL context creation failed: {e}"
+    finally:
+        binder.make_current(saved)
 
 
 _SPMV_COMPUTE_SHADER = """
@@ -804,43 +813,52 @@ class GLBackend(SimBackend):
         self.cs_lif["refr_steps"] = int(p.refractory_steps)
 
     def on_weights_changed(self) -> None:
+        if self._fallback is not None:
+            return self._fallback.on_weights_changed()
         self._ensure_thread()
-        if self.buf_values is not None:
-            self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
+        with self.ctx:
+            if self.buf_values is not None:
+                self.buf_values.write(self.sim.W_csr.data.astype(np.float32).tobytes())
 
     def sync_to_host(self) -> None:
         if self._fallback is not None:
             return self._fallback.sync_to_host()
         self._ensure_thread()
-        if self.buf_v is not None:
-            self.ctx.memory_barrier(moderngl.BUFFER_UPDATE_BARRIER_BIT)
-            self.ctx.finish()
-            self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
-            self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
-            self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
+        with self.ctx:
+            if self.buf_v is not None:
+                self.ctx.memory_barrier(moderngl.BUFFER_UPDATE_BARRIER_BIT)
+                self.ctx.finish()
+                self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
+                self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
+                self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
 
     def sync_from_host(self) -> None:
         if self._fallback is not None:
             return self._fallback.sync_from_host()
         self._ensure_thread()
-        if self.buf_v is not None:
-            self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
-            self.buf_refr.write(self.sim.refr.astype(np.int32).tobytes())
-            self.buf_spikes.write(self.sim.spikes.astype(np.uint32).tobytes())
-            if self._noise_id != id(self.sim._noise):
-                self.buf_noise.write(self.sim._noise.astype(np.float32).tobytes())
-                self._noise_id = id(self.sim._noise)
+        with self.ctx:
+            if self.buf_v is not None:
+                self.buf_v.write(self.sim.v.astype(np.float32).tobytes())
+                self.buf_refr.write(self.sim.refr.astype(np.int32).tobytes())
+                self.buf_spikes.write(self.sim.spikes.astype(np.uint32).tobytes())
+                if self._noise_id != id(self.sim._noise):
+                    self.buf_noise.write(self.sim._noise.astype(np.float32).tobytes())
+                    self._noise_id = id(self.sim._noise)
 
     def step(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
         if self._fallback is not None:
             return self._fallback.step(sensory_input)
         try:
-            return self._step_gl(sensory_input)
+            self._ensure_thread()
+            # The 3D renderer holds a ModernGL context of its own, so this one is not necessarily the current
+            # context when the brain thread gets here. Left unmade-current the GL calls go to the renderer's
+            # context instead and the readback fails with "cannot map the buffer".
+            with self.ctx:
+                return self._step_gl(sensory_input)
         except Exception as e:
             return self._degrade(e).step(sensory_input)
 
     def _step_gl(self, sensory_input: np.ndarray | None = None) -> np.ndarray:
-        self._ensure_thread()
         sim = self.sim
         if self._noise_id != id(sim._noise):
             self.buf_noise.write(sim._noise.astype(np.float32).tobytes())
