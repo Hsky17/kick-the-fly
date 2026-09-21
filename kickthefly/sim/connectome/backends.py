@@ -783,7 +783,8 @@ class GLBackend(SimBackend):
         brain's own thread, where create_backend's fallback is long gone. v/refr/spikes keep whatever the last
         sync left on the host, so the fly carries on from there.
         """
-        log.warning("the OpenGL compute backend failed (%s); this brain falls back to the CPU backend", exc)
+        log.warning("the OpenGL compute backend failed (%s: %s); this brain falls back to the CPU backend",
+                    type(exc).__name__, exc)
         self._fallback = CPUBackend(self.sim)
         self._fallback.setup()
         self.ctx = None
@@ -812,6 +813,8 @@ class GLBackend(SimBackend):
             return self._fallback.sync_to_host()
         self._ensure_thread()
         if self.buf_v is not None:
+            self.ctx.memory_barrier(moderngl.BUFFER_UPDATE_BARRIER_BIT)
+            self.ctx.finish()
             self.sim.v[:] = np.frombuffer(self.buf_v.read(), dtype=np.float32)
             self.sim.refr[:] = np.frombuffer(self.buf_refr.read(), dtype=np.int32).astype(np.int16)
             self.sim.spikes[:] = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32).astype(bool)
@@ -859,7 +862,11 @@ class GLBackend(SimBackend):
         self.cs_lif["noise_offset"] = off
         self.cs_lif["gain"] = float(sim.gain)
         self.cs_lif.run(self.num_groups)
-        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+        # SHADER_STORAGE orders the next shader's view of these buffers. Reading one back on the host is a
+        # different hazard and needs BUFFER_UPDATE too; without it the map is undefined and Mesa refuses it
+        # outright ("cannot map the buffer"). finish() then waits for the write actually to land.
+        self.ctx.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT | moderngl.BUFFER_UPDATE_BARRIER_BIT)
+        self.ctx.finish()
 
         # 4. Read spikes
         spikes_raw = np.frombuffer(self.buf_spikes.read(), dtype=np.uint32)
