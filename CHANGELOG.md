@@ -10,6 +10,8 @@
 - **Simulation telemetry & latency metrics**: Added per-fly uncapped step latency (ms) across `--benchmark` reports, JSON exports, and the Lab simulation benchmark dashboard.
 - **Dynamic Fly Cap**: GPU backends scale to 32–64 concurrent flies, with robust thread-local context isolation for parallel brain workers.
 
+## 2.8.2 (2026-09-20)
+
 ### Fixed
 - **The game crashed when a second sugar pile, alcohol drop or bomb was used up** ("The truth value of an array with
   more than one element is ambiguous"), in both the 3D and the 2D game. These are removed from a list of dicts holding
